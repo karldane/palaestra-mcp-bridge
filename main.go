@@ -104,7 +104,7 @@ func (pool *ProcessPool) spawnAndHandshake() {
 
 func spawnProcess(command string) (*ManagedProcess, error) {
 	var cmd *exec.Cmd
-	if command == "cat" || command == "npx" {
+	if command == "cat" || command == "npx" || command == "yes" {
 		cmd = exec.Command(command)
 	} else {
 		cmd = exec.Command("sh", "-c", command)
@@ -123,6 +123,18 @@ func spawnProcess(command string) (*ManagedProcess, error) {
 	if err := cmd.Start(); err != nil {
 		return nil, err
 	}
+
+	handshake := JSONRPCMessage{
+		JSONRPC: "2.0",
+		Method:  "list_tools",
+		ID:      1,
+	}
+	handshakeData, _ := json.Marshal(handshake)
+	stdin.Write(handshakeData)
+	stdin.Close()
+
+	buf := make([]byte, 4096)
+	stdout.Read(buf)
 
 	proc := &ManagedProcess{
 		Cmd:    cmd,

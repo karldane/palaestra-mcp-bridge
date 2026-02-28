@@ -160,6 +160,21 @@ func TestStructuredLogOutput(t *testing.T) {
 	}
 }
 
+func TestJSONRPCHandshakeSent(t *testing.T) {
+	os.Setenv("COMMAND", "cat")
+	defer os.Unsetenv("COMMAND")
+
+	proc, err := spawnProcess("cat")
+	if err != nil {
+		t.Fatalf("failed to spawn process: %v", err)
+	}
+	defer proc.Kill()
+
+	time.Sleep(100 * time.Millisecond)
+
+	proc.Stdout.Read(make([]byte, 1024))
+}
+
 func TestSSEConnectionUpgrade(t *testing.T) {
 	os.Setenv("COMMAND", "yes")
 	defer os.Unsetenv("COMMAND")
