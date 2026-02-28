@@ -1,0 +1,86 @@
+name: CI/CD
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+env:
+  AWS_REGION: eu-west-2
+  ECR_REGISTRY: 100732956864.dkr.ecr.eu-west-2.amazonaws.com
+  REPO_NAME: tusker-direct/mcp-bridge
+
+jobs:
+  test:
+    name: Test & Lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.19'
+
+      - name: Run go fmt
+        run: |
+          go fmt ./...
+          git diff --exit-code
+
+      - name: Run go vet
+        run: go vet ./...
+
+      - name: Run tests
+        run: go test -v -race ./...
+
+      - name: Build binary
+        run: CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o mcp-bridge .
+
+  build-push:
+    name: Build & Push ECR
+    needs: test
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.19'
+
+      - name: Build binary
+        run: CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o mcp-bridge .
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::100732956864:role/github-actions-ecr-push
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Login to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Build and push image
+        env:
+          IMAGE_TAG: sha-${{ github.sha }}
+        run: |
+          docker build -t ${{ env.ECR_REGISTRY }}/${{ env.REPO_NAME }}:$IMAGE_TAG .
+          docker build -t ${{ env.ECR_REGISTRY }}/${{ env.REPO_NAME }}:latest .
+          docker push ${{ env.ECR_REGISTRY }}/${{ env.REPO_NAME }}:$IMAGE_TAG
+          docker push ${{ env.ECR_REGISTRY }}/${{ env.REPO_NAME }}:latest
+
+      - name: Update staging overlay
+        run: |
+          git config --local user.email "github-actions@github.com"
+          git config --local user.name "GitHub Actions"
+          cd infra/overlays/project-x
+          kustomize edit set image mcp-bridge=${{ env.ECR_REGISTRY }}/${{ env.REPO_NAME }}:sha-${{ github.sha }}
+          git add .
+          git commit -m "Update image tag to sha-${{ github.sha }}"
+          git push
