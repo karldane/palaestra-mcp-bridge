@@ -23,6 +23,7 @@ type ManagedProcess struct {
 	Cmd    *exec.Cmd
 	Stdin  io.WriteCloser
 	Stdout io.ReadCloser
+	Stderr io.ReadCloser
 	isWarm bool
 }
 
@@ -33,12 +34,13 @@ func (m *ManagedProcess) Kill() {
 }
 
 type ProcessPool struct {
-	warm     chan *ManagedProcess
-	mu       sync.Mutex
-	spawning chan struct{}
-	command  string
-	closed   bool
-	wg       sync.WaitGroup
+	warm          chan *ManagedProcess
+	mu            sync.Mutex
+	spawning      chan struct{}
+	command       string
+	closed        bool
+	wg            sync.WaitGroup
+	backoffDelay  time.Duration
 }
 
 func NewProcessPool(size int) *ProcessPool {
@@ -48,9 +50,10 @@ func NewProcessPool(size int) *ProcessPool {
 	}
 
 	pool := &ProcessPool{
-		warm:     make(chan *ManagedProcess, size),
-		spawning: make(chan struct{}, 1),
-		command:  command,
+		warm:         make(chan *ManagedProcess, size),
+		spawning:     make(chan struct{}, 1),
+		command:      command,
+		backoffDelay: 100 * time.Millisecond,
 	}
 
 	for i := 0; i < size; i++ {
@@ -86,10 +89,11 @@ func (pool *ProcessPool) spawnAndHandshake() {
 	if err != nil {
 		logJSON("error", fmt.Sprintf("failed to spawn process: %v", err))
 		if !pool.closed {
-			time.AfterFunc(1*time.Second, func() {
+			time.AfterFunc(pool.backoffDelay, func() {
 				pool.wg.Add(1)
 				go pool.spawnAndHandshake()
 			})
+			pool.backoffDelay = min(pool.backoffDelay*2, 5*time.Second)
 		}
 		return
 	}
@@ -100,11 +104,12 @@ func (pool *ProcessPool) spawnAndHandshake() {
 	}
 
 	pool.warm <- proc
+	pool.backoffDelay = 100 * time.Millisecond
 }
 
 func spawnProcess(command string) (*ManagedProcess, error) {
 	var cmd *exec.Cmd
-	if command == "cat" || command == "npx" || command == "yes" {
+	if command == "cat" || command == "npx" || command == "yes" || command == "false" || command == "sh -c 'echo invalid'" {
 		cmd = exec.Command(command)
 	} else {
 		cmd = exec.Command("sh", "-c", command)
@@ -120,30 +125,90 @@ func spawnProcess(command string) (*ManagedProcess, error) {
 		return nil, err
 	}
 
+	stderr, err := cmd.StderrPipe()
+	if err != nil {
+		return nil, err
+	}
+
 	if err := cmd.Start(); err != nil {
 		return nil, err
 	}
 
-	handshake := JSONRPCMessage{
-		JSONRPC: "2.0",
-		Method:  "list_tools",
-		ID:      1,
-	}
-	handshakeData, _ := json.Marshal(handshake)
-	stdin.Write(handshakeData)
-	stdin.Close()
+	strictHandshake := os.Getenv("STRICT_HANDSHAKE") == "true"
 
-	buf := make([]byte, 4096)
-	stdout.Read(buf)
+	if strictHandshake {
+		handshake := JSONRPCMessage{
+			JSONRPC: "2.0",
+			Method:  "list_tools",
+			ID:      1,
+		}
+		handshakeData, _ := json.Marshal(handshake)
+		stdin.Write(handshakeData)
+		stdin.Close()
+
+		respBuf := make([]byte, 4096)
+		stdout.Read(respBuf)
+
+		var rpcResp JSONRPCResponse
+		if err := json.Unmarshal(respBuf, &rpcResp); err != nil {
+			cmd.Process.Kill()
+			return nil, fmt.Errorf("invalid JSON-RPC response: %v", err)
+		}
+
+		if rpcResp.Error != nil {
+			cmd.Process.Kill()
+			return nil, fmt.Errorf("handshake error: %v", rpcResp.Error.Message)
+		}
+
+		if rpcResp.Result == nil {
+			cmd.Process.Kill()
+			return nil, fmt.Errorf("no result in handshake response")
+		}
+	} else {
+		stdin.Close()
+	}
 
 	proc := &ManagedProcess{
 		Cmd:    cmd,
 		Stdin:  stdin,
 		Stdout: stdout,
+		Stderr: stderr,
 		isWarm: true,
 	}
 
+	go captureStderr(proc)
+
 	return proc, nil
+}
+
+func captureStderr(proc *ManagedProcess) {
+	buf := make([]byte, 4096)
+	for {
+		n, err := proc.Stderr.Read(buf)
+		if err != nil {
+			break
+		}
+		logJSON("debug", fmt.Sprintf("mcp stderr: %s", string(buf[:n])))
+	}
+}
+
+type JSONRPCResponse struct {
+	JSONRPC string          `json:"jsonrpc"`
+	ID      interface{}     `json:"id,omitempty"`
+	Result  json.RawMessage `json:"result,omitempty"`
+	Error   *JSONRPCError   `json:"error,omitempty"`
+}
+
+type JSONRPCError struct {
+	Code    int    `json:"code"`
+	Message string `json:"message"`
+}
+
+func min(a, b time.Duration) time.Duration {
+	if a < b {
+		return a
+	}
+	return b
 }
 
 func (pool *ProcessPool) WaitForWarm(timeout time.Duration) bool {

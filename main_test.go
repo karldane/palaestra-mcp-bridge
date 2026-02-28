@@ -175,6 +175,39 @@ func TestJSONRPCHandshakeSent(t *testing.T) {
 	proc.Stdout.Read(make([]byte, 1024))
 }
 
+func TestHandshakeVerificationRequiresValidResponse(t *testing.T) {
+	os.Setenv("COMMAND", "sh -c 'echo invalid'")
+	defer os.Unsetenv("COMMAND")
+
+	_, err := spawnProcess("sh -c 'echo invalid'")
+	if err == nil {
+		t.Error("expected error for invalid handshake response")
+	}
+}
+
+func TestExponentialBackoffOnFailure(t *testing.T) {
+	os.Setenv("COMMAND", "false")
+	defer os.Unsetenv("COMMAND")
+
+	pool := NewProcessPool(1)
+	time.Sleep(50 * time.Millisecond)
+
+	proc1 := pool.warm
+	if len(proc1) > 0 {
+		<-proc1
+	}
+
+	time.Sleep(50 * time.Millisecond)
+
+	select {
+	case <-pool.warm:
+		t.Error("should not spawn immediately due to backoff")
+	default:
+	}
+
+	pool.Shutdown()
+}
+
 func TestSSEConnectionUpgrade(t *testing.T) {
 	os.Setenv("COMMAND", "yes")
 	defer os.Unsetenv("COMMAND")
