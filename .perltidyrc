@@ -1,0 +1,62 @@
+# http://perldoc.perl.org/perlstyle.html
+
+# Online Documentation
+# http://perltidy.sourceforge.net/perltidy.html#FORMATTING-OPTIONS
+# https://linux.die.net/man/1/perltidy
+
+# Formating Options
+
+# Basic formatting options
+-l=132   # 80 characters per line is the default
+-i=4     # Indentation  4 [=default]
+-mbl=2   # No more than 2 blank lines
+
+# Tabs
+--entab-leading-whitespace=4             # -et=0
+
+# Code indentation control
+--closing-brace-indentation=4           # -cbi=0
+--closing-paren-indentation=0           # -cpi=0   [=default]
+--closing-square-bracket-indentation=0  # -csbi=0  [=default]
+--closing-token-indentation=0           # -cti=0   [=default]
+--continuation-indentation=4            # -ci=4    [=default]
+--nooutdent-labels                      # -nola
+--nooutdent-long-quotes                 # -nolq
+
+# Whitespace control
+--nospace-for-semicolon                 # -nsfs
+--block-brace-tightness=2               # -bbt=0
+--brace-tightness=2                     # -bt=0
+--paren-tightness=2                     # -pt=0
+--square-bracket-tightness=2            # -sbt=0
+--square-bracket-vertical-tightness=0   # -sbvt=0  [=default]
+--vertical-tightness=0                  # -vt=0    [=default]
+
+
+# Comment controls
+--indent-spaced-block-comments
+--outdent-long-comments
+--ignore-side-comment-lengths
+--outdent-long-lines
+--outdent-long-comments
+
+# Linebreak controls
+--cuddled-blocks
+--cuddled-else                          # -ce
+--stack-closing-hash-brace              # -schb
+--stack-closing-square-bracket          # -scsb
+--stack-opening-hash-brace              # -sohb
+--stack-opening-paren                   # -sop
+--stack-opening-square-bracket          # -sosb
+
+# Controlling List Formatting
+--comma-arrow-breakpoints=0             #-cab=n
+
+# Output to STDOUT
+-se      # Errors to STDERR
+
+# Blank line control
+--noblanks-before-comments              # -nbbc
+
+# Break before all operators
+--want-break-before="% + - * / x != == >= <= =~ < > | & **= += *= &= <<= &&= -= /= |= + >>= ||= .= %= ^= x="  # -wbb="% + - * / x != == >= <= =~ < > | & **= += *= &= <<= &&= -= /= |= + >>= ||= .= %= ^= x="
