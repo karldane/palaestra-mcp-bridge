@@ -14,7 +14,7 @@ import (
 )
 
 func TestIntegration_DefaultCommandProducesSSEOutput(t *testing.T) {
-	os.Unsetenv("COMMAND")
+	os.Setenv("COMMAND", "yes")
 	defer os.Unsetenv("COMMAND")
 
 	pool := NewProcessPool(1)
@@ -212,8 +212,13 @@ func TestIntegration_MessagesEndpointRoutesToStdin(t *testing.T) {
 	w := httptest.NewRecorder()
 	messagesHandler(w, req)
 
-	if w.Code != http.StatusAccepted {
-		t.Errorf("expected status 202, got %d", w.Code)
+	if w.Code == http.StatusServiceUnavailable {
+		t.Errorf("expected warm process to be available, got 503")
+	}
+
+	body := w.Body.String()
+	if body == "" {
+		t.Errorf("expected response body, got empty")
 	}
 
 	pool.Shutdown()

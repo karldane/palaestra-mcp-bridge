@@ -25,6 +25,13 @@ type ManagedProcess struct {
 	Stdout io.ReadCloser
 	Stderr io.ReadCloser
 	isWarm bool
+	ID     string
+}
+
+type PendingRequest struct {
+	ID         string
+	ResponseCh chan []byte
+	Timeout    *time.Timer
 }
 
 func (m *ManagedProcess) Kill() {
@@ -34,15 +41,18 @@ func (m *ManagedProcess) Kill() {
 }
 
 type ProcessPool struct {
-	warm         chan *ManagedProcess
-	mu           sync.Mutex
-	spawning     chan struct{}
-	command      string
-	closed       bool
-	wg           sync.WaitGroup
-	backoffDelay time.Duration
-	activeCount  int
-	activeMu     sync.Mutex
+	warm            chan *ManagedProcess
+	mu              sync.Mutex
+	spawning        chan struct{}
+	command         string
+	closed          bool
+	wg              sync.WaitGroup
+	backoffDelay    time.Duration
+	activeCount     int
+	activeMu        sync.Mutex
+	pendingMu       sync.Mutex
+	pendingRequests map[string]*PendingRequest
+	broadcastCh     chan []byte
 }
 
 func (pool *ProcessPool) IsClosed() bool {
@@ -54,14 +64,16 @@ func (pool *ProcessPool) IsClosed() bool {
 func NewProcessPool(size int) *ProcessPool {
 	command := os.Getenv("COMMAND")
 	if command == "" {
-		command = "yes"
+		command = "sh -c 'cat; sleep 1'"
 	}
 
 	pool := &ProcessPool{
-		warm:         make(chan *ManagedProcess, size),
-		spawning:     make(chan struct{}, 1),
-		command:      command,
-		backoffDelay: 100 * time.Millisecond,
+		warm:            make(chan *ManagedProcess, size),
+		spawning:        make(chan struct{}, 1),
+		command:         command,
+		backoffDelay:    100 * time.Millisecond,
+		pendingRequests: make(map[string]*PendingRequest),
+		broadcastCh:     make(chan []byte, 100),
 	}
 
 	for i := 0; i < size; i++ {
@@ -69,7 +81,26 @@ func NewProcessPool(size int) *ProcessPool {
 		go pool.spawnAndHandshake()
 	}
 
+	go pool.responseDispatcher()
+
 	return pool
+}
+
+func (pool *ProcessPool) responseDispatcher() {
+	for data := range pool.broadcastCh {
+		pool.pendingMu.Lock()
+		var resp JSONRPCResponse
+		if err := json.Unmarshal(data, &resp); err == nil && resp.ID != nil {
+			id := fmt.Sprintf("%v", resp.ID)
+			if req, ok := pool.pendingRequests[id]; ok {
+				select {
+				case req.ResponseCh <- data:
+				default:
+				}
+			}
+		}
+		pool.pendingMu.Unlock()
+	}
 }
 
 func (pool *ProcessPool) spawnAndHandshake() {
@@ -256,6 +287,46 @@ func (pool *ProcessPool) ActiveCount() int {
 	return pool.activeCount
 }
 
+func (pool *ProcessPool) RegisterRequest(id string) chan []byte {
+	pool.pendingMu.Lock()
+	defer pool.pendingMu.Unlock()
+
+	respCh := make(chan []byte, 1)
+	timer := time.AfterFunc(30*time.Second, func() {
+		pool.pendingMu.Lock()
+		defer pool.pendingMu.Unlock()
+		if req, ok := pool.pendingRequests[id]; ok {
+			close(req.ResponseCh)
+			delete(pool.pendingRequests, id)
+		}
+	})
+
+	pool.pendingRequests[id] = &PendingRequest{
+		ID:         id,
+		ResponseCh: respCh,
+		Timeout:    timer,
+	}
+
+	return respCh
+}
+
+func (pool *ProcessPool) CompleteRequest(id string) {
+	pool.pendingMu.Lock()
+	defer pool.pendingMu.Unlock()
+	if req, ok := pool.pendingRequests[id]; ok {
+		req.Timeout.Stop()
+		close(req.ResponseCh)
+		delete(pool.pendingRequests, id)
+	}
+}
+
+func (pool *ProcessPool) BroadcastToSSE(data []byte) {
+	select {
+	case pool.broadcastCh <- data:
+	default:
+	}
+}
+
 func (pool *ProcessPool) IncrementActive() {
 	pool.activeMu.Lock()
 	defer pool.activeMu.Unlock()
@@ -278,6 +349,7 @@ func (pool *ProcessPool) Shutdown() {
 	pool.mu.Unlock()
 	pool.wg.Wait()
 	close(pool.warm)
+	close(pool.broadcastCh)
 }
 
 func logJSON(level, message string) {
@@ -345,7 +417,9 @@ func sseHandler(w http.ResponseWriter, r *http.Request) {
 			if err != nil {
 				break
 			}
-			fmt.Fprintf(w, "data: %s\n\n", string(buf[:n]))
+			data := string(buf[:n])
+			pool.BroadcastToSSE([]byte(data))
+			fmt.Fprintf(w, "data: %s\n\n", data)
 			w.(http.Flusher).Flush()
 		}
 	default:
@@ -360,11 +434,50 @@ func messagesHandler(w http.ResponseWriter, r *http.Request) {
 	case proc := <-pool.warm:
 		body, _ := io.ReadAll(r.Body)
 		r.Body.Close()
+
+		var msg JSONRPCMessage
+		if err := json.Unmarshal(body, &msg); err != nil {
+			pool.warm <- proc
+			http.Error(w, "Invalid JSON-RPC", http.StatusBadRequest)
+			return
+		}
+
+		id := fmt.Sprintf("%v", msg.ID)
+		if id == "" || id == "<nil>" {
+			id = fmt.Sprintf("auto-%d", time.Now().UnixNano())
+			msg.ID = id
+			body, _ = json.Marshal(msg)
+		}
+
 		proc.Stdin.Write(body)
+		proc.Stdin.Write([]byte("\n"))
+
+		respCh := make(chan string, 1)
+		go func() {
+			buf := make([]byte, 4096)
+			n, _ := proc.Stdout.Read(buf)
+			if n > 0 {
+				data := string(buf[:n])
+				pool.BroadcastToSSE([]byte(data))
+				respCh <- data
+			}
+		}()
+
+		select {
+		case response := <-respCh:
+			w.Header().Set("Content-Type", "application/json")
+			w.Write([]byte(response))
+		case <-time.After(30 * time.Second):
+			pool.warm <- proc
+			w.WriteHeader(http.StatusGatewayTimeout)
+			w.Write([]byte(`{"jsonrpc":"2.0","error":{"code":-32000,"message":"Request timeout after 30s"}}`))
+			return
+		}
+
 		pool.warm <- proc
-		w.WriteHeader(http.StatusAccepted)
 	default:
 		w.WriteHeader(http.StatusServiceUnavailable)
+		w.Write([]byte("No warm processes"))
 	}
 }
 
