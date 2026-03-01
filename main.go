@@ -34,13 +34,21 @@ func (m *ManagedProcess) Kill() {
 }
 
 type ProcessPool struct {
-	warm          chan *ManagedProcess
-	mu            sync.Mutex
-	spawning      chan struct{}
-	command       string
-	closed        bool
-	wg            sync.WaitGroup
-	backoffDelay  time.Duration
+	warm         chan *ManagedProcess
+	mu           sync.Mutex
+	spawning     chan struct{}
+	command      string
+	closed       bool
+	wg           sync.WaitGroup
+	backoffDelay time.Duration
+	activeCount  int
+	activeMu     sync.Mutex
+}
+
+func (pool *ProcessPool) IsClosed() bool {
+	pool.mu.Lock()
+	defer pool.mu.Unlock()
+	return pool.closed
 }
 
 func NewProcessPool(size int) *ProcessPool {
@@ -67,17 +75,28 @@ func NewProcessPool(size int) *ProcessPool {
 func (pool *ProcessPool) spawnAndHandshake() {
 	defer pool.wg.Done()
 
+	if pool.IsClosed() {
+		return
+	}
+
 	select {
 	case pool.spawning <- struct{}{}:
-		if pool.closed {
-			return
-		}
-	default:
-		if pool.closed {
-			return
+	case <-time.After(100 * time.Millisecond):
+		if !pool.IsClosed() {
+			pool.wg.Add(1)
+			go pool.spawnAndHandshake()
 		}
 		return
 	}
+
+	if pool.IsClosed() {
+		select {
+		case <-pool.spawning:
+		default:
+		}
+		return
+	}
+
 	defer func() {
 		select {
 		case <-pool.spawning:
@@ -88,23 +107,28 @@ func (pool *ProcessPool) spawnAndHandshake() {
 	proc, err := spawnProcess(pool.command)
 	if err != nil {
 		logJSON("error", fmt.Sprintf("failed to spawn process: %v", err))
-		if !pool.closed {
-			time.AfterFunc(pool.backoffDelay, func() {
+		if !pool.IsClosed() {
+			pool.mu.Lock()
+			delay := pool.backoffDelay
+			pool.backoffDelay = min(pool.backoffDelay*2, 5*time.Second)
+			pool.mu.Unlock()
+			time.AfterFunc(delay, func() {
 				pool.wg.Add(1)
 				go pool.spawnAndHandshake()
 			})
-			pool.backoffDelay = min(pool.backoffDelay*2, 5*time.Second)
 		}
 		return
 	}
 
-	if pool.closed {
+	if pool.IsClosed() {
 		proc.Kill()
 		return
 	}
 
 	pool.warm <- proc
+	pool.mu.Lock()
 	pool.backoffDelay = 100 * time.Millisecond
+	pool.mu.Unlock()
 }
 
 func spawnProcess(command string) (*ManagedProcess, error) {
@@ -222,8 +246,36 @@ func (pool *ProcessPool) WaitForWarm(timeout time.Duration) bool {
 	return false
 }
 
+func (pool *ProcessPool) WarmCount() int {
+	return len(pool.warm)
+}
+
+func (pool *ProcessPool) ActiveCount() int {
+	pool.activeMu.Lock()
+	defer pool.activeMu.Unlock()
+	return pool.activeCount
+}
+
+func (pool *ProcessPool) IncrementActive() {
+	pool.activeMu.Lock()
+	defer pool.activeMu.Unlock()
+	pool.activeCount++
+}
+
+func (pool *ProcessPool) DecrementActive() {
+	pool.activeMu.Lock()
+	defer pool.activeMu.Unlock()
+	pool.activeCount--
+}
+
 func (pool *ProcessPool) Shutdown() {
+	pool.mu.Lock()
+	if pool.closed {
+		pool.mu.Unlock()
+		return
+	}
 	pool.closed = true
+	pool.mu.Unlock()
 	pool.wg.Wait()
 	close(pool.warm)
 }
@@ -278,9 +330,11 @@ func sseHandler(w http.ResponseWriter, r *http.Request) {
 
 	select {
 	case proc := <-pool.warm:
+		pool.IncrementActive()
 		go func() {
 			<-r.Context().Done()
 			proc.Kill()
+			pool.DecrementActive()
 			pool.wg.Add(1)
 			go pool.spawnAndHandshake()
 		}()
