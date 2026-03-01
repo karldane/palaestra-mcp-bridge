@@ -7,7 +7,7 @@ A high-performance SSE-to-Stdio bridge for Model Context Protocol (MCP) servers.
 ### Run the Bridge
 
 ```bash
-# Default command (yes - produces continuous output)
+# Default command (echoes input for testing)
 ./mcp-bridge
 
 # With custom MCP server command
@@ -19,7 +19,7 @@ COMMAND="npx @modelcontextprotocol/server-jira" ./mcp-bridge
 | Endpoint | Method | Description |
 |----------|--------|-------------|
 | `/sse` | GET | SSE stream from MCP server stdout |
-| `/messages` | POST | Send JSON-RPC to MCP server stdin |
+| `/messages` | POST | Send JSON-RPC to MCP server, returns response (synchronous) |
 | `/healthz` | GET | Health check (always 200) |
 | `/readyz` | GET | Readiness check (200 if warm processes available) |
 
@@ -30,12 +30,20 @@ COMMAND="npx @modelcontextprotocol/server-jira" ./mcp-bridge
 curl -N http://localhost:8080/sse
 ```
 
-#### Send a message
+#### Send a message (synchronous request/response)
 ```bash
 curl -X POST http://localhost:8080/messages \
   -H "Content-Type: application/json" \
   -d '{"jsonrpc":"2.0","method":"list_tools","id":1}'
 ```
+
+The `/messages` endpoint:
+- Takes a process from the warm pool
+- Writes JSON-RPC request to stdin
+- Waits for response from stdout
+- Returns the response to the HTTP client
+- Returns process to pool
+- **30 second timeout** - returns 504 if no response
 
 #### Check health
 ```bash
@@ -47,7 +55,7 @@ curl http://localhost:8080/readyz   # Returns OK if pool has warm processes
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `COMMAND` | `yes` | The command to execute for MCP server |
+| `COMMAND` | `sh -c 'cat; sleep 1'` | The command to execute for MCP server |
 | `STRICT_HANDSHAKE` | `false` | Enable JSON-RPC handshake validation |
 
 ### Example Commands
@@ -69,6 +77,8 @@ STRICT_HANDSHAKE=true COMMAND="npx @modelcontextprotocol/server-jira" ./mcp-brid
 ## Architecture
 
 - **Process Pool**: Maintains 2 warm instances (Fixed Buffer)
+- **Synchronous /messages**: Request/response with 30s timeout
+- **SSE Broadcast**: Responses from /messages are also broadcast to /sse
 - **Clean Slate**: Each SSE disconnect kills the process and spawns a replacement
 - **JSON Logging**: All output is structured JSON for New Relic integration
 
