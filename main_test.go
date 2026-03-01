@@ -385,3 +385,62 @@ func TestConcurrentRefillStability(t *testing.T) {
 
 	pool.Shutdown()
 }
+
+func TestSSEReadsFromProcessStdout(t *testing.T) {
+	os.Setenv("COMMAND", "yes")
+	defer os.Unsetenv("COMMAND")
+
+	pool := NewProcessPool(1)
+	defer pool.Shutdown()
+
+	if !pool.WaitForWarm(2 * time.Second) {
+		t.Fatal("timeout waiting for warm process")
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+	ctx = context.WithValue(ctx, "pool", pool)
+
+	req := httptest.NewRequest("GET", "/sse", nil).WithContext(ctx)
+	req.Header.Set("Accept", "text/event-stream")
+
+	w := httptest.NewRecorder()
+
+	sseHandler(w, req)
+
+	if w.Header().Get("Content-Type") != "text/event-stream" {
+		t.Errorf("expected Content-Type text/event-stream, got %s", w.Header().Get("Content-Type"))
+	}
+
+	body := w.Body.String()
+	if !strings.Contains(body, "data:") {
+		t.Errorf("expected SSE data in response, got: %s", body)
+	}
+}
+
+func TestDefaultCommandProducesOutput(t *testing.T) {
+	os.Unsetenv("COMMAND")
+
+	pool := NewProcessPool(1)
+	defer pool.Shutdown()
+
+	if !pool.WaitForWarm(2 * time.Second) {
+		t.Fatal("timeout waiting for warm process")
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+	ctx = context.WithValue(ctx, "pool", pool)
+
+	req := httptest.NewRequest("GET", "/sse", nil).WithContext(ctx)
+	req.Header.Set("Accept", "text/event-stream")
+
+	w := httptest.NewRecorder()
+
+	sseHandler(w, req)
+
+	body := w.Body.String()
+	if !strings.Contains(body, "data:") {
+		t.Errorf("expected SSE data with default command, got: %s", body)
+	}
+}

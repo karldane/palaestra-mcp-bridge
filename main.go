@@ -54,7 +54,7 @@ func (pool *ProcessPool) IsClosed() bool {
 func NewProcessPool(size int) *ProcessPool {
 	command := os.Getenv("COMMAND")
 	if command == "" {
-		command = "npx"
+		command = "yes"
 	}
 
 	pool := &ProcessPool{
