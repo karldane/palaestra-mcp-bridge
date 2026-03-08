@@ -18,12 +18,17 @@ type ToolCall struct {
 	Arguments json.RawMessage `json:"arguments,omitempty"`
 }
 
+// ToolsCallRequest represents a tools/call request from the MCP client.
+// The params contain "name" and "arguments" directly (not a "tools" array).
 type ToolsCallRequest struct {
 	JSONRPC string      `json:"jsonrpc"`
 	ID      interface{} `json:"id"`
 	Method  string      `json:"method"`
 	Params  struct {
-		Tools []ToolCall `json:"tools"`
+		Name      string          `json:"name"`
+		Arguments json.RawMessage `json:"arguments,omitempty"`
+		// Tools field is for backward compatibility with older implementations
+		Tools []ToolCall `json:"tools,omitempty"`
 	} `json:"params,omitempty"`
 }
 
@@ -93,11 +98,15 @@ func (tm *ToolMuxer) HandleToolsCall(userID string, body []byte) ([]byte, *PoolR
 		return nil, nil, fmt.Errorf("failed to parse tools/call request: %w", err)
 	}
 
-	if len(req.Params.Tools) == 0 {
-		return nil, nil, fmt.Errorf("no tools in request")
+	// Get tool name from params (MCP spec uses params.name, not params.tools)
+	toolName := req.Params.Name
+	if toolName == "" && len(req.Params.Tools) > 0 {
+		// Fallback to legacy format for backward compatibility
+		toolName = req.Params.Tools[0].Name
 	}
-
-	toolName := req.Params.Tools[0].Name
+	if toolName == "" {
+		return nil, nil, fmt.Errorf("no tool name in request params")
+	}
 
 	backendID, prefix, err := tm.findBackendForTool(toolName)
 	if err != nil {
@@ -128,7 +137,7 @@ func (tm *ToolMuxer) HandleToolsCall(userID string, body []byte) ([]byte, *PoolR
 
 	modifiedBody := body
 	if prefix != "" {
-		modifiedBody = tm.stripPrefix(body, prefix)
+		modifiedBody = tm.stripPrefixFromName(body, prefix)
 	}
 
 	return modifiedBody, router, nil
@@ -228,6 +237,28 @@ func (tm *ToolMuxer) stripPrefix(body []byte, prefix string) []byte {
 		stripped := strings.TrimPrefix(name, prefix+"_")
 		stripped = strings.TrimPrefix(stripped, prefix+"/")
 		tool["name"] = stripped
+	}
+
+	newBody, _ := json.Marshal(req)
+	return newBody
+}
+
+// stripPrefixFromName strips the prefix from params.name (correct MCP format)
+func (tm *ToolMuxer) stripPrefixFromName(body []byte, prefix string) []byte {
+	var req map[string]interface{}
+	if err := json.Unmarshal(body, &req); err != nil {
+		return body
+	}
+
+	params, ok := req["params"].(map[string]interface{})
+	if !ok {
+		return body
+	}
+
+	if name, ok := params["name"].(string); ok {
+		stripped := strings.TrimPrefix(name, prefix+"_")
+		stripped = strings.TrimPrefix(stripped, prefix+"/")
+		params["name"] = stripped
 	}
 
 	newBody, _ := json.Marshal(req)
