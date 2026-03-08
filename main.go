@@ -159,63 +159,239 @@ func messagesHandler(a *app) http.HandlerFunc {
 			return
 		}
 
-		backendID := a.defaultBackendID()
-		pool := a.getPoolForUser(userID, backendID)
+		body, _ := io.ReadAll(r.Body)
+		r.Body.Close()
+
+		var msg poolmgr.JSONRPCMessage
+		if err := json.Unmarshal(body, &msg); err != nil {
+			http.Error(w, "Invalid JSON-RPC", http.StatusBadRequest)
+			return
+		}
+
+		method := msg.Method
+
+		// Route based on method
+		switch method {
+		case "tools/list":
+			handleToolsList(a, w, r, userID, body, msg.ID)
+		case "tools/call":
+			handleToolsCall(a, w, r, userID, body, msg.ID)
+		default:
+			// Fallback to default backend for other methods
+			handleDefaultBackend(a, w, r, userID, body, msg.ID)
+		}
+	}
+}
+
+// handleToolsList aggregates tools from all enabled backends
+func handleToolsList(a *app, w http.ResponseWriter, r *http.Request, userID string, body []byte, id interface{}) {
+	backends, err := a.store.ListBackends()
+	if err != nil || len(backends) == 0 {
+		// Fallback to default backend if no backends configured
+		handleDefaultBackend(a, w, r, userID, body, id)
+		return
+	}
+
+	var allTools []map[string]interface{}
+	var firstError error
+
+	for _, backend := range backends {
+		if !backend.Enabled {
+			continue
+		}
+
+		pool := a.getPoolForUser(userID, backend.ID)
 		pool.TouchLastUsed()
 
 		select {
 		case proc := <-pool.Warm:
-			body, _ := io.ReadAll(r.Body)
-			r.Body.Close()
-
-			var msg poolmgr.JSONRPCMessage
-			if err := json.Unmarshal(body, &msg); err != nil {
-				pool.Warm <- proc
-				http.Error(w, "Invalid JSON-RPC", http.StatusBadRequest)
-				return
+			// Build tools/list request
+			reqID := fmt.Sprintf("list-%s-%d", backend.ID, time.Now().UnixNano())
+			req := map[string]interface{}{
+				"jsonrpc": "2.0",
+				"method":  "tools/list",
+				"id":      reqID,
 			}
+			reqBody, _ := json.Marshal(req)
+			reqBody = append(reqBody, '\n')
 
-			id := fmt.Sprintf("%v", msg.ID)
-			if id == "" || id == "<nil>" {
-				id = fmt.Sprintf("auto-%d", time.Now().UnixNano())
-				msg.ID = id
-				body, _ = json.Marshal(msg)
-			}
-
-			// Compact the JSON before sending
-			buf := new(bytes.Buffer)
-			if err := json.Compact(buf, body); err != nil {
-				buf.Reset()
-				buf.Write(body)
-			}
-			buf.WriteByte('\n')
-
-			// Register for the response BEFORE writing to stdin
-			respCh := pool.RegisterRequest(id)
-
-			proc.Stdin.Write(buf.Bytes())
+			respCh := pool.RegisterRequest(reqID)
+			proc.Stdin.Write(reqBody)
 
 			select {
 			case response, ok := <-respCh:
-				pool.UnregisterRequest(id)
+				pool.UnregisterRequest(reqID)
 				if ok && len(response) > 0 {
-					w.Header().Set("Content-Type", "application/json")
-					w.Write(response)
-				} else {
-					w.WriteHeader(http.StatusGatewayTimeout)
-					w.Write([]byte(`{"jsonrpc":"2.0","error":{"code":-32000,"message":"No response received"}}`))
+					var result struct {
+						Result struct {
+							Tools []map[string]interface{} `json:"tools"`
+						} `json:"result"`
+						Error map[string]interface{} `json:"error"`
+					}
+					if err := json.Unmarshal(response, &result); err == nil {
+						if result.Error != nil {
+							log.Printf("tools/list error from backend %s: %v", backend.ID, result.Error)
+							if firstError == nil {
+								firstError = fmt.Errorf("backend %s error: %v", backend.ID, result.Error)
+							}
+						} else {
+							// Add prefix to tool names if configured
+							prefix := a.toolMuxer.GetPrefixForBackend(backend.ID)
+							for _, tool := range result.Result.Tools {
+								if name, ok := tool["name"].(string); ok && prefix != "" {
+									tool["name"] = prefix + "_" + name
+								}
+								allTools = append(allTools, tool)
+							}
+						}
+					}
 				}
-			case <-time.After(30 * time.Second):
-				pool.UnregisterRequest(id)
-				w.WriteHeader(http.StatusGatewayTimeout)
-				w.Write([]byte(`{"jsonrpc":"2.0","error":{"code":-32000,"message":"Request timeout after 30s"}}`))
+			case <-time.After(10 * time.Second):
+				pool.UnregisterRequest(reqID)
+				log.Printf("tools/list timeout from backend %s", backend.ID)
 			}
 
 			pool.Warm <- proc
 		default:
-			w.WriteHeader(http.StatusServiceUnavailable)
-			w.Write([]byte("No warm processes"))
+			log.Printf("No warm process for backend %s", backend.ID)
 		}
+	}
+
+	// Build aggregated response
+	respID := id
+	if respID == nil || respID == "" {
+		respID = 1
+	}
+
+	response := map[string]interface{}{
+		"jsonrpc": "2.0",
+		"id":      respID,
+		"result": map[string]interface{}{
+			"tools": allTools,
+		},
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(response)
+}
+
+// handleToolsCall routes the call to the correct backend based on tool name prefix
+func handleToolsCall(a *app, w http.ResponseWriter, r *http.Request, userID string, body []byte, id interface{}) {
+	// Use muxer to route to correct backend
+	modifiedBody, router, err := a.toolMuxer.HandleToolsCall(userID, body)
+	if err != nil {
+		log.Printf("tools/call routing error: %v", err)
+		// Fallback to default backend
+		handleDefaultBackend(a, w, r, userID, body, id)
+		return
+	}
+
+	pool := router.Pool
+	pool.TouchLastUsed()
+
+	select {
+	case proc := <-pool.Warm:
+		// Ensure we have a valid ID
+		var msg poolmgr.JSONRPCMessage
+		if err := json.Unmarshal(modifiedBody, &msg); err != nil {
+			pool.Warm <- proc
+			http.Error(w, "Invalid JSON-RPC", http.StatusBadRequest)
+			return
+		}
+
+		reqID := fmt.Sprintf("%v", msg.ID)
+		if reqID == "" || reqID == "<nil>" {
+			reqID = fmt.Sprintf("auto-%d", time.Now().UnixNano())
+			msg.ID = reqID
+			modifiedBody, _ = json.Marshal(msg)
+		}
+
+		// Compact and add newline
+		buf := new(bytes.Buffer)
+		if err := json.Compact(buf, modifiedBody); err != nil {
+			buf.Reset()
+			buf.Write(modifiedBody)
+		}
+		buf.WriteByte('\n')
+
+		respCh := pool.RegisterRequest(reqID)
+		proc.Stdin.Write(buf.Bytes())
+
+		select {
+		case response, ok := <-respCh:
+			pool.UnregisterRequest(reqID)
+			if ok && len(response) > 0 {
+				w.Header().Set("Content-Type", "application/json")
+				w.Write(response)
+			} else {
+				w.WriteHeader(http.StatusGatewayTimeout)
+				w.Write([]byte(`{"jsonrpc":"2.0","error":{"code":-32000,"message":"No response received"}}`))
+			}
+		case <-time.After(30 * time.Second):
+			pool.UnregisterRequest(reqID)
+			w.WriteHeader(http.StatusGatewayTimeout)
+			w.Write([]byte(`{"jsonrpc":"2.0","error":{"code":-32000,"message":"Request timeout after 30s"}}`))
+		}
+
+		pool.Warm <- proc
+	default:
+		w.WriteHeader(http.StatusServiceUnavailable)
+		w.Write([]byte("No warm processes"))
+	}
+}
+
+// handleDefaultBackend routes to the default backend (legacy behavior)
+func handleDefaultBackend(a *app, w http.ResponseWriter, r *http.Request, userID string, body []byte, id interface{}) {
+	backendID := a.defaultBackendID()
+	pool := a.getPoolForUser(userID, backendID)
+	pool.TouchLastUsed()
+
+	select {
+	case proc := <-pool.Warm:
+		var msg poolmgr.JSONRPCMessage
+		if err := json.Unmarshal(body, &msg); err != nil {
+			pool.Warm <- proc
+			http.Error(w, "Invalid JSON-RPC", http.StatusBadRequest)
+			return
+		}
+
+		reqID := fmt.Sprintf("%v", msg.ID)
+		if reqID == "" || reqID == "<nil>" {
+			reqID = fmt.Sprintf("auto-%d", time.Now().UnixNano())
+			msg.ID = reqID
+			body, _ = json.Marshal(msg)
+		}
+
+		buf := new(bytes.Buffer)
+		if err := json.Compact(buf, body); err != nil {
+			buf.Reset()
+			buf.Write(body)
+		}
+		buf.WriteByte('\n')
+
+		respCh := pool.RegisterRequest(reqID)
+		proc.Stdin.Write(buf.Bytes())
+
+		select {
+		case response, ok := <-respCh:
+			pool.UnregisterRequest(reqID)
+			if ok && len(response) > 0 {
+				w.Header().Set("Content-Type", "application/json")
+				w.Write(response)
+			} else {
+				w.WriteHeader(http.StatusGatewayTimeout)
+				w.Write([]byte(`{"jsonrpc":"2.0","error":{"code":-32000,"message":"No response received"}}`))
+			}
+		case <-time.After(30 * time.Second):
+			pool.UnregisterRequest(reqID)
+			w.WriteHeader(http.StatusGatewayTimeout)
+			w.Write([]byte(`{"jsonrpc":"2.0","error":{"code":-32000,"message":"Request timeout after 30s"}}`))
+		}
+
+		pool.Warm <- proc
+	default:
+		w.WriteHeader(http.StatusServiceUnavailable)
+		w.Write([]byte("No warm processes"))
 	}
 }
 
