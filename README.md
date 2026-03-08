@@ -1,125 +1,145 @@
 # MCP Bridge
 
-High-performance SSE-to-Stdio bridge for Model Context Protocol (MCP) servers.
+Multi-tenant SSE-to-Stdio bridge for Model Context Protocol (MCP) servers,
+with OAuth 2.1 authentication, per-user credential injection, and a web
+admin interface.
 
 ## Features
 
-- **Fixed Process Pool**: Maintains 2 warm MCP server instances
-- **SSE Streaming**: Real-time stdout streaming via Server-Sent Events
-- **JSON-RPC Routing**: POST messages to `/messages` endpoint for stdin routing
-- **Health Checks**: `/healthz` and `/readyz` endpoints
-- **Clean Slate**: Restart on disconnect to prevent state pollution
-- **Structured Logging**: JSON output for New Relic aggregation
+- **Multi-backend support** &mdash; route multiple MCP servers (Jira,
+  Confluence, etc.) behind a single endpoint; backends managed via DB
+- **OAuth 2.1 + PKCE** &mdash; RFC 8414 discovery, RFC 7591 dynamic client
+  registration, authorization code flow with PKCE
+- **Per-user credential injection** &mdash; each user's API tokens are
+  injected into the MCP server environment at spawn time
+- **Bcrypt passwords** &mdash; user passwords are stored as bcrypt hashes;
+  legacy plaintext is auto-upgraded on login
+- **Process pools** &mdash; per-user, per-backend warm pools with idle
+  garbage collection
+- **Web admin UI** &mdash; manage users, backends, tokens, and probe backend
+  health; cookie-based sessions with role separation (admin / user)
+- **Live reload** &mdash; backend config changes take effect immediately (no
+  restart required)
+- **SSE streaming** &mdash; real-time stdout streaming via Server-Sent Events
+- **Health checks** &mdash; `/healthz` and `/readyz` endpoints
 
 ## Requirements
 
-- Go 1.19+
-- Kubernetes (for production)
+- Go 1.19+ (CGo enabled for SQLite)
+- `gcc` / C toolchain (required by `go-sqlite3`)
 
-## Development
-
-### Run Tests
+## Quick Start
 
 ```bash
-# Run all tests
-go test -v ./...
+# 1. Copy and edit config
+cp config.yaml.example config.yaml
 
-# Run with race detection
-go test -v -race ./...
-
-# Run specific test
-go test -v -run TestIntegration_DefaultCommandProducesSSEOutput
-```
-
-### Build
-
-```bash
-# Build binary
+# 2. Build
 go build -o mcp-bridge .
 
-# Build with specific OS/ARCH
-CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o mcp-bridge .
-```
-
-### Run Locally
-
-```bash
-# Default command (yes - produces continuous output)
+# 3. Run (creates/migrates SQLite DB automatically)
 ./mcp-bridge
 
-# With custom command
-COMMAND="cat" ./mcp-bridge
-```
-
-### Docker
-
-```bash
-# Build image
-docker build -t mcp-bridge .
-
-# Run container
-docker run -p 8080:8080 mcp-bridge
+# Default admin: admin@mcp-bridge.local / changeme
+# Web UI: http://localhost:8080/web/login
 ```
 
 ## Project Structure
 
 ```
 .
-├── main.go              # Main application code
-├── main_test.go         # Integration tests
-├── USAGE.md             # Usage documentation
-├── Dockerfile           # Multi-stage Docker build
-├── go.mod               # Go module
-├── .github/workflows/   # CI/CD pipeline
-└── infra/              # Kubernetes manifests
-    ├── base/            # Base Kustomize templates
-    └── overlays/        # Environment-specific overlays
+├── main.go              # App struct, HTTP wiring, auth middleware
+├── main_test.go         # Integration tests (29)
+├── config/
+│   └── config.go        # YAML config loader (5 tests)
+├── store/
+│   └── store.go         # SQLite store, 7 tables, bcrypt helpers (33 tests)
+├── auth/
+│   └── auth.go          # OAuth 2.1 server (31 tests)
+├── poolmgr/
+│   └── pool.go          # Per-user process pools, probe (37 tests)
+├── muxer/
+│   └── muxer.go         # Tool-prefix routing, env builder (17 tests)
+├── credential/
+│   └── secret.go        # Legacy secret interface (9 tests)
+├── web/
+│   └── web.go           # Admin/user web handlers (48 tests)
+├── templates/           # HTML templates (login, dashboard, admin, etc.)
+├── config.yaml.example  # Annotated example configuration
+└── docs/                # Design specs and project docs
 ```
 
-## Kubernetes Deployment
-
-```bash
-# Deploy to staging
-kubectl apply -k infra/overlays/project-x/
-
-# Deploy to production
-kubectl apply -k infra/overlays/jira-mcp/
-```
-
-See [USAGE.md](USAGE.md) for detailed usage information.
+**216 tests** across 8 packages.
 
 ## API Reference
 
-| Endpoint | Method | Description |
-|----------|--------|-------------|
-| `/sse` | GET | SSE stream from MCP server stdout |
-| `/messages` | POST | Send JSON-RPC to MCP server stdin |
-| `/healthz` | GET | Health check (always 200) |
-| `/readyz` | GET | Readiness (200 if warm processes available) |
+### MCP Endpoints (OAuth-protected)
 
-## Testing
+| Endpoint     | Method | Description                                |
+|--------------|--------|--------------------------------------------|
+| `/`          | GET    | SSE stream (opencode connects here)        |
+| `/`          | POST   | JSON-RPC request/response                  |
+| `/healthz`   | GET    | Health check (always 200)                  |
+| `/readyz`    | GET    | Readiness (200 if pool has warm processes) |
 
-The project includes comprehensive integration tests covering:
+### OAuth 2.1 Endpoints
 
-- Pool initialization and maintenance
-- SSE streaming
-- Connection handling and cleanup
-- High concurrency stress testing
-- Process reaping and pool refill
-- JSON-RPC message routing
-- Structured logging
+| Endpoint                          | Method | Description                    |
+|-----------------------------------|--------|--------------------------------|
+| `/.well-known/oauth-authorization-server` | GET | RFC 8414 metadata     |
+| `/register`                       | POST   | RFC 7591 dynamic registration  |
+| `/authorize`                      | GET    | Authorization page             |
+| `/authorize`                      | POST   | Authorization grant            |
+| `/token`                          | POST   | Token exchange                 |
 
-Run all tests:
+### Web UI Endpoints (cookie auth)
+
+| Endpoint              | Description                |
+|-----------------------|----------------------------|
+| `/web/login`          | Login page                 |
+| `/web/dashboard`      | User dashboard             |
+| `/web/tokens`         | Manage API tokens          |
+| `/web/password`       | Change password            |
+| `/web/admin/users`    | Admin: manage users        |
+| `/web/admin/backends` | Admin: manage backends     |
+
+## Configuration
+
+See [config.yaml.example](config.yaml.example) for a fully annotated
+example. Backends can be seeded from config on first run, but the database
+is the source of truth &mdash; use the admin UI for ongoing changes.
+
+## Development
+
 ```bash
-go test -v -race ./...
+# Run all tests
+go test ./... -count=1
+
+# Run with race detection
+go test -race ./...
+
+# Build binary
+go build -o mcp-bridge .
+
+# Build static (for containers)
+CGO_ENABLED=1 GOOS=linux GOARCH=amd64 go build -o mcp-bridge .
 ```
 
-## CI/CD
+## opencode Integration
 
-GitHub Actions pipeline:
-1. Lint (`go fmt`, `go vet`)
-2. Security scan (`govulncheck`)
-3. Test (`go test -race`)
-4. Build (static binary)
-5. Push to GHCR
-6. Update staging overlay
+In your opencode config (`~/.config/opencode/config.json`):
+
+```json
+{
+  "mcpServers": {
+    "my-bridge": {
+      "type": "sse",
+      "url": "http://localhost:8080"
+    }
+  }
+}
+```
+
+The bridge handles OAuth discovery and PKCE automatically.
+
+See [USAGE.md](USAGE.md) for detailed usage information.

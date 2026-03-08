@@ -1,0 +1,22 @@
+{{define "login.html"}}
+{{template "head" .}}
+<div style="max-width:400px;margin:80px auto;padding:0 1rem;">
+  <div class="card">
+    <h2 style="text-align:center;">MCP Bridge</h2>
+    <p class="text-muted" style="text-align:center;">Sign in to continue</p>
+    {{template "alerts" .}}
+    <form method="post" action="/web/login">
+      <div class="form-row">
+        <label for="email">Email</label>
+        <input type="email" id="email" name="email" required autofocus>
+      </div>
+      <div class="form-row">
+        <label for="password">Password</label>
+        <input type="password" id="password" name="password" required>
+      </div>
+      <button type="submit" class="btn btn-primary" style="width:100%;margin-top:0.5rem;">Sign In</button>
+    </form>
+  </div>
+</div>
+{{template "foot" .}}
+{{end}}

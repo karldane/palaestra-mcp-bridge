@@ -1,0 +1,80 @@
+{{define "tokens.html"}}
+{{template "head" .}}
+{{template "nav" .}}
+<div class="container">
+  <h1>My Tokens</h1>
+  {{template "alerts" .}}
+
+  {{with .Data}}
+  <div class="card">
+    <h2>Select Backend</h2>
+    <form method="get" action="/web/tokens">
+      <div class="form-row">
+        <select name="backend" onchange="this.form.submit()">
+          <option value="">-- Select a backend --</option>
+          {{range .Backends}}
+            {{if .Enabled}}
+            <option value="{{.ID}}" {{if eq .ID $.Data.SelectedID}}selected{{end}}>{{.ID}}</option>
+            {{end}}
+          {{end}}
+        </select>
+      </div>
+    </form>
+  </div>
+
+  {{if .SelectedBackend}}
+  <div class="card">
+    <h2>Tokens for <span class="mono">{{.SelectedBackend.ID}}</span></h2>
+    <p class="text-muted">Command: <span class="mono">{{.SelectedBackend.Command}}</span></p>
+
+    {{if .Tokens}}
+    <table>
+      <thead>
+        <tr>
+          <th>Environment Variable</th>
+          <th>Value</th>
+          <th></th>
+        </tr>
+      </thead>
+      <tbody>
+        {{range .Tokens}}
+        <tr>
+          <td class="mono">{{.EnvKey}}</td>
+          <td class="mono">********</td>
+          <td>
+            <form method="post" action="/web/tokens/delete" style="display:inline;">
+              <input type="hidden" name="backend_id" value="{{.BackendID}}">
+              <input type="hidden" name="env_key" value="{{.EnvKey}}">
+              <button type="submit" class="btn btn-sm btn-danger" onclick="return confirm('Delete this token?')">Delete</button>
+            </form>
+          </td>
+        </tr>
+        {{end}}
+      </tbody>
+    </table>
+    {{else}}
+    <p class="text-muted">No tokens configured for this backend yet.</p>
+    {{end}}
+
+    <hr style="border:none;border-top:1px solid #eee;margin:1rem 0;">
+    <h3 style="font-size:1rem;">Add / Update Token</h3>
+    <form method="post" action="/web/tokens/save">
+      <input type="hidden" name="backend_id" value="{{.SelectedBackend.ID}}">
+      <div class="grid-2">
+        <div class="form-row">
+          <label for="env_key">Environment Variable Name</label>
+          <input type="text" id="env_key" name="env_key" placeholder="e.g. ATLASSIAN_API_TOKEN" required>
+        </div>
+        <div class="form-row">
+          <label for="value">Value</label>
+          <input type="password" id="value" name="value" placeholder="Token or secret value" required>
+        </div>
+      </div>
+      <button type="submit" class="btn btn-primary">Save Token</button>
+    </form>
+  </div>
+  {{end}}
+  {{end}}
+</div>
+{{template "foot" .}}
+{{end}}

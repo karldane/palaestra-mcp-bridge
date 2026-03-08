@@ -1,62 +1,35 @@
-!Build/
-.last_cover_stats
-/META.yml
-/META.json
-/MYMETA.*
-*.o
-*.pm.tdy
-*.bs
+# Go
+mcp-bridge
+*.exe
+*.test
+*.out
 
-# Devel::Cover
-cover_db/
+# SQLite databases
+*.db
+*.db-shm
+*.db-wal
 
-# Devel::NYTProf
-nytprof.out
+# Config (contains secrets)
+config.yaml
 
-# Dist::Zilla
-/.build/
-
-# Module::Build
-_build/
-Build
-Build.bat
-
-# Module::Install
-inc/
-
-# ExtUtils::MakeMaker
-/blib/
-/_eumm/
-/*.gz
-/Makefile
-/Makefile.old
-/MANIFEST.bak
-/pm_to_blib
-/*.zip
-
-# Carton/Carmel
-/local/
-/.carmel/
-# cpanfile.snapshot should generally be ignored for library code, otherwise included
-# cpanfile.snapshot 
-/filecache/
-.alias
-.bash_history
-.bash_profile
-.bashrc
-.cshrc
-.viminfo
+# IDE / editor
+.vscode/
+.idea/
 *.swp
-/error/
-/tags
-*.tdy.bak
 *~
 \#*\#
 .\#*
 .DS_Store
-.vscode/
-/node_modules/
-/package-lock.json
+
+# Build artifacts
 docker_build
 docker_logs
-/database/
+
+# Dependencies
+/node_modules/
+/package-lock.json
+
+# Misc
+.env
+/tags
+*.tdy.bak

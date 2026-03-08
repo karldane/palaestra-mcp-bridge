@@ -1,0 +1,42 @@
+# mcp-bridge configuration
+# Copy to config.yaml and adjust for your environment.
+
+server:
+  port: "8080"
+  logLevel: info    # debug | info | warn | error
+
+backends:
+  atlassian:
+    command: "npx -y @xuandev/atlassian-mcp"
+    poolSize: 2
+    toolPrefix: ""    # empty = tools exposed as-is (jira_*, confluence_*)
+    env:
+      ATLASSIAN_DOMAIN: "example.atlassian.net"
+      ATLASSIAN_EMAIL: "you@example.com"
+    secrets:
+      - name: atlassian-token
+        envKey: ATLASSIAN_API_TOKEN
+        context: user   # per-user secret lookup
+
+  # Example: multiple backends with prefixed tools
+  # jira:
+  #   command: "npx -y @xuandev/atlassian-mcp --jira-only"
+  #   poolSize: 2
+  #   toolPrefix: jira
+  #   env:
+  #     ATLASSIAN_DOMAIN: "example.atlassian.net"
+  #   secrets:
+  #     - name: jira-token
+  #       envKey: ATLASSIAN_API_TOKEN
+  #       context: user
+  #
+  # confluence:
+  #   command: "npx -y @xuandev/atlassian-mcp --confluence-only"
+  #   poolSize: 1
+  #   toolPrefix: confluence
+  #   env:
+  #     ATLASSIAN_DOMAIN: "example.atlassian.net"
+  #   secrets:
+  #     - name: confluence-token
+  #       envKey: ATLASSIAN_API_TOKEN
+  #       context: user

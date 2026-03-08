@@ -1,0 +1,45 @@
+{{define "dashboard.html"}}
+{{template "head" .}}
+{{template "nav" .}}
+<div class="container">
+  <h1>Dashboard</h1>
+  {{template "alerts" .}}
+
+  {{if .Data}}
+  <div class="card">
+    <h2>Available Backends</h2>
+    <table>
+      <thead>
+        <tr>
+          <th>Backend</th>
+          <th>Command</th>
+          <th>Your Configured Tokens</th>
+          <th></th>
+        </tr>
+      </thead>
+      <tbody>
+        {{range .Data}}
+        <tr>
+          <td><strong>{{.Backend.ID}}</strong></td>
+          <td class="mono">{{.Backend.Command}}</td>
+          <td>
+            {{if .ConfiguredKeys}}
+              {{range .ConfiguredKeys}}<span class="badge badge-enabled">{{.}}</span> {{end}}
+            {{else}}
+              <span class="text-muted">None configured</span>
+            {{end}}
+          </td>
+          <td><a href="/web/tokens?backend={{.Backend.ID}}" class="btn btn-sm btn-secondary">Manage Tokens</a></td>
+        </tr>
+        {{end}}
+      </tbody>
+    </table>
+  </div>
+  {{else}}
+  <div class="card">
+    <p class="text-muted">No enabled backends configured. Contact an administrator.</p>
+  </div>
+  {{end}}
+</div>
+{{template "foot" .}}
+{{end}}

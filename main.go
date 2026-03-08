@@ -1,359 +1,226 @@
 package main
 
 import (
-	"context"
+	"bytes"
 	"encoding/json"
+	"flag"
 	"fmt"
 	"io"
 	"log"
 	"net/http"
 	"os"
-	"os/exec"
-	"sync"
+	"strconv"
 	"time"
+
+	"github.com/mcp-bridge/mcp-bridge/auth"
+	"github.com/mcp-bridge/mcp-bridge/config"
+	"github.com/mcp-bridge/mcp-bridge/muxer"
+	"github.com/mcp-bridge/mcp-bridge/poolmgr"
+	"github.com/mcp-bridge/mcp-bridge/store"
+	"github.com/mcp-bridge/mcp-bridge/web"
 )
 
-type LogEntry struct {
-	Level   string `json:"level"`
-	Message string `json:"message"`
-	Time    string `json:"time"`
+// app holds the shared dependencies wired up in main() and used by handlers.
+type app struct {
+	store       *store.Store
+	auth        *auth.Handler
+	poolManager *poolmgr.PoolManager
+	toolMuxer   *muxer.ToolMuxer
+	config      *config.InternalConfig
 }
 
-type ManagedProcess struct {
-	Cmd    *exec.Cmd
-	Stdin  io.WriteCloser
-	Stdout io.ReadCloser
-	Stderr io.ReadCloser
-	isWarm bool
-	ID     string
-}
+// getPoolForUser returns a per-user pool for the given backend. It builds an
+// explicit environment from the bridge env + backend static env + per-user
+// tokens, then gets or creates a dedicated pool keyed by backendID:userID.
+func (a *app) getPoolForUser(userID, backendID string) *poolmgr.Pool {
+	// Look up backend from DB first, fall back to config.
+	var command string
+	var poolSize int
 
-type PendingRequest struct {
-	ID         string
-	ResponseCh chan []byte
-	Timeout    *time.Timer
-}
-
-func (m *ManagedProcess) Kill() {
-	if m.Cmd.Process != nil {
-		m.Cmd.Process.Kill()
-	}
-}
-
-type ProcessPool struct {
-	warm            chan *ManagedProcess
-	mu              sync.Mutex
-	spawning        chan struct{}
-	command         string
-	closed          bool
-	wg              sync.WaitGroup
-	backoffDelay    time.Duration
-	activeCount     int
-	activeMu        sync.Mutex
-	pendingMu       sync.Mutex
-	pendingRequests map[string]*PendingRequest
-	broadcastCh     chan []byte
-}
-
-func (pool *ProcessPool) IsClosed() bool {
-	pool.mu.Lock()
-	defer pool.mu.Unlock()
-	return pool.closed
-}
-
-func NewProcessPool(size int) *ProcessPool {
-	command := os.Getenv("COMMAND")
-	if command == "" {
-		command = "sh -c 'cat; sleep 1'"
+	if b, err := a.store.GetBackend(backendID); err == nil {
+		command = b.Command
+		poolSize = b.PoolSize
+	} else if bc, ok := a.config.Backends[backendID]; ok {
+		command = bc.Command
+		poolSize = bc.PoolSize
+	} else {
+		// Shouldn't happen, but fall back to defaults.
+		command = "echo"
+		poolSize = 1
 	}
 
-	pool := &ProcessPool{
-		warm:            make(chan *ManagedProcess, size),
-		spawning:        make(chan struct{}, 1),
-		command:         command,
-		backoffDelay:    100 * time.Millisecond,
-		pendingRequests: make(map[string]*PendingRequest),
-		broadcastCh:     make(chan []byte, 100),
-	}
-
-	for i := 0; i < size; i++ {
-		pool.wg.Add(1)
-		go pool.spawnAndHandshake()
-	}
-
-	go pool.responseDispatcher()
-
-	return pool
+	env := a.toolMuxer.BuildEnvForUser(userID, backendID)
+	return a.poolManager.GetOrCreateUserPool(
+		backendID, userID, command, poolSize, env,
+	)
 }
 
-func (pool *ProcessPool) responseDispatcher() {
-	for data := range pool.broadcastCh {
-		pool.pendingMu.Lock()
-		var resp JSONRPCResponse
-		if err := json.Unmarshal(data, &resp); err == nil && resp.ID != nil {
-			id := fmt.Sprintf("%v", resp.ID)
-			if req, ok := pool.pendingRequests[id]; ok {
-				select {
-				case req.ResponseCh <- data:
-				default:
-				}
+// defaultBackendID returns the ID of the first enabled backend from the DB,
+// falling back to the first config backend.
+func (a *app) defaultBackendID() string {
+	if backends, err := a.store.ListBackends(); err == nil {
+		for _, b := range backends {
+			if b.Enabled {
+				return b.ID
 			}
 		}
-		pool.pendingMu.Unlock()
 	}
+	for id := range a.config.Backends {
+		return id
+	}
+	return "default"
 }
 
-func (pool *ProcessPool) spawnAndHandshake() {
-	defer pool.wg.Done()
-
-	if pool.IsClosed() {
-		return
-	}
-
-	select {
-	case pool.spawning <- struct{}{}:
-	case <-time.After(100 * time.Millisecond):
-		if !pool.IsClosed() {
-			pool.wg.Add(1)
-			go pool.spawnAndHandshake()
-		}
-		return
-	}
-
-	if pool.IsClosed() {
-		select {
-		case <-pool.spawning:
+// rootHandler dispatches based on HTTP method. opencode sends both GET (SSE)
+// and POST (JSON-RPC) to the root "/" path.
+func rootHandler(a *app) http.HandlerFunc {
+	sse := sseHandler(a)
+	msg := messagesHandler(a)
+	return func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodGet:
+			sse(w, r)
+		case http.MethodPost:
+			msg(w, r)
 		default:
+			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		}
-		return
 	}
+}
 
-	defer func() {
+func healthzHandler(w http.ResponseWriter, r *http.Request) {
+	w.WriteHeader(http.StatusOK)
+	w.Write([]byte("OK"))
+}
+
+func readyzHandler(a *app) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		// Readyz just checks that the pool manager has at least one pool.
+		if a.poolManager.PoolCount() > 0 {
+			w.WriteHeader(http.StatusOK)
+			w.Write([]byte("OK"))
+			return
+		}
+		w.WriteHeader(http.StatusServiceUnavailable)
+		w.Write([]byte("No pools"))
+	}
+}
+
+func sseHandler(a *app) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		userID := auth.UserIDFromContext(r)
+		if userID == "" {
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+
+		backendID := a.defaultBackendID()
+		pool := a.getPoolForUser(userID, backendID)
+
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.Header().Set("Cache-Control", "no-cache")
+		w.Header().Set("Connection", "keep-alive")
+
 		select {
-		case <-pool.spawning:
+		case proc := <-pool.Warm:
+			pool.IncrementActive()
+			go func() {
+				<-r.Context().Done()
+				proc.Kill()
+				pool.DecrementActive()
+				pool.Wg().Add(1)
+				go pool.SpawnAndHandshake()
+			}()
+
+			for {
+				select {
+				case line, ok := <-proc.LineChan:
+					if !ok {
+						return
+					}
+					pool.BroadcastToSSE(line)
+					fmt.Fprintf(w, "data: %s\n\n", string(line))
+					w.(http.Flusher).Flush()
+				case <-r.Context().Done():
+					return
+				}
+			}
 		default:
+			w.WriteHeader(http.StatusServiceUnavailable)
 		}
-	}()
-
-	proc, err := spawnProcess(pool.command)
-	if err != nil {
-		logJSON("error", fmt.Sprintf("failed to spawn process: %v", err))
-		if !pool.IsClosed() {
-			pool.mu.Lock()
-			delay := pool.backoffDelay
-			pool.backoffDelay = min(pool.backoffDelay*2, 5*time.Second)
-			pool.mu.Unlock()
-			time.AfterFunc(delay, func() {
-				pool.wg.Add(1)
-				go pool.spawnAndHandshake()
-			})
-		}
-		return
 	}
-
-	if pool.IsClosed() {
-		proc.Kill()
-		return
-	}
-
-	pool.warm <- proc
-	pool.mu.Lock()
-	pool.backoffDelay = 100 * time.Millisecond
-	pool.mu.Unlock()
 }
 
-func spawnProcess(command string) (*ManagedProcess, error) {
-	var cmd *exec.Cmd
-	if command == "cat" || command == "npx" || command == "yes" || command == "false" || command == "sh -c 'echo invalid'" {
-		cmd = exec.Command(command)
-	} else {
-		cmd = exec.Command("sh", "-c", command)
-	}
-
-	stdin, err := cmd.StdinPipe()
-	if err != nil {
-		return nil, err
-	}
-
-	stdout, err := cmd.StdoutPipe()
-	if err != nil {
-		return nil, err
-	}
-
-	stderr, err := cmd.StderrPipe()
-	if err != nil {
-		return nil, err
-	}
-
-	if err := cmd.Start(); err != nil {
-		return nil, err
-	}
-
-	strictHandshake := os.Getenv("STRICT_HANDSHAKE") == "true"
-
-	if strictHandshake {
-		handshake := JSONRPCMessage{
-			JSONRPC: "2.0",
-			Method:  "list_tools",
-			ID:      1,
-		}
-		handshakeData, _ := json.Marshal(handshake)
-		stdin.Write(handshakeData)
-		stdin.Close()
-
-		respBuf := make([]byte, 4096)
-		stdout.Read(respBuf)
-
-		var rpcResp JSONRPCResponse
-		if err := json.Unmarshal(respBuf, &rpcResp); err != nil {
-			cmd.Process.Kill()
-			return nil, fmt.Errorf("invalid JSON-RPC response: %v", err)
+func messagesHandler(a *app) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		userID := auth.UserIDFromContext(r)
+		if userID == "" {
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
 		}
 
-		if rpcResp.Error != nil {
-			cmd.Process.Kill()
-			return nil, fmt.Errorf("handshake error: %v", rpcResp.Error.Message)
+		backendID := a.defaultBackendID()
+		pool := a.getPoolForUser(userID, backendID)
+		pool.TouchLastUsed()
+
+		select {
+		case proc := <-pool.Warm:
+			body, _ := io.ReadAll(r.Body)
+			r.Body.Close()
+
+			var msg poolmgr.JSONRPCMessage
+			if err := json.Unmarshal(body, &msg); err != nil {
+				pool.Warm <- proc
+				http.Error(w, "Invalid JSON-RPC", http.StatusBadRequest)
+				return
+			}
+
+			id := fmt.Sprintf("%v", msg.ID)
+			if id == "" || id == "<nil>" {
+				id = fmt.Sprintf("auto-%d", time.Now().UnixNano())
+				msg.ID = id
+				body, _ = json.Marshal(msg)
+			}
+
+			// Compact the JSON before sending
+			buf := new(bytes.Buffer)
+			if err := json.Compact(buf, body); err != nil {
+				buf.Reset()
+				buf.Write(body)
+			}
+			buf.WriteByte('\n')
+
+			// Register for the response BEFORE writing to stdin
+			respCh := pool.RegisterRequest(id)
+
+			proc.Stdin.Write(buf.Bytes())
+
+			select {
+			case response, ok := <-respCh:
+				pool.UnregisterRequest(id)
+				if ok && len(response) > 0 {
+					w.Header().Set("Content-Type", "application/json")
+					w.Write(response)
+				} else {
+					w.WriteHeader(http.StatusGatewayTimeout)
+					w.Write([]byte(`{"jsonrpc":"2.0","error":{"code":-32000,"message":"No response received"}}`))
+				}
+			case <-time.After(30 * time.Second):
+				pool.UnregisterRequest(id)
+				w.WriteHeader(http.StatusGatewayTimeout)
+				w.Write([]byte(`{"jsonrpc":"2.0","error":{"code":-32000,"message":"Request timeout after 30s"}}`))
+			}
+
+			pool.Warm <- proc
+		default:
+			w.WriteHeader(http.StatusServiceUnavailable)
+			w.Write([]byte("No warm processes"))
 		}
-
-		if rpcResp.Result == nil {
-			cmd.Process.Kill()
-			return nil, fmt.Errorf("no result in handshake response")
-		}
-	} else {
-		stdin.Close()
 	}
-
-	proc := &ManagedProcess{
-		Cmd:    cmd,
-		Stdin:  stdin,
-		Stdout: stdout,
-		Stderr: stderr,
-		isWarm: true,
-	}
-
-	go captureStderr(proc)
-
-	return proc, nil
-}
-
-func captureStderr(proc *ManagedProcess) {
-	buf := make([]byte, 4096)
-	for {
-		n, err := proc.Stderr.Read(buf)
-		if err != nil {
-			break
-		}
-		logJSON("debug", fmt.Sprintf("mcp stderr: %s", string(buf[:n])))
-	}
-}
-
-type JSONRPCResponse struct {
-	JSONRPC string          `json:"jsonrpc"`
-	ID      interface{}     `json:"id,omitempty"`
-	Result  json.RawMessage `json:"result,omitempty"`
-	Error   *JSONRPCError   `json:"error,omitempty"`
-}
-
-type JSONRPCError struct {
-	Code    int    `json:"code"`
-	Message string `json:"message"`
-}
-
-func min(a, b time.Duration) time.Duration {
-	if a < b {
-		return a
-	}
-	return b
-}
-
-func (pool *ProcessPool) WaitForWarm(timeout time.Duration) bool {
-	deadline := time.Now().Add(timeout)
-	for time.Now().Before(deadline) {
-		if len(pool.warm) > 0 {
-			return true
-		}
-		time.Sleep(50 * time.Millisecond)
-	}
-	return false
-}
-
-func (pool *ProcessPool) WarmCount() int {
-	return len(pool.warm)
-}
-
-func (pool *ProcessPool) ActiveCount() int {
-	pool.activeMu.Lock()
-	defer pool.activeMu.Unlock()
-	return pool.activeCount
-}
-
-func (pool *ProcessPool) RegisterRequest(id string) chan []byte {
-	pool.pendingMu.Lock()
-	defer pool.pendingMu.Unlock()
-
-	respCh := make(chan []byte, 1)
-	timer := time.AfterFunc(30*time.Second, func() {
-		pool.pendingMu.Lock()
-		defer pool.pendingMu.Unlock()
-		if req, ok := pool.pendingRequests[id]; ok {
-			close(req.ResponseCh)
-			delete(pool.pendingRequests, id)
-		}
-	})
-
-	pool.pendingRequests[id] = &PendingRequest{
-		ID:         id,
-		ResponseCh: respCh,
-		Timeout:    timer,
-	}
-
-	return respCh
-}
-
-func (pool *ProcessPool) CompleteRequest(id string) {
-	pool.pendingMu.Lock()
-	defer pool.pendingMu.Unlock()
-	if req, ok := pool.pendingRequests[id]; ok {
-		req.Timeout.Stop()
-		close(req.ResponseCh)
-		delete(pool.pendingRequests, id)
-	}
-}
-
-func (pool *ProcessPool) BroadcastToSSE(data []byte) {
-	select {
-	case pool.broadcastCh <- data:
-	default:
-	}
-}
-
-func (pool *ProcessPool) IncrementActive() {
-	pool.activeMu.Lock()
-	defer pool.activeMu.Unlock()
-	pool.activeCount++
-}
-
-func (pool *ProcessPool) DecrementActive() {
-	pool.activeMu.Lock()
-	defer pool.activeMu.Unlock()
-	pool.activeCount--
-}
-
-func (pool *ProcessPool) Shutdown() {
-	pool.mu.Lock()
-	if pool.closed {
-		pool.mu.Unlock()
-		return
-	}
-	pool.closed = true
-	pool.mu.Unlock()
-	pool.wg.Wait()
-	close(pool.warm)
-	close(pool.broadcastCh)
 }
 
 func logJSON(level, message string) {
-	entry := LogEntry{
+	entry := poolmgr.LogEntry{
 		Level:   level,
 		Message: message,
 		Time:    time.Now().UTC().Format(time.RFC3339),
@@ -362,146 +229,238 @@ func logJSON(level, message string) {
 	fmt.Println(string(data))
 }
 
-type JSONRPCMessage struct {
-	JSONRPC string      `json:"jsonrpc"`
-	Method  string      `json:"method"`
-	Params  interface{} `json:"params,omitempty"`
-	ID      interface{} `json:"id,omitempty"`
-}
-
-func healthzHandler(w http.ResponseWriter, r *http.Request) {
-	w.WriteHeader(http.StatusOK)
-	w.Write([]byte("OK"))
-}
-
-func readyzHandler(w http.ResponseWriter, r *http.Request) {
-	pool := r.Context().Value("pool").(*ProcessPool)
-
-	select {
-	case proc := <-pool.warm:
-		if proc.isWarm {
-			pool.warm <- proc
-			w.WriteHeader(http.StatusOK)
-			w.Write([]byte("OK"))
-			return
+// seedDefaultUser creates a test user (admin@localhost / admin) if no users
+// exist in the database. This is for local development and testing only.
+func seedDefaultUser(st *store.Store) {
+	// Check if the user already exists by trying to look up by email.
+	if existing, err := st.GetUserByEmail("admin@localhost"); err == nil {
+		if existing.Role != "admin" {
+			existing.Role = "admin"
+			st.UpdateUser(existing)
+			logJSON("info", "seed: upgraded admin@localhost to role=admin")
+		} else {
+			logJSON("info", "seed: user admin@localhost already exists, skipping")
 		}
-		pool.warm <- proc
-	default:
+		return
 	}
 
-	w.WriteHeader(http.StatusServiceUnavailable)
-	w.Write([]byte("No warm processes"))
-}
-
-func sseHandler(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Content-Type", "text/event-stream")
-	w.Header().Set("Cache-Control", "no-cache")
-	w.Header().Set("Connection", "keep-alive")
-
-	pool := r.Context().Value("pool").(*ProcessPool)
-
-	select {
-	case proc := <-pool.warm:
-		pool.IncrementActive()
-		go func() {
-			<-r.Context().Done()
-			proc.Kill()
-			pool.DecrementActive()
-			pool.wg.Add(1)
-			go pool.spawnAndHandshake()
-		}()
-
-		buf := make([]byte, 4096)
-		for {
-			n, err := proc.Stdout.Read(buf)
-			if err != nil {
-				break
-			}
-			data := string(buf[:n])
-			pool.BroadcastToSSE([]byte(data))
-			fmt.Fprintf(w, "data: %s\n\n", data)
-			w.(http.Flusher).Flush()
-		}
-	default:
-		w.WriteHeader(http.StatusServiceUnavailable)
+	user := &store.User{
+		Name:     "Admin",
+		Email:    "admin@localhost",
+		Password: "admin",
+		Role:     "admin",
 	}
+	if err := st.CreateUser(user); err != nil {
+		logJSON("error", fmt.Sprintf("seed: failed to create user: %v", err))
+		return
+	}
+	logJSON("info", fmt.Sprintf("seed: created user admin@localhost (id=%s, password=admin)", user.ID))
 }
 
-func messagesHandler(w http.ResponseWriter, r *http.Request) {
-	pool := r.Context().Value("pool").(*ProcessPool)
+// seedBackendsFromConfig imports backends from the config file into the SQLite
+// database if the DB has no backends yet. This is a one-time migration: once
+// backends exist in the DB, the config file is no longer consulted for backend
+// definitions (the DB is authoritative).
+func seedBackendsFromConfig(st *store.Store, cfg *config.InternalConfig) {
+	existing, err := st.ListBackends()
+	if err != nil {
+		logJSON("error", fmt.Sprintf("seed-backends: list: %v", err))
+		return
+	}
+	if len(existing) > 0 {
+		return // DB already has backends; don't overwrite.
+	}
 
-	select {
-	case proc := <-pool.warm:
-		body, _ := io.ReadAll(r.Body)
-		r.Body.Close()
-
-		var msg JSONRPCMessage
-		if err := json.Unmarshal(body, &msg); err != nil {
-			pool.warm <- proc
-			http.Error(w, "Invalid JSON-RPC", http.StatusBadRequest)
-			return
-		}
-
-		id := fmt.Sprintf("%v", msg.ID)
-		if id == "" || id == "<nil>" {
-			id = fmt.Sprintf("auto-%d", time.Now().UnixNano())
-			msg.ID = id
-			body, _ = json.Marshal(msg)
-		}
-
-		proc.Stdin.Write(body)
-		proc.Stdin.Write([]byte("\n"))
-
-		respCh := make(chan string, 1)
-		go func() {
-			buf := make([]byte, 4096)
-			n, _ := proc.Stdout.Read(buf)
-			if n > 0 {
-				data := string(buf[:n])
-				pool.BroadcastToSSE([]byte(data))
-				respCh <- data
+	count := 0
+	for id, bc := range cfg.Backends {
+		envJSON := "{}"
+		if len(bc.Env) > 0 {
+			if data, err := json.Marshal(bc.Env); err == nil {
+				envJSON = string(data)
 			}
-		}()
-
-		select {
-		case response := <-respCh:
-			w.Header().Set("Content-Type", "application/json")
-			w.Write([]byte(response))
-		case <-time.After(30 * time.Second):
-			pool.warm <- proc
-			w.WriteHeader(http.StatusGatewayTimeout)
-			w.Write([]byte(`{"jsonrpc":"2.0","error":{"code":-32000,"message":"Request timeout after 30s"}}`))
-			return
 		}
-
-		pool.warm <- proc
-	default:
-		w.WriteHeader(http.StatusServiceUnavailable)
-		w.Write([]byte("No warm processes"))
+		b := &store.Backend{
+			ID:         id,
+			Command:    bc.Command,
+			PoolSize:   bc.PoolSize,
+			ToolPrefix: bc.ToolPrefix,
+			Env:        envJSON,
+			Enabled:    true,
+		}
+		if err := st.CreateBackend(b); err != nil {
+			logJSON("error", fmt.Sprintf("seed-backends: create %s: %v", id, err))
+			continue
+		}
+		count++
+	}
+	if count > 0 {
+		logJSON("info", fmt.Sprintf("seed-backends: imported %d backends from config into DB", count))
 	}
 }
 
 func main() {
-	pool := NewProcessPool(2)
-	defer pool.Shutdown()
+	seedUser := flag.Bool("seed", false, "Seed a default test user (admin@localhost / admin) if no users exist")
+	flag.Parse()
 
-	poolCtx := context.WithValue(context.Background(), "pool", pool)
+	command := os.Getenv("COMMAND")
+	if command == "" {
+		command = "sh -c 'cat; sleep 1'"
+	}
 
+	poolSize := 2
+	if s := os.Getenv("POOL_SIZE"); s != "" {
+		if n, err := strconv.Atoi(s); err == nil && n > 0 {
+			poolSize = n
+		}
+	}
+
+	port := "8080"
+	if p := os.Getenv("PORT"); p != "" {
+		port = p
+	}
+
+	// Load config file if present (optional — env vars still work without it)
+	var cfg *config.InternalConfig
+
+	configPath := os.Getenv("CONFIG_FILE")
+	if configPath == "" {
+		configPath = "config.yaml"
+	}
+
+	if loadedCfg, err := config.Load(configPath); err == nil {
+		cfg = loadedCfg
+		if cfg.Server.Port != "" {
+			port = cfg.Server.Port
+		}
+		logJSON("info", fmt.Sprintf("loaded config from %s with %d backends", configPath, len(cfg.Backends)))
+	} else {
+		// No config file — single backend mode using env vars
+		cfg = &config.InternalConfig{
+			Server: config.ServerConfig{Port: port, LogLevel: "info"},
+			Backends: map[string]config.BackendConfig{
+				"default": {
+					Command:  command,
+					PoolSize: poolSize,
+				},
+			},
+		}
+	}
+
+	// ---- SQLite store ----
+	dbPath := os.Getenv("DB_PATH")
+	if dbPath == "" {
+		dbPath = "mcp-bridge.db"
+	}
+	st, err := store.New(dbPath)
+	if err != nil {
+		log.Fatalf("failed to open database: %v", err)
+	}
+	defer st.Close()
+
+	// Seed a default user if requested.
+	if *seedUser {
+		seedDefaultUser(st)
+	}
+
+	// Seed backends from config into DB if the DB has none yet.
+	// This provides a migration path: existing config.yaml backends are
+	// imported into SQLite on first run, after which the DB is authoritative.
+	seedBackendsFromConfig(st, cfg)
+
+	// ---- Idle timeout for per-user pools ----
+	idleTimeout := poolmgr.DefaultIdleTimeout
+	if s := os.Getenv("IDLE_TIMEOUT"); s != "" {
+		if d, err := time.ParseDuration(s); err == nil && d > 0 {
+			idleTimeout = d
+		}
+	}
+
+	// ---- Pool manager with GC ----
+	pm := poolmgr.NewPoolManagerWithGC(command, poolSize, idleTimeout)
+	defer pm.ShutdownAll()
+
+	// ---- Tool muxer backed by SQLite store ----
+	toolMuxer := muxer.NewToolMuxerWithStore(pm, st, cfg)
+
+	// ---- Auth handler ----
+	issuer := os.Getenv("ISSUER")
+	if issuer == "" {
+		issuer = "http://localhost:" + port
+	}
+
+	authHandler := &auth.Handler{
+		Store:    st,
+		Issuer:   issuer,
+		CodeTTL:  auth.DefaultCodeTTL,
+		TokenTTL: auth.DefaultTokenTTL,
+	}
+
+	// ---- Wire up app ----
+	a := &app{
+		store:       st,
+		auth:        authHandler,
+		poolManager: pm,
+		toolMuxer:   toolMuxer,
+		config:      cfg,
+	}
+
+	// ---- HTTP routing ----
 	mux := http.NewServeMux()
+
+	// OAuth endpoints — NOT behind auth middleware
+	authHandler.Register(mux)
+
+	// Web UI — cookie-based session auth (NOT behind OAuth middleware)
+	templateDir := os.Getenv("TEMPLATE_DIR")
+	if templateDir == "" {
+		templateDir = "templates"
+	}
+	webHandler, err := web.NewHandler(st, templateDir)
+	if err != nil {
+		log.Fatalf("failed to load web templates: %v", err)
+	}
+	// Wire live reload: when an admin creates/edits/deletes a backend via the
+	// web UI, refresh the muxer prefix map and tear down stale pools so that
+	// subsequent requests pick up the new configuration immediately.
+	webHandler.OnBackendChange = func(backendID string) {
+		toolMuxer.RefreshPrefixes()
+		removed := pm.RemovePoolsByBackend(backendID)
+		logJSON("info", fmt.Sprintf("backend %s changed: refreshed prefixes, removed %d pool(s)", backendID, removed))
+	}
+	// Wire probe: when admin clicks "Test" on a backend, spawn a temporary
+	// process and attempt the MCP handshake, returning JSON result bytes.
+	webHandler.OnProbeBackend = func(backendID string) ([]byte, error) {
+		b, err := st.GetBackend(backendID)
+		if err != nil {
+			return nil, fmt.Errorf("backend %s not found: %w", backendID, err)
+		}
+		// Build the environment: bridge env + backend static env.
+		var env []string
+		if b.Env != "" && b.Env != "{}" {
+			var envMap map[string]string
+			if err := json.Unmarshal([]byte(b.Env), &envMap); err == nil {
+				env = os.Environ()
+				for k, v := range envMap {
+					env = append(env, k+"="+v)
+				}
+			}
+		}
+		result := poolmgr.ProbeBackend(b.Command, env, 10*time.Second)
+		return json.Marshal(result)
+	}
+	webHandler.Register(mux)
+
+	// Health checks — NOT behind auth middleware
 	mux.HandleFunc("/healthz", healthzHandler)
-	mux.HandleFunc("/readyz", func(w http.ResponseWriter, r *http.Request) {
-		readyzHandler(w, r.WithContext(poolCtx))
-	})
-	mux.HandleFunc("/sse", func(w http.ResponseWriter, r *http.Request) {
-		sseHandler(w, r.WithContext(poolCtx))
-	})
-	mux.HandleFunc("/messages", func(w http.ResponseWriter, r *http.Request) {
-		messagesHandler(w, r.WithContext(poolCtx))
-	})
+	mux.HandleFunc("/readyz", readyzHandler(a))
 
-	logJSON("info", "MCP SSE Bridge started")
+	// Root path (SSE + messages) — BEHIND auth middleware
+	mux.Handle("/", authHandler.Middleware(rootHandler(a)))
 
-	if err := http.ListenAndServe(":8080", mux); err != nil {
+	logJSON("info", fmt.Sprintf("MCP SSE Bridge started on :%s (command=%s, pool=%d, db=%s, idleGC=%s)",
+		port, command, poolSize, dbPath, idleTimeout))
+
+	if err := http.ListenAndServe(":"+port, mux); err != nil {
 		log.Fatal(err)
 	}
 }
