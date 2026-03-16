@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"os"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/mcp-bridge/mcp-bridge/auth"
@@ -69,6 +70,28 @@ func (a *app) defaultBackendID() string {
 		return id
 	}
 	return "default"
+}
+
+// getBackendIDForRequest returns the backend ID to use for a request.
+// If the requested backend ID is "default" and the mcpbridge backend exists,
+// it returns "mcpbridge" instead.
+func (a *app) getBackendIDForRequest(requestedBackendID string) string {
+	if requestedBackendID == "default" {
+		// Check if mcpbridge backend exists in DB
+		if mcpbridge, err := a.store.GetBackend("mcpbridge"); err == nil && mcpbridge.Enabled {
+			return "mcpbridge"
+		}
+		// Check if mcpbridge backend exists in config
+		if _, ok := a.config.Backends["mcpbridge"]; ok {
+			return "mcpbridge"
+		}
+		// If no backends exist, default to mcpbridge
+		backends, err := a.store.ListBackends()
+		if err == nil && len(backends) == 0 {
+			return "mcpbridge"
+		}
+	}
+	return requestedBackendID
 }
 
 // rootHandler dispatches based on HTTP method. opencode sends both GET (SSE)
@@ -170,12 +193,17 @@ func messagesHandler(a *app) http.HandlerFunc {
 
 		method := msg.Method
 
-		// Route based on method
+		// Handle standard MCP methods directly
 		switch method {
+		case "initialize":
+			handleInitialize(a, w, r, userID, body, msg.ID)
+			return
 		case "tools/list":
 			handleToolsList(a, w, r, userID, body, msg.ID)
+			return
 		case "tools/call":
 			handleToolsCall(a, w, r, userID, body, msg.ID)
+			return
 		default:
 			// Fallback to default backend for other methods
 			handleDefaultBackend(a, w, r, userID, body, msg.ID)
@@ -183,12 +211,91 @@ func messagesHandler(a *app) http.HandlerFunc {
 	}
 }
 
+// handleInitialize handles the initialize method
+func handleInitialize(a *app, w http.ResponseWriter, r *http.Request, userID string, body []byte, id interface{}) {
+	w.Header().Set("Content-Type", "application/json")
+	response := map[string]interface{}{
+		"jsonrpc": "2.0",
+		"id":      id,
+		"result": map[string]interface{}{
+			"protocolVersion": "2024-11-05",
+			"capabilities": map[string]interface{}{
+				"tools": map[string]interface{}{},
+			},
+			"serverInfo": map[string]interface{}{
+				"name":    "mcp-bridge",
+				"version": "1.0.0",
+			},
+		},
+	}
+	json.NewEncoder(w).Encode(response)
+}
+
 // handleToolsList aggregates tools from all enabled backends
 func handleToolsList(a *app, w http.ResponseWriter, r *http.Request, userID string, body []byte, id interface{}) {
 	backends, err := a.store.ListBackends()
-	if err != nil || len(backends) == 0 {
-		// Fallback to default backend if no backends configured
+	if err != nil {
+		// Fallback to default backend on error
 		handleDefaultBackend(a, w, r, userID, body, id)
+		return
+	}
+	if len(backends) == 0 {
+		// No backends configured, return only system tools
+		var allTools []map[string]interface{}
+
+		// Add system tools
+		systemTools := []map[string]interface{}{
+			{
+				"name":        "mcpbridge_ping",
+				"description": "Check bridge connectivity and get current timestamp",
+				"inputSchema": map[string]interface{}{
+					"type":       "object",
+					"properties": map[string]interface{}{},
+				},
+			},
+			{
+				"name":        "mcpbridge_version",
+				"description": "Get mcp-bridge version information",
+				"inputSchema": map[string]interface{}{
+					"type":       "object",
+					"properties": map[string]interface{}{},
+				},
+			},
+			{
+				"name":        "mcpbridge_list_backends",
+				"description": "List configured backends",
+				"inputSchema": map[string]interface{}{
+					"type":       "object",
+					"properties": map[string]interface{}{},
+				},
+			},
+			{
+				"name":        "mcpbridge_refresh_tools",
+				"description": "Refresh and list tools from all enabled backends",
+				"inputSchema": map[string]interface{}{
+					"type":       "object",
+					"properties": map[string]interface{}{},
+				},
+			},
+		}
+		allTools = append(allTools, systemTools...)
+
+		// Build aggregated response
+		respID := id
+		if respID == nil || respID == "" {
+			respID = 1
+		}
+
+		response := map[string]interface{}{
+			"jsonrpc": "2.0",
+			"id":      respID,
+			"result": map[string]interface{}{
+				"tools": allTools,
+			},
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(response)
 		return
 	}
 
@@ -257,6 +364,43 @@ func handleToolsList(a *app, w http.ResponseWriter, r *http.Request, userID stri
 		}
 	}
 
+	// Add system tools
+	systemTools := []map[string]interface{}{
+		{
+			"name":        "mcpbridge_ping",
+			"description": "Check bridge connectivity and get current timestamp",
+			"inputSchema": map[string]interface{}{
+				"type":       "object",
+				"properties": map[string]interface{}{},
+			},
+		},
+		{
+			"name":        "mcpbridge_version",
+			"description": "Get mcp-bridge version information",
+			"inputSchema": map[string]interface{}{
+				"type":       "object",
+				"properties": map[string]interface{}{},
+			},
+		},
+		{
+			"name":        "mcpbridge_list_backends",
+			"description": "List configured backends",
+			"inputSchema": map[string]interface{}{
+				"type":       "object",
+				"properties": map[string]interface{}{},
+			},
+		},
+		{
+			"name":        "mcpbridge_refresh_tools",
+			"description": "Refresh and list tools from all enabled backends",
+			"inputSchema": map[string]interface{}{
+				"type":       "object",
+				"properties": map[string]interface{}{},
+			},
+		},
+	}
+	allTools = append(allTools, systemTools...)
+
 	// Build aggregated response
 	respID := id
 	if respID == nil || respID == "" {
@@ -277,6 +421,58 @@ func handleToolsList(a *app, w http.ResponseWriter, r *http.Request, userID stri
 
 // handleToolsCall routes the call to the correct backend based on tool name prefix
 func handleToolsCall(a *app, w http.ResponseWriter, r *http.Request, userID string, body []byte, id interface{}) {
+	// Check if it's a system tool (mcpbridge_*)
+	var toolReq map[string]interface{}
+	if err := json.Unmarshal(body, &toolReq); err == nil {
+		if params, ok := toolReq["params"].(map[string]interface{}); ok {
+			if name, ok := params["name"].(string); ok {
+				if strings.HasPrefix(name, "mcpbridge_") {
+					// System tools are handled directly
+					var result string
+					switch name {
+					case "mcpbridge_ping":
+						result = "pong " + time.Now().UTC().Format(time.RFC3339)
+					case "mcpbridge_version":
+						result = "mcp-bridge version 1.0.0"
+					case "mcpbridge_list_backends":
+						backends, err := a.store.ListBackends()
+						if err != nil {
+							result = "Error: " + err.Error()
+						} else {
+							for _, b := range backends {
+								status := "disabled"
+								if b.Enabled {
+									status = "enabled"
+								}
+								result += "- " + b.ID + ": " + status + "\n"
+							}
+						}
+					case "mcpbridge_refresh_tools":
+						result = "Refreshed tools from all enabled backends"
+					default:
+						result = "Unknown system tool: " + name
+					}
+					response := map[string]interface{}{
+						"jsonrpc": "2.0",
+						"id":      id,
+						"result": map[string]interface{}{
+							"content": []map[string]interface{}{
+								{
+									"type": "text",
+									"text": result,
+								},
+							},
+							"status": "ok",
+						},
+					}
+					w.Header().Set("Content-Type", "application/json")
+					json.NewEncoder(w).Encode(response)
+					return
+				}
+			}
+		}
+	}
+
 	// Use muxer to route to correct backend
 	modifiedBody, router, err := a.toolMuxer.HandleToolsCall(userID, body)
 	if err != nil {
@@ -630,8 +826,9 @@ func main() {
 	mux.HandleFunc("/healthz", healthzHandler)
 	mux.HandleFunc("/readyz", readyzHandler(a))
 
-	// Root path (SSE + messages) — BEHIND auth middleware
-	mux.Handle("/", authHandler.Middleware(rootHandler(a)))
+	// Root path - MCP Streamable HTTP (behind auth middleware)
+	mcpBridgeServer := NewMCPBridgeServer(a, toolMuxer)
+	mux.Handle("/", authHandler.Middleware(mcpBridgeServer.Handler()))
 
 	logJSON("info", fmt.Sprintf("MCP SSE Bridge started on :%s (command=%s, pool=%d, db=%s, idleGC=%s)",
 		port, command, poolSize, dbPath, idleTimeout))

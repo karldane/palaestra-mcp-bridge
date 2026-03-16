@@ -385,11 +385,11 @@ func TestToolMuxer_BuildEnvForUser_StaticEnv(t *testing.T) {
 	cfg := &config.InternalConfig{
 		Server: config.ServerConfig{Port: "8080"},
 		Backends: map[string]config.BackendConfig{
-			"jira": {
+			"filesystem": {
 				Command:  "cat",
 				PoolSize: 1,
 				Env: map[string]string{
-					"ATLASSIAN_DOMAIN": "myco.atlassian.net",
+					"ROOT_PATH": "/tmp",
 				},
 			},
 		},
@@ -399,16 +399,16 @@ func TestToolMuxer_BuildEnvForUser_StaticEnv(t *testing.T) {
 
 	tm := NewToolMuxer(pm, credential.NewMockSecretStore(), cfg)
 
-	env := tm.BuildEnvForUser("user1", "jira")
+	env := tm.BuildEnvForUser("user1", "filesystem")
 
 	found := false
 	for _, e := range env {
-		if e == "ATLASSIAN_DOMAIN=myco.atlassian.net" {
+		if e == "ROOT_PATH=/tmp" {
 			found = true
 		}
 	}
 	if !found {
-		t.Error("BuildEnvForUser did not include static env ATLASSIAN_DOMAIN")
+		t.Error("BuildEnvForUser did not include static env ROOT_PATH")
 	}
 }
 

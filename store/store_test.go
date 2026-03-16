@@ -88,11 +88,11 @@ func TestBackend_CRUD(t *testing.T) {
 	defer s.Close()
 
 	b := &Backend{
-		ID:         "jira",
-		Command:    "npx @xuandev/atlassian-mcp",
+		ID:         "filesystem",
+		Command:    "npx -y @modelcontextprotocol/server-filesystem /tmp",
 		PoolSize:   2,
-		ToolPrefix: "jira_",
-		Env:        `{"ATLASSIAN_DOMAIN":"example.atlassian.net"}`,
+		ToolPrefix: "fs_",
+		Env:        `{}`,
 		Enabled:    true,
 	}
 
@@ -102,7 +102,7 @@ func TestBackend_CRUD(t *testing.T) {
 	}
 
 	// Get
-	got, err := s.GetBackend("jira")
+	got, err := s.GetBackend("filesystem")
 	if err != nil {
 		t.Fatalf("GetBackend: %v", err)
 	}
@@ -112,8 +112,8 @@ func TestBackend_CRUD(t *testing.T) {
 	if got.PoolSize != 2 {
 		t.Errorf("PoolSize = %d, want 2", got.PoolSize)
 	}
-	if got.ToolPrefix != "jira_" {
-		t.Errorf("ToolPrefix = %q, want %q", got.ToolPrefix, "jira_")
+	if got.ToolPrefix != "fs_" {
+		t.Errorf("ToolPrefix = %q, want %q", got.ToolPrefix, "fs_")
 	}
 	if !got.Enabled {
 		t.Error("Enabled = false, want true")
@@ -125,7 +125,7 @@ func TestBackend_CRUD(t *testing.T) {
 	if err := s.UpdateBackend(b); err != nil {
 		t.Fatalf("UpdateBackend: %v", err)
 	}
-	got, _ = s.GetBackend("jira")
+	got, _ = s.GetBackend("filesystem")
 	if got.PoolSize != 5 {
 		t.Errorf("after update PoolSize = %d, want 5", got.PoolSize)
 	}
@@ -134,7 +134,7 @@ func TestBackend_CRUD(t *testing.T) {
 	}
 
 	// List
-	b2 := &Backend{ID: "confluence", Command: "npx conf-mcp", PoolSize: 1, Env: "{}", Enabled: true}
+	b2 := &Backend{ID: "fetch", Command: "npx fetch-mcp", PoolSize: 1, Env: "{}", Enabled: true}
 	s.CreateBackend(b2)
 	list, err := s.ListBackends()
 	if err != nil {
@@ -143,13 +143,13 @@ func TestBackend_CRUD(t *testing.T) {
 	if len(list) != 2 {
 		t.Fatalf("ListBackends len = %d, want 2", len(list))
 	}
-	// Sorted by id: confluence < jira
-	if list[0].ID != "confluence" || list[1].ID != "jira" {
-		t.Errorf("list order: got [%s, %s], want [confluence, jira]", list[0].ID, list[1].ID)
+	// Sorted by id: fetch < filesystem
+	if list[0].ID != "fetch" || list[1].ID != "filesystem" {
+		t.Errorf("list order: got [%s, %s], want [fetch, filesystem]", list[0].ID, list[1].ID)
 	}
 
 	// Delete
-	if err := s.DeleteBackend("jira"); err != nil {
+	if err := s.DeleteBackend("filesystem"); err != nil {
 		t.Fatalf("DeleteBackend: %v", err)
 	}
 	_, err = s.GetBackend("jira")

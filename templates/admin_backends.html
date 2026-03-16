@@ -15,6 +15,7 @@
           <th>Command</th>
           <th>Pool</th>
           <th>Prefix</th>
+          <th>Type</th>
           <th>Enabled</th>
           <th>Status</th>
           <th></th>
@@ -22,20 +23,25 @@
       </thead>
       <tbody>
         {{range .Data}}
-        <tr>
-          <td><strong>{{.ID}}</strong></td>
+        <tr data-env="{{.Env}}" data-env-mappings="{{.EnvMappings}}" data-is-system="{{.IsSystem}}">
+          <td><strong>{{.ID}}</strong>{{if .IsSystem}} <span class="badge badge-disabled">system</span>{{end}}</td>
           <td class="mono" style="max-width:300px;overflow:hidden;text-overflow:ellipsis;">{{.Command}}</td>
           <td>{{.PoolSize}}</td>
           <td>{{if .ToolPrefix}}<span class="mono">{{.ToolPrefix}}</span>{{else}}<span class="text-muted">none</span>{{end}}</td>
+          <td>{{if .IsSystem}}<span class="text-muted">system</span>{{else}}<span class="text-muted">user</span>{{end}}</td>
           <td>{{if .Enabled}}<span class="badge badge-enabled">enabled</span>{{else}}<span class="badge badge-disabled">disabled</span>{{end}}</td>
           <td id="probe-status-{{.ID}}"><span class="text-muted">--</span></td>
           <td style="white-space:nowrap;">
+            {{if not .IsSystem}}
             <button type="button" class="btn btn-sm btn-secondary" onclick="probeBackend('{{.ID}}')" id="probe-btn-{{.ID}}">Test</button>
             <button type="button" class="btn btn-sm btn-secondary" onclick="editBackend('{{.ID}}')">Edit</button>
             <form method="post" action="/web/admin/backends/delete" style="display:inline;">
               <input type="hidden" name="id" value="{{.ID}}">
               <button type="submit" class="btn btn-sm btn-danger" onclick="return confirm('Delete backend {{.ID}}? This also deletes associated user tokens.')">Delete</button>
             </form>
+            {{else}}
+            <span class="text-muted" style="font-size:0.85em;">system</span>
+            {{end}}
           </td>
         </tr>
         {{end}}
@@ -91,6 +97,15 @@
         <label for="env">Environment Template (JSON)</label>
         <textarea id="env" name="env" placeholder='{"ATLASSIAN_DOMAIN":"","ATLASSIAN_EMAIL":"","ATLASSIAN_API_TOKEN":""}'>{}</textarea>
       </div>
+      <div class="form-row">
+        <label for="env_mappings">Environment Mappings (JSON)</label>
+        <textarea id="env_mappings" name="env_mappings" placeholder='{"API_KEY":"KUBECONFIG_CONTENT","NAMESPACE":"KUBE_NAMESPACE"}'>{}</textarea>
+        <small class="text-muted">Maps user token keys to backend-specific env var names. E.g., user sets "API_KEY", backend receives "KUBECONFIG_CONTENT".</small>
+      </div>
+      <div class="form-row">
+        <button type="button" class="btn btn-secondary" onclick="previewEnv()">Preview Environment</button>
+        <div id="env-preview" class="mono" style="margin-top:0.5rem;padding:0.5rem;background:#f3f4f6;border-radius:4px;display:none;"></div>
+      </div>
       <button type="submit" class="btn btn-primary" id="form-submit-btn">Create Backend</button>
       <button type="button" class="btn btn-secondary" id="form-cancel-btn" style="display:none;" onclick="cancelEdit()">Cancel</button>
     </form>
@@ -112,8 +127,9 @@ function editBackend(id) {
   }
   if (!row) return;
 
+  var isSystem = row.getAttribute('data-is-system') === 'true';
   var cells = row.querySelectorAll('td');
-  document.getElementById('form-title').textContent = 'Edit Backend: ' + id;
+  document.getElementById('form-title').textContent = 'Edit Backend: ' + id + (isSystem ? ' (system)' : '');
   document.getElementById('backend-form-el').action = '/web/admin/backends/edit';
 
   // Make ID read-only during edit (readonly still submits, unlike disabled)
@@ -124,8 +140,22 @@ function editBackend(id) {
 
   document.getElementById('command').value = cells[1].textContent.trim();
   document.getElementById('pool_size').value = cells[2].textContent.trim();
-  document.getElementById('tool_prefix').value = (cells[3].textContent.trim() === 'none') ? '' : cells[3].textContent.trim();
-  document.getElementById('enabled').checked = cells[4].textContent.trim() === 'enabled';
+  // Skip column 3 (prefix) - column indices shifted due to new "Type" column
+  document.getElementById('tool_prefix').value = (cells[4].textContent.trim() === 'none') ? '' : cells[4].textContent.trim();
+  document.getElementById('enabled').checked = cells[6].textContent.trim() === 'enabled';
+
+  // Get env and env_mappings from data attributes
+  var env = row.getAttribute('data-env');
+  var envMappings = row.getAttribute('data-env-mappings');
+  document.getElementById('env').value = env ? env : '{}';
+  document.getElementById('env_mappings').value = envMappings ? envMappings : '{}';
+
+  // Disable fields for system backends
+  document.getElementById('command').readOnly = isSystem;
+  document.getElementById('command').style.background = isSystem ? '#f3f4f6' : '';
+  document.getElementById('pool_size').readOnly = isSystem;
+  document.getElementById('pool_size').style.background = isSystem ? '#f3f4f6' : '';
+  document.getElementById('enabled').disabled = isSystem;
 
   document.getElementById('form-submit-btn').textContent = 'Update Backend';
   document.getElementById('form-cancel-btn').style.display = 'inline-block';
@@ -143,14 +173,96 @@ function cancelEdit() {
   idField.style.background = '';
 
   document.getElementById('command').value = '';
+  document.getElementById('command').readOnly = false;
+  document.getElementById('command').style.background = '';
   document.getElementById('pool_size').value = '1';
+  document.getElementById('pool_size').readOnly = false;
+  document.getElementById('pool_size').style.background = '';
   document.getElementById('tool_prefix').value = '';
   document.getElementById('enabled').checked = true;
+  document.getElementById('enabled').disabled = false;
   document.getElementById('env').value = '{}';
+  document.getElementById('env_mappings').value = '{}';
+  document.getElementById('env-preview').style.display = 'none';
 
   document.getElementById('form-submit-btn').textContent = 'Create Backend';
   document.getElementById('form-cancel-btn').style.display = 'none';
 }
+
+// Validate JSON and show preview of environment
+function validateJSON(str) {
+  try {
+    return { valid: true, data: JSON.parse(str) };
+  } catch (e) {
+    return { valid: false, error: e.message };
+  }
+}
+
+function previewEnv() {
+  var envStr = document.getElementById('env').value;
+  var mappingsStr = document.getElementById('env_mappings').value;
+  var preview = document.getElementById('env-preview');
+
+  var envResult = validateJSON(envStr);
+  var mappingsResult = validateJSON(mappingsStr);
+
+  if (!envResult.valid) {
+    preview.style.display = 'block';
+    preview.style.color = '#c00';
+    preview.textContent = 'Environment Template JSON error: ' + envResult.error;
+    return;
+  }
+
+  if (!mappingsResult.valid) {
+    preview.style.display = 'block';
+    preview.style.color = '#c00';
+    preview.textContent = 'Environment Mappings JSON error: ' + mappingsResult.error;
+    return;
+  }
+
+  // Build preview output
+  var lines = [];
+  lines.push('=== Systemwide Environment (applied last, can override user values) ===');
+  for (var key in envResult.data) {
+    lines.push(key + '=' + envResult.data[key]);
+  }
+
+  lines.push('');
+  lines.push('=== Key Mappings (user_key -> backend_key) ===');
+  for (var key in mappingsResult.data) {
+    lines.push(key + ' -> ' + mappingsResult.data[key]);
+  }
+
+  lines.push('');
+  lines.push('=== Precedence ===');
+  lines.push('1. Bridge process env (base)');
+  lines.push('2. User tokens (mapped via above mappings)');
+  lines.push('3. Systemwide env (above - highest priority, can override user values)');
+
+  preview.style.display = 'block';
+  preview.style.color = '#333';
+  preview.textContent = lines.join('\n');
+}
+
+// Validate on form submit
+document.getElementById('backend-form-el').addEventListener('submit', function(e) {
+  var envStr = document.getElementById('env').value;
+  var mappingsStr = document.getElementById('env_mappings').value;
+
+  var envResult = validateJSON(envStr);
+  if (!envResult.valid) {
+    alert('Environment Template JSON error: ' + envResult.error);
+    e.preventDefault();
+    return;
+  }
+
+  var mappingsResult = validateJSON(mappingsStr);
+  if (!mappingsResult.valid) {
+    alert('Environment Mappings JSON error: ' + mappingsResult.error);
+    e.preventDefault();
+    return;
+  }
+});
 
 // Probe a backend via AJAX and show results inline.
 function probeBackend(id) {

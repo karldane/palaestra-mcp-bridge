@@ -15,20 +15,19 @@ server:
   port: "9090"
   logLevel: debug
 backends:
-  jira:
-    command: "npx -y @xuandev/atlassian-mcp"
+  filesystem:
+    command: "npx -y @modelcontextprotocol/server-filesystem /tmp"
     poolSize: 2
-    toolPrefix: jira
-    env:
-      JIRA_HOST: "https://example.atlassian.net"
+    toolPrefix: fs
+    env: {}
     secrets:
-      - name: jira-token
-        envKey: JIRA_API_TOKEN
+      - name: fs-token
+        envKey: FS_API_KEY
         context: user
-  confluence:
-    command: "npx -y @xuandev/confluence-mcp"
+  fetch:
+    command: "npx -y @modelcontextprotocol/server-fetch"
     poolSize: 1
-    toolPrefix: confluence
+    toolPrefix: fetch
 `)
 
 	if err := os.WriteFile(path, data, 0644); err != nil {
@@ -52,30 +51,27 @@ backends:
 		t.Fatalf("expected 2 backends, got %d", len(cfg.Backends))
 	}
 
-	jira := cfg.Backends["jira"]
-	if jira.Command != "npx -y @xuandev/atlassian-mcp" {
-		t.Errorf("expected jira command, got %s", jira.Command)
+	fs := cfg.Backends["filesystem"]
+	if fs.Command != "npx -y @modelcontextprotocol/server-filesystem /tmp" {
+		t.Errorf("expected filesystem command, got %s", fs.Command)
 	}
-	if jira.PoolSize != 2 {
-		t.Errorf("expected jira pool size 2, got %d", jira.PoolSize)
+	if fs.PoolSize != 2 {
+		t.Errorf("expected filesystem pool size 2, got %d", fs.PoolSize)
 	}
-	if jira.ToolPrefix != "jira" {
-		t.Errorf("expected jira tool prefix, got %s", jira.ToolPrefix)
+	if fs.ToolPrefix != "fs" {
+		t.Errorf("expected filesystem tool prefix, got %s", fs.ToolPrefix)
 	}
-	if jira.Env["JIRA_HOST"] != "https://example.atlassian.net" {
-		t.Errorf("expected JIRA_HOST env var, got %s", jira.Env["JIRA_HOST"])
+	if len(fs.Secrets) != 1 {
+		t.Fatalf("expected 1 secret, got %d", len(fs.Secrets))
 	}
-	if len(jira.Secrets) != 1 {
-		t.Fatalf("expected 1 secret, got %d", len(jira.Secrets))
+	if fs.Secrets[0].Name != "fs-token" {
+		t.Errorf("expected secret name fs-token, got %s", fs.Secrets[0].Name)
 	}
-	if jira.Secrets[0].Name != "jira-token" {
-		t.Errorf("expected secret name jira-token, got %s", jira.Secrets[0].Name)
+	if fs.Secrets[0].EnvKey != "FS_API_KEY" {
+		t.Errorf("expected secret envKey FS_API_KEY, got %s", fs.Secrets[0].EnvKey)
 	}
-	if jira.Secrets[0].EnvKey != "JIRA_API_TOKEN" {
-		t.Errorf("expected secret envKey JIRA_API_TOKEN, got %s", jira.Secrets[0].EnvKey)
-	}
-	if jira.Secrets[0].Context != "user" {
-		t.Errorf("expected secret context user, got %s", jira.Secrets[0].Context)
+	if fs.Secrets[0].Context != "user" {
+		t.Errorf("expected secret context user, got %s", fs.Secrets[0].Context)
 	}
 }
 

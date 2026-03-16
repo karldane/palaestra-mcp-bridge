@@ -3,6 +3,7 @@ package muxer
 import (
 	"encoding/json"
 	"fmt"
+	"log"
 	"os"
 	"strings"
 	"sync"
@@ -113,7 +114,7 @@ func (tm *ToolMuxer) HandleToolsCall(userID string, body []byte) ([]byte, *PoolR
 		return nil, nil, err
 	}
 
-	command, poolSize, _, ok := tm.getBackendConfig(backendID)
+	command, poolSize, _, _, ok := tm.getBackendConfig(backendID)
 	if !ok {
 		return nil, nil, fmt.Errorf("backend %q not found in store or config", backendID)
 	}
@@ -144,9 +145,13 @@ func (tm *ToolMuxer) HandleToolsCall(userID string, body []byte) ([]byte, *PoolR
 }
 
 // BuildEnvForUser constructs a []string of "KEY=VALUE" pairs for the given
-// user and backend. It starts with the bridge's own env, overlays the
-// backend's static Env map from config, then overlays per-user tokens from
-// the SQLite store (or legacy SecretStore).
+// user and backend. The precedence is (highest to lowest):
+//  1. Bridge process env (base)
+//  2. User tokens (mapped via env_mappings if configured)
+//  3. Systemwide backend env (can override user values)
+//
+// This allows system admins to set sensible defaults while users can override
+// them, but the systemwide values take final precedence.
 func (tm *ToolMuxer) BuildEnvForUser(userID, backendID string) []string {
 	// Start with bridge's own environment as a base.
 	envMap := make(map[string]string)
@@ -156,15 +161,15 @@ func (tm *ToolMuxer) BuildEnvForUser(userID, backendID string) []string {
 		}
 	}
 
-	// Overlay backend-level static env from store/config.
-	_, _, backendEnv, ok := tm.getBackendConfig(backendID)
-	if ok {
-		for k, v := range backendEnv {
-			envMap[k] = v
-		}
+	// Get backend configuration including env mappings.
+	_, _, systemwideEnv, envMappings, ok := tm.getBackendConfig(backendID)
+	if !ok {
+		// Fallback: no backend config, just use legacy path.
+		tm.buildLegacyEnv(userID, backendID, envMap)
+		return mapToSlice(envMap)
 	}
 
-	// Overlay per-user tokens.
+	// Step 1: Apply user tokens (lower priority than systemwide).
 	if tm.store != nil {
 		tokens, err := tm.store.GetUserTokens(userID, backendID)
 		if err == nil {
@@ -185,9 +190,59 @@ func (tm *ToolMuxer) BuildEnvForUser(userID, backendID string) []string {
 		}
 	}
 
-	// Convert map to []string.
-	result := make([]string, 0, len(envMap))
-	for k, v := range envMap {
+	// Step 2: Map user token keys to backend-specific keys (if mappings configured).
+	if len(envMappings) > 0 {
+		mappedEnv := make(map[string]string)
+		for userKey, value := range envMap {
+			// Check if this key has a mapping.
+			if backendKey, hasMapping := envMappings[userKey]; hasMapping {
+				// Map to backend-specific key.
+				mappedEnv[backendKey] = value
+			} else {
+				// No mapping - pass through unchanged.
+				mappedEnv[userKey] = value
+			}
+		}
+		envMap = mappedEnv
+	}
+
+	// Step 3: Apply systemwide backend env (highest priority - can override user values).
+	for k, v := range systemwideEnv {
+		if existing, wasSet := envMap[k]; wasSet {
+			log.Printf("muxer: env override: user value for %q=%q replaced by systemwide default %q", k, existing, v)
+		}
+		envMap[k] = v
+	}
+
+	return mapToSlice(envMap)
+}
+
+// buildLegacyEnv handles the fallback path when no backend config is found.
+func (tm *ToolMuxer) buildLegacyEnv(userID, backendID string, envMap map[string]string) {
+	if tm.store != nil {
+		tokens, err := tm.store.GetUserTokens(userID, backendID)
+		if err == nil {
+			for _, tok := range tokens {
+				envMap[tok.EnvKey] = tok.Value
+			}
+		}
+	} else if tm.secrets != nil {
+		backendCfg, cfgOK := tm.config.Backends[backendID]
+		if cfgOK {
+			for _, secretRef := range backendCfg.Secrets {
+				value, err := tm.secrets.Get(userID, secretRef.EnvKey)
+				if err == nil {
+					envMap[secretRef.EnvKey] = value
+				}
+			}
+		}
+	}
+}
+
+// mapToSlice converts a map to a []string of "KEY=VALUE" pairs.
+func mapToSlice(m map[string]string) []string {
+	result := make([]string, 0, len(m))
+	for k, v := range m {
 		result = append(result, k+"="+v)
 	}
 	return result
@@ -279,7 +334,8 @@ func (tm *ToolMuxer) GetPrefixForBackend(backendID string) string {
 
 // getBackendConfig retrieves backend configuration. It checks the SQLite store
 // first (DB is source of truth), then falls back to the config map.
-func (tm *ToolMuxer) getBackendConfig(backendID string) (command string, poolSize int, env map[string]string, ok bool) {
+// Returns command, poolSize, env (systemwide), envMappings (key mappings), and ok.
+func (tm *ToolMuxer) getBackendConfig(backendID string) (command string, poolSize int, env map[string]string, envMappings map[string]string, ok bool) {
 	// Try store first.
 	if tm.store != nil {
 		b, err := tm.store.GetBackend(backendID)
@@ -293,16 +349,27 @@ func (tm *ToolMuxer) getBackendConfig(backendID string) (command string, poolSiz
 			if envMap == nil {
 				envMap = make(map[string]string)
 			}
-			return b.Command, b.PoolSize, envMap, true
+
+			var mappings map[string]string
+			if b.EnvMappings != "" && b.EnvMappings != "{}" {
+				if jsonErr := json.Unmarshal([]byte(b.EnvMappings), &mappings); jsonErr != nil {
+					mappings = nil
+				}
+			}
+			if mappings == nil {
+				mappings = make(map[string]string)
+			}
+
+			return b.Command, b.PoolSize, envMap, mappings, true
 		}
 	}
 
 	// Fallback to config.
 	if bc, found := tm.config.Backends[backendID]; found {
-		return bc.Command, bc.PoolSize, bc.Env, true
+		return bc.Command, bc.PoolSize, bc.Env, nil, true
 	}
 
-	return "", 0, nil, false
+	return "", 0, nil, nil, false
 }
 
 // listBackendIDs returns all backend IDs, preferring the DB store.

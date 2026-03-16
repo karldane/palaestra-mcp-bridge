@@ -25,6 +25,12 @@ automatically on startup. A default admin user is seeded:
 - **Email:** `admin@mcp-bridge.local`
 - **Password:** `changeme`
 
+The bridge also creates an MCP Bridge system backend that provides:
+- `mcpbridge_ping` - Check bridge connectivity and get current timestamp
+- `mcpbridge_version` - Get mcp-bridge version information
+- `mcpbridge_list_backends` - List configured backends
+- `mcpbridge_refresh_tools` - Refresh and list tools from all enabled backends
+
 ### 3. Access the Web UI
 
 Open `http://localhost:8080/web/login` and sign in with the default
@@ -73,16 +79,14 @@ server:
   logLevel: info    # debug | info | warn | error
 
 backends:
-  atlassian:
-    command: "npx -y @xuandev/atlassian-mcp"
+  filesystem:
+    command: "npx -y @modelcontextprotocol/server-filesystem /path/to/allowed"
     poolSize: 2
     toolPrefix: ""    # empty = tools exposed with original names
-    env:
-      ATLASSIAN_DOMAIN: "example.atlassian.net"
-      ATLASSIAN_EMAIL: "you@example.com"
+    env: {}
     secrets:
-      - name: atlassian-token
-        envKey: ATLASSIAN_API_TOKEN
+      - name: fs-token
+        envKey: FS_API_KEY
         context: user   # per-user secret lookup
 ```
 

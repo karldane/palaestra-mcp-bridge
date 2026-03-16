@@ -53,17 +53,42 @@ func (s *Store) migrate() error {
 	// Incremental migrations for existing databases.
 	// Each ALTER TABLE may fail with "duplicate column" — that is expected.
 	s.db.Exec(`ALTER TABLE users ADD COLUMN role TEXT NOT NULL DEFAULT 'user'`)
+	s.db.Exec(`ALTER TABLE backends ADD COLUMN env_mappings TEXT NOT NULL DEFAULT '{}'`)
+	s.db.Exec(`ALTER TABLE backends ADD COLUMN is_system INTEGER NOT NULL DEFAULT 0`)
+
+	// Migration: rename token to session_id in web_sessions
+	// SQLite doesn't support ALTER TABLE rename column, so we handle this in queries
+	// The code below checks and migrates if needed
+	var hasOldSchema int
+	s.db.QueryRow(`SELECT COUNT(*) FROM pragma_table_info('web_sessions') WHERE name='token'`).Scan(&hasOldSchema)
+	if hasOldSchema > 0 {
+		s.db.Exec(`ALTER TABLE web_sessions RENAME TO web_sessions_old`)
+		s.db.Exec(`
+			CREATE TABLE web_sessions (
+				session_id TEXT PRIMARY KEY,
+				user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+				expires_at DATETIME NOT NULL,
+				created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+			);
+			INSERT INTO web_sessions (session_id, user_id, expires_at, created_at)
+			SELECT token, user_id, expires_at, created_at FROM web_sessions_old;
+			DROP TABLE web_sessions_old;
+		`)
+	}
+
 	return nil
 }
 
 const schema = `
 CREATE TABLE IF NOT EXISTS backends (
-	id         TEXT PRIMARY KEY,
-	command    TEXT NOT NULL,
-	pool_size  INTEGER NOT NULL DEFAULT 1,
+	id          TEXT PRIMARY KEY,
+	command     TEXT NOT NULL,
+	pool_size   INTEGER NOT NULL DEFAULT 1,
 	tool_prefix TEXT NOT NULL DEFAULT '',
-	env        TEXT NOT NULL DEFAULT '{}',
-	enabled    INTEGER NOT NULL DEFAULT 1
+	env         TEXT NOT NULL DEFAULT '{}',
+	env_mappings TEXT NOT NULL DEFAULT '{}',
+	enabled     INTEGER NOT NULL DEFAULT 1,
+	is_system   INTEGER NOT NULL DEFAULT 0
 );
 
 CREATE TABLE IF NOT EXISTS users (
@@ -113,22 +138,34 @@ CREATE TABLE IF NOT EXISTS oauth_sessions (
 );
 
 CREATE TABLE IF NOT EXISTS web_sessions (
-	token      TEXT PRIMARY KEY,
+	session_id TEXT PRIMARY KEY,
 	user_id    TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
 	expires_at DATETIME NOT NULL,
 	created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS api_keys (
+	id          TEXT PRIMARY KEY,
+	user_id     TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+	name        TEXT NOT NULL DEFAULT '',
+	key_hash    TEXT NOT NULL,
+	expires_at  DATETIME,
+	last_used_at DATETIME,
+	created_at  DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 `
 
 // ---------- Backends ----------
 
 type Backend struct {
-	ID         string
-	Command    string
-	PoolSize   int
-	ToolPrefix string
-	Env        string // JSON object
-	Enabled    bool
+	ID          string
+	Command     string
+	PoolSize    int
+	ToolPrefix  string
+	Env         string // JSON object - systemwide env vars (higher priority than user tokens)
+	EnvMappings string // JSON object - maps user token keys to backend-specific keys
+	Enabled     bool
+	IsSystem    bool // true for mcpbridge - system backend that can't be deleted by non-admins
 }
 
 func (s *Store) CreateBackend(b *Backend) error {
@@ -136,30 +173,38 @@ func (s *Store) CreateBackend(b *Backend) error {
 	if b.Enabled {
 		enabled = 1
 	}
+	isSystem := 0
+	if b.IsSystem {
+		isSystem = 1
+	}
+	if b.EnvMappings == "" {
+		b.EnvMappings = "{}"
+	}
 	_, err := s.db.Exec(
-		`INSERT INTO backends (id, command, pool_size, tool_prefix, env, enabled)
-		 VALUES (?, ?, ?, ?, ?, ?)`,
-		b.ID, b.Command, b.PoolSize, b.ToolPrefix, b.Env, enabled,
+		`INSERT INTO backends (id, command, pool_size, tool_prefix, env, env_mappings, enabled, is_system)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+		b.ID, b.Command, b.PoolSize, b.ToolPrefix, b.Env, b.EnvMappings, enabled, isSystem,
 	)
 	return err
 }
 
 func (s *Store) GetBackend(id string) (*Backend, error) {
 	b := &Backend{}
-	var enabled int
+	var enabled, isSystem int
 	err := s.db.QueryRow(
-		`SELECT id, command, pool_size, tool_prefix, env, enabled FROM backends WHERE id = ?`, id,
-	).Scan(&b.ID, &b.Command, &b.PoolSize, &b.ToolPrefix, &b.Env, &enabled)
+		`SELECT id, command, pool_size, tool_prefix, env, env_mappings, enabled, is_system FROM backends WHERE id = ?`, id,
+	).Scan(&b.ID, &b.Command, &b.PoolSize, &b.ToolPrefix, &b.Env, &b.EnvMappings, &enabled, &isSystem)
 	if err != nil {
 		return nil, err
 	}
 	b.Enabled = enabled != 0
+	b.IsSystem = isSystem != 0
 	return b, nil
 }
 
 func (s *Store) ListBackends() ([]*Backend, error) {
 	rows, err := s.db.Query(
-		`SELECT id, command, pool_size, tool_prefix, env, enabled FROM backends ORDER BY id`,
+		`SELECT id, command, pool_size, tool_prefix, env, env_mappings, enabled, is_system FROM backends ORDER BY id`,
 	)
 	if err != nil {
 		return nil, err
@@ -169,11 +214,12 @@ func (s *Store) ListBackends() ([]*Backend, error) {
 	var backends []*Backend
 	for rows.Next() {
 		b := &Backend{}
-		var enabled int
-		if err := rows.Scan(&b.ID, &b.Command, &b.PoolSize, &b.ToolPrefix, &b.Env, &enabled); err != nil {
+		var enabled, isSystem int
+		if err := rows.Scan(&b.ID, &b.Command, &b.PoolSize, &b.ToolPrefix, &b.Env, &b.EnvMappings, &enabled, &isSystem); err != nil {
 			return nil, err
 		}
 		b.Enabled = enabled != 0
+		b.IsSystem = isSystem != 0
 		backends = append(backends, b)
 	}
 	return backends, rows.Err()
@@ -184,15 +230,57 @@ func (s *Store) UpdateBackend(b *Backend) error {
 	if b.Enabled {
 		enabled = 1
 	}
+	isSystem := 0
+	if b.IsSystem {
+		isSystem = 1
+	}
+	if b.EnvMappings == "" {
+		b.EnvMappings = "{}"
+	}
 	_, err := s.db.Exec(
-		`UPDATE backends SET command=?, pool_size=?, tool_prefix=?, env=?, enabled=? WHERE id=?`,
-		b.Command, b.PoolSize, b.ToolPrefix, b.Env, enabled, b.ID,
+		`UPDATE backends SET command=?, pool_size=?, tool_prefix=?, env=?, env_mappings=?, enabled=?, is_system=? WHERE id=?`,
+		b.Command, b.PoolSize, b.ToolPrefix, b.Env, b.EnvMappings, enabled, isSystem, b.ID,
 	)
 	return err
 }
 
 func (s *Store) DeleteBackend(id string) error {
 	_, err := s.db.Exec(`DELETE FROM backends WHERE id = ?`, id)
+	return err
+}
+
+// MigrateDefaultBackend migrates the "default" backend to "mcpbridge" and marks it as system.
+// This is called on startup to rename the legacy default backend.
+func (s *Store) MigrateDefaultBackend() error {
+	// Check if "default" exists
+	var exists int
+	err := s.db.QueryRow(`SELECT COUNT(*) FROM backends WHERE id = 'default'`).Scan(&exists)
+	if err != nil {
+		return err
+	}
+	if exists == 0 {
+		return nil // No default backend to migrate
+	}
+
+	// Disable foreign key checks temporarily
+	_, err = s.db.Exec(`PRAGMA foreign_keys = OFF`)
+	if err != nil {
+		return err
+	}
+	defer s.db.Exec(`PRAGMA foreign_keys = ON`)
+
+	// First update user_tokens to reference the new backend ID
+	_, err = s.db.Exec(
+		`UPDATE user_tokens SET backend_id = 'mcpbridge' WHERE backend_id = 'default'`,
+	)
+	if err != nil {
+		return err
+	}
+
+	// Then migrate default -> mcpbridge and mark as system
+	_, err = s.db.Exec(
+		`UPDATE backends SET id = 'mcpbridge', is_system = 1 WHERE id = 'default'`,
+	)
 	return err
 }
 
@@ -396,6 +484,31 @@ func (s *Store) GetOAuthClient(clientID string) (*OAuthClient, error) {
 	return c, nil
 }
 
+func (s *Store) ListOAuthClients() ([]OAuthClient, error) {
+	rows, err := s.db.Query(
+		`SELECT client_id, client_secret, redirect_uris, client_name, created_at FROM oauth_clients ORDER BY created_at DESC`,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var clients []OAuthClient
+	for rows.Next() {
+		var c OAuthClient
+		if err := rows.Scan(&c.ClientID, &c.ClientSecret, &c.RedirectURIs, &c.ClientName, &c.CreatedAt); err != nil {
+			return nil, err
+		}
+		clients = append(clients, c)
+	}
+	return clients, nil
+}
+
+func (s *Store) DeleteOAuthClient(clientID string) error {
+	_, err := s.db.Exec(`DELETE FROM oauth_clients WHERE client_id = ?`, clientID)
+	return err
+}
+
 // ---------- OAuth Codes ----------
 
 type OAuthCode struct {
@@ -551,6 +664,37 @@ func generateID() string {
 	return hex.EncodeToString(b)
 }
 
+// GenerateID returns a random hex string (exported for external use).
+func GenerateID() string {
+	return generateID()
+}
+
+func GenerateAPIKey() (key string, hash string, err error) {
+	b := make([]byte, 32)
+	if _, err := rand.Read(b); err != nil {
+		return "", "", err
+	}
+	key = "mcp_" + hex.EncodeToString(b)
+	hashBytes, err := bcrypt.GenerateFromPassword([]byte(key), bcrypt.DefaultCost)
+	if err != nil {
+		return "", "", err
+	}
+	return key, string(hashBytes), nil
+}
+
+func HashAPIKey(key string) (string, error) {
+	hashBytes, err := bcrypt.GenerateFromPassword([]byte(key), bcrypt.DefaultCost)
+	if err != nil {
+		return "", err
+	}
+	return string(hashBytes), nil
+}
+
+func ValidateAPIKey(key, hash string) bool {
+	err := bcrypt.CompareHashAndPassword([]byte(hash), []byte(key))
+	return err == nil
+}
+
 // ---------- Web Sessions (cookie-based auth for web UI) ----------
 
 type WebSession struct {
@@ -560,12 +704,127 @@ type WebSession struct {
 	CreatedAt time.Time
 }
 
+// ---------- API Keys ----------
+
+type APIKey struct {
+	ID         string
+	UserID     string
+	Name       string
+	KeyHash    string
+	ExpiresAt  *time.Time
+	LastUsedAt *time.Time
+	CreatedAt  time.Time
+}
+
+func (s *Store) CreateAPIKey(key *APIKey) error {
+	if key.ID == "" {
+		key.ID = generateID()
+	}
+	_, err := s.db.Exec(
+		`INSERT INTO api_keys (id, user_id, name, key_hash, expires_at) VALUES (?, ?, ?, ?, ?)`,
+		key.ID, key.UserID, key.Name, key.KeyHash, key.ExpiresAt,
+	)
+	return err
+}
+
+func (s *Store) GetAPIKeyByID(id string) (*APIKey, error) {
+	key := &APIKey{}
+	var expiresAt, lastUsedAt sql.NullTime
+	err := s.db.QueryRow(
+		`SELECT id, user_id, name, key_hash, expires_at, last_used_at, created_at FROM api_keys WHERE id = ?`, id,
+	).Scan(&key.ID, &key.UserID, &key.Name, &key.KeyHash, &expiresAt, &lastUsedAt, &key.CreatedAt)
+	if err != nil {
+		return nil, err
+	}
+	if expiresAt.Valid {
+		key.ExpiresAt = &expiresAt.Time
+	}
+	if lastUsedAt.Valid {
+		key.LastUsedAt = &lastUsedAt.Time
+	}
+	return key, nil
+}
+
+func (s *Store) GetAPIKeyByHash(hash string) (*APIKey, error) {
+	key := &APIKey{}
+	var expiresAt, lastUsedAt sql.NullTime
+	err := s.db.QueryRow(
+		`SELECT id, user_id, name, key_hash, expires_at, last_used_at, created_at FROM api_keys WHERE key_hash = ?`, hash,
+	).Scan(&key.ID, &key.UserID, &key.Name, &key.KeyHash, &expiresAt, &lastUsedAt, &key.CreatedAt)
+	if err != nil {
+		return nil, err
+	}
+	if expiresAt.Valid {
+		key.ExpiresAt = &expiresAt.Time
+	}
+	if lastUsedAt.Valid {
+		key.LastUsedAt = &lastUsedAt.Time
+	}
+	return key, nil
+}
+
+func (s *Store) ListAPIKeys(userID string) ([]APIKey, error) {
+	rows, err := s.db.Query(
+		`SELECT id, user_id, name, key_hash, expires_at, last_used_at, created_at FROM api_keys WHERE user_id = ? ORDER BY created_at DESC`, userID,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var keys []APIKey
+	for rows.Next() {
+		var key APIKey
+		var expiresAt, lastUsedAt sql.NullTime
+		if err := rows.Scan(&key.ID, &key.UserID, &key.Name, &key.KeyHash, &expiresAt, &lastUsedAt, &key.CreatedAt); err != nil {
+			return nil, err
+		}
+		if expiresAt.Valid {
+			key.ExpiresAt = &expiresAt.Time
+		}
+		if lastUsedAt.Valid {
+			key.LastUsedAt = &lastUsedAt.Time
+		}
+		keys = append(keys, key)
+	}
+	return keys, nil
+}
+
+func (s *Store) DeleteAPIKey(id string) error {
+	_, err := s.db.Exec(`DELETE FROM api_keys WHERE id = ?`, id)
+	return err
+}
+
+func (s *Store) UpdateAPIKeyLastUsed(id string) error {
+	_, err := s.db.Exec(`UPDATE api_keys SET last_used_at = ? WHERE id = ?`, time.Now().UTC(), id)
+	return err
+}
+
+func (s *Store) ValidateAPIKey(key string) (*APIKey, error) {
+	rows, err := s.db.Query(`SELECT id, key_hash FROM api_keys`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var id, keyHash string
+		if err := rows.Scan(&id, &keyHash); err != nil {
+			continue
+		}
+		if ValidateAPIKey(key, keyHash) {
+			return s.GetAPIKeyByID(id)
+		}
+	}
+	return nil, fmt.Errorf("invalid API key")
+}
+
 func (s *Store) CreateWebSession(sess *WebSession) error {
 	if sess.Token == "" {
 		sess.Token = generateID()
 	}
 	_, err := s.db.Exec(
-		`INSERT INTO web_sessions (token, user_id, expires_at) VALUES (?, ?, ?)`,
+		`INSERT INTO web_sessions (session_id, user_id, expires_at) VALUES (?, ?, ?)`,
 		sess.Token, sess.UserID, sess.ExpiresAt,
 	)
 	return err
@@ -574,7 +833,7 @@ func (s *Store) CreateWebSession(sess *WebSession) error {
 func (s *Store) GetWebSession(token string) (*WebSession, error) {
 	sess := &WebSession{}
 	err := s.db.QueryRow(
-		`SELECT token, user_id, expires_at, created_at FROM web_sessions WHERE token = ?`, token,
+		`SELECT session_id, user_id, expires_at, created_at FROM web_sessions WHERE session_id = ?`, token,
 	).Scan(&sess.Token, &sess.UserID, &sess.ExpiresAt, &sess.CreatedAt)
 	if err != nil {
 		return nil, err
@@ -583,7 +842,7 @@ func (s *Store) GetWebSession(token string) (*WebSession, error) {
 }
 
 func (s *Store) DeleteWebSession(token string) error {
-	_, err := s.db.Exec(`DELETE FROM web_sessions WHERE token = ?`, token)
+	_, err := s.db.Exec(`DELETE FROM web_sessions WHERE session_id = ?`, token)
 	return err
 }
 

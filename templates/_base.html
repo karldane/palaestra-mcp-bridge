@@ -84,9 +84,11 @@
     {{if .User}}
       <a href="/web/">Dashboard</a>
       <a href="/web/tokens">My Tokens</a>
+      <a href="/web/apikeys">API Keys</a>
       {{if eq .User.Role "admin"}}
         <a href="/web/admin/users">Users</a>
         <a href="/web/admin/backends">Backends</a>
+        <a href="/web/admin/oauth-clients">OAuth Clients</a>
       {{end}}
       <span class="spacer"></span>
       <span class="user-info">{{.User.Email}} <span class="badge {{if eq .User.Role "admin"}}badge-admin{{else}}badge-user{{end}}">{{.User.Role}}</span></span>

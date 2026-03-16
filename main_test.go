@@ -1136,3 +1136,211 @@ func TestIntegration_LiveReload_DeleteBackendTearsDownPools(t *testing.T) {
 		t.Error("expected backend to be deleted from DB")
 	}
 }
+
+// TestIntegration_InlineMCPWithAPIKey tests the inline MCP protocol flow with an API key.
+// This tests the case where there are no real backends configured (or only mcpbridge system backend).
+func TestIntegration_InlineMCPWithAPIKey(t *testing.T) {
+	// Create a test app WITHOUT any backends (only mcpbridge system backend via migration)
+	a, apiKey, cleanup := testAppNoBackends(t)
+	defer cleanup()
+
+	// Test 1: initialize
+	t.Run("initialize returns inline capabilities", func(t *testing.T) {
+		body := `{"jsonrpc":"2.0","method":"initialize","id":0,"params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"test","version":"1.0"}}}`
+		req := httptest.NewRequest("POST", "/", strings.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Authorization", "Bearer "+apiKey)
+
+		w := httptest.NewRecorder()
+		a.auth.Middleware(rootHandler(a)).ServeHTTP(w, req)
+
+		if w.Code != http.StatusOK {
+			t.Fatalf("expected 200, got %d", w.Code)
+		}
+
+		var resp map[string]interface{}
+		if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+			t.Fatalf("invalid JSON response: %v", err)
+		}
+
+		if resp["jsonrpc"] != "2.0" {
+			t.Errorf("expected jsonrpc 2.0, got %v", resp["jsonrpc"])
+		}
+
+		result, ok := resp["result"].(map[string]interface{})
+		if !ok {
+			t.Fatal("expected result in response")
+		}
+
+		serverInfo, ok := result["serverInfo"].(map[string]interface{})
+		if !ok {
+			t.Fatal("expected serverInfo in result")
+		}
+		if serverInfo["name"] != "mcp-bridge" {
+			t.Errorf("expected server name mcp-bridge, got %v", serverInfo["name"])
+		}
+	})
+
+	// Test 2: tools/list returns mcpbridge tools
+	t.Run("tools/list returns inline tools", func(t *testing.T) {
+		body := `{"jsonrpc":"2.0","method":"tools/list","id":1}`
+		req := httptest.NewRequest("POST", "/", strings.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Authorization", "Bearer "+apiKey)
+
+		w := httptest.NewRecorder()
+		a.auth.Middleware(rootHandler(a)).ServeHTTP(w, req)
+
+		if w.Code != http.StatusOK {
+			t.Fatalf("expected 200, got %d", w.Code)
+		}
+
+		var resp map[string]interface{}
+		if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+			t.Fatalf("invalid JSON response: %v", err)
+		}
+
+		result, ok := resp["result"].(map[string]interface{})
+		if !ok {
+			t.Fatal("expected result in response")
+		}
+
+		tools, ok := result["tools"].([]interface{})
+		if !ok {
+			t.Fatal("expected tools in result")
+		}
+
+		// Should have mcpbridge tools
+		if len(tools) == 0 {
+			t.Fatal("expected at least one tool")
+		}
+
+		// Verify mcpbridge_ping exists
+		found := false
+		for _, tt := range tools {
+			tool := tt.(map[string]interface{})
+			if tool["name"] == "mcpbridge_ping" {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Error("expected mcpbridge_ping tool")
+		}
+	})
+
+	// Test 3: tools/call with mcpbridge_ping
+	t.Run("tools/call mcpbridge_ping works", func(t *testing.T) {
+		body := `{"jsonrpc":"2.0","method":"tools/call","id":2,"params":{"name":"mcpbridge_ping"}}`
+		req := httptest.NewRequest("POST", "/", strings.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Authorization", "Bearer "+apiKey)
+
+		w := httptest.NewRecorder()
+		a.auth.Middleware(rootHandler(a)).ServeHTTP(w, req)
+
+		if w.Code != http.StatusOK {
+			t.Fatalf("expected 200, got %d", w.Code)
+		}
+
+		var resp map[string]interface{}
+		if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+			t.Fatalf("invalid JSON response: %v", err)
+		}
+
+		result, ok := resp["result"].(map[string]interface{})
+		if !ok {
+			t.Fatal("expected result in response")
+		}
+
+		if result["status"] != "ok" {
+			t.Errorf("expected status ok, got %v", result["status"])
+		}
+	})
+}
+
+// testAppNoBackends creates a test app with no real backends in the database.
+// Only the mcpbridge system backend will exist (via migration).
+func testAppNoBackends(t *testing.T) (a *app, apiKey string, cleanup func()) {
+	t.Helper()
+
+	dir := t.TempDir()
+	dbPath := filepath.Join(dir, "test.db")
+
+	st, err := store.New(dbPath)
+	if err != nil {
+		os.RemoveAll(dir)
+		t.Fatalf("failed to open test db: %v", err)
+	}
+
+	cfg := &config.InternalConfig{
+		Server:   config.ServerConfig{Port: "0", LogLevel: "info"},
+		Backends: map[string]config.BackendConfig{},
+	}
+
+	pm := poolmgr.NewPoolManagerWithGC("cat", 1, 15*time.Minute)
+	tm := muxer.NewToolMuxerWithStore(pm, st, cfg)
+
+	ah := &auth.Handler{
+		Store:    st,
+		Issuer:   "http://localhost:0",
+		CodeTTL:  10 * time.Minute,
+		TokenTTL: 1 * time.Hour,
+	}
+
+	a = &app{
+		store:       st,
+		auth:        ah,
+		poolManager: pm,
+		toolMuxer:   tm,
+		config:      cfg,
+	}
+
+	// Run migration to create mcpbridge system backend
+	if err := st.MigrateDefaultBackend(); err != nil {
+		st.Close()
+		os.RemoveAll(dir)
+		t.Fatalf("failed to migrate: %v", err)
+	}
+
+	// Seed a test user.
+	user := &store.User{
+		ID:       "test-user-inline",
+		Name:     "Test User",
+		Email:    "test-inline@example.com",
+		Password: "password123",
+	}
+	if err := st.CreateUser(user); err != nil {
+		st.Close()
+		os.RemoveAll(dir)
+		t.Fatalf("failed to seed user: %v", err)
+	}
+
+	// Create an API key
+	key, hash, err := store.GenerateAPIKey()
+	if err != nil {
+		st.Close()
+		os.RemoveAll(dir)
+		t.Fatalf("failed to generate API key: %v", err)
+	}
+	apiKey = key
+
+	apiKeyRecord := &store.APIKey{
+		UserID:  user.ID,
+		Name:    "Test Key",
+		KeyHash: hash,
+	}
+	if err := st.CreateAPIKey(apiKeyRecord); err != nil {
+		st.Close()
+		os.RemoveAll(dir)
+		t.Fatalf("failed to create API key: %v", err)
+	}
+
+	cleanup = func() {
+		pm.ShutdownAll()
+		st.Close()
+		os.RemoveAll(dir)
+	}
+
+	return a, apiKey, cleanup
+}

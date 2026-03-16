@@ -64,30 +64,45 @@ func (h *Handler) tokenTTL() time.Duration {
 // token and injects the user ID into the request context. If the token is
 // missing or invalid, it returns 401 with a WWW-Authenticate header pointing
 // to the OAuth resource metadata, per MCP spec.
+// It supports both OAuth access tokens and API keys (prefixed with "mcp_").
 func (h *Handler) Middleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		token := extractBearer(r)
 		if token == "" {
-			log.Printf("auth: middleware: %s %s — no bearer token, returning 401", r.Method, r.URL.Path)
 			h.unauthorized(w)
 			return
 		}
 
-		sess, err := h.Store.GetOAuthSession(token)
-		if err != nil {
-			h.unauthorized(w)
-			return
-		}
-		if time.Now().UTC().After(sess.ExpiresAt) {
-			// Token is expired — clean up and reject.
-			h.Store.DeleteOAuthSession(token)
-			h.unauthorized(w)
-			return
+		var userID string
+
+		if strings.HasPrefix(token, "mcp_") {
+			apiKey, err := h.Store.ValidateAPIKey(token)
+			if err != nil || apiKey == nil {
+				h.unauthorized(w)
+				return
+			}
+			if apiKey.ExpiresAt != nil && time.Now().UTC().After(*apiKey.ExpiresAt) {
+				h.unauthorized(w)
+				return
+			}
+			h.Store.UpdateAPIKeyLastUsed(apiKey.ID)
+			userID = apiKey.UserID
+		} else {
+			sess, err := h.Store.GetOAuthSession(token)
+			if err != nil {
+				h.unauthorized(w)
+				return
+			}
+			if time.Now().UTC().After(sess.ExpiresAt) {
+				h.Store.DeleteOAuthSession(token)
+				h.unauthorized(w)
+				return
+			}
+			userID = sess.UserID
 		}
 
-		// Inject user ID into context.
 		ctx := r.Context()
-		ctx = contextWithUserID(ctx, sess.UserID)
+		ctx = contextWithUserID(ctx, userID)
 		next.ServeHTTP(w, r.WithContext(ctx))
 	})
 }
@@ -223,7 +238,10 @@ func (h *Handler) authorizeGet(w http.ResponseWriter, r *http.Request) {
 	codeChallengeMethod := q.Get("code_challenge_method")
 	scope := q.Get("scope")
 
+	log.Printf("auth: authorize GET: client_id=%q redirect_uri=%q", clientID, redirectURI)
+
 	if clientID == "" || redirectURI == "" {
+		log.Printf("auth: authorize GET: missing client_id or redirect_uri")
 		http.Error(w, `{"error":"invalid_request","error_description":"client_id and redirect_uri required"}`, http.StatusBadRequest)
 		return
 	}
@@ -231,6 +249,7 @@ func (h *Handler) authorizeGet(w http.ResponseWriter, r *http.Request) {
 	// Verify client exists
 	_, err := h.Store.GetOAuthClient(clientID)
 	if err != nil {
+		log.Printf("auth: authorize GET: client_id=%q not found in store: %v", clientID, err)
 		http.Error(w, `{"error":"invalid_client"}`, http.StatusBadRequest)
 		return
 	}

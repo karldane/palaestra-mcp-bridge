@@ -60,6 +60,9 @@ func (h *Handler) Register(mux *http.ServeMux) {
 	mux.Handle("/web/tokens/save", h.requireAuth(http.HandlerFunc(h.TokensSaveHandler)))
 	mux.Handle("/web/tokens/delete", h.requireAuth(http.HandlerFunc(h.TokensDeleteHandler)))
 	mux.Handle("/web/password", h.requireAuth(http.HandlerFunc(h.PasswordHandler)))
+	mux.Handle("/web/apikeys", h.requireAuth(http.HandlerFunc(h.APIKeysHandler)))
+	mux.Handle("/web/apikeys/create", h.requireAuth(http.HandlerFunc(h.APIKeysCreateHandler)))
+	mux.Handle("/web/apikeys/delete", h.requireAuth(http.HandlerFunc(h.APIKeysDeleteHandler)))
 
 	// Admin only
 	mux.Handle("/web/admin/users", h.requireAdmin(http.HandlerFunc(h.AdminUsersHandler)))
@@ -70,6 +73,9 @@ func (h *Handler) Register(mux *http.ServeMux) {
 	mux.Handle("/web/admin/backends/edit", h.requireAdmin(http.HandlerFunc(h.AdminBackendsEditHandler)))
 	mux.Handle("/web/admin/backends/delete", h.requireAdmin(http.HandlerFunc(h.AdminBackendsDeleteHandler)))
 	mux.Handle("/web/admin/backends/probe", h.requireAdmin(http.HandlerFunc(h.AdminBackendsProbeHandler)))
+	mux.Handle("/web/admin/oauth-clients", h.requireAdmin(http.HandlerFunc(h.AdminOAuthClientsHandler)))
+	mux.Handle("/web/admin/oauth-clients/create", h.requireAdmin(http.HandlerFunc(h.AdminOAuthClientsCreateHandler)))
+	mux.Handle("/web/admin/oauth-clients/delete", h.requireAdmin(http.HandlerFunc(h.AdminOAuthClientsDeleteHandler)))
 }
 
 // ---------- Session / Auth middleware ----------
@@ -179,6 +185,7 @@ type pageData struct {
 	Success  string
 	Data     interface{}
 	Backends []*store.Backend
+	Extra    map[string]interface{}
 }
 
 func (h *Handler) render(w http.ResponseWriter, tmplName string, data pageData) {
@@ -433,6 +440,93 @@ func (h *Handler) PasswordHandler(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// ---------- User: API Keys ----------
+
+func (h *Handler) APIKeysHandler(w http.ResponseWriter, r *http.Request) {
+	user := userFromContext(r)
+
+	keys, err := h.Store.ListAPIKeys(user.ID)
+	if err != nil {
+		log.Printf("web: list api keys: %v", err)
+		keys = nil
+	}
+
+	h.render(w, "apikeys.html", pageData{
+		User:    user,
+		Title:   "API Keys",
+		Error:   r.URL.Query().Get("error"),
+		Success: r.URL.Query().Get("success"),
+		Data:    keys,
+	})
+}
+
+func (h *Handler) APIKeysCreateHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	user := userFromContext(r)
+
+	name := r.FormValue("name")
+	if name == "" {
+		name = "API Key"
+	}
+
+	key, hash, err := store.GenerateAPIKey()
+	if err != nil {
+		log.Printf("web: generate api key: %v", err)
+		http.Redirect(w, r, "/web/apikeys?error=Failed+to+generate+key", http.StatusSeeOther)
+		return
+	}
+
+	apiKey := &store.APIKey{
+		UserID:  user.ID,
+		Name:    name,
+		KeyHash: hash,
+	}
+
+	if err := h.Store.CreateAPIKey(apiKey); err != nil {
+		log.Printf("web: create api key: %v", err)
+		http.Redirect(w, r, "/web/apikeys?error=Failed+to+save+key", http.StatusSeeOther)
+		return
+	}
+
+	h.render(w, "apikeys.html", pageData{
+		User:  user,
+		Title: "API Keys",
+		Data:  nil,
+		Extra: map[string]interface{}{"GeneratedKey": key},
+	})
+}
+
+func (h *Handler) APIKeysDeleteHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	user := userFromContext(r)
+
+	id := r.FormValue("id")
+	if id == "" {
+		http.Redirect(w, r, "/web/apikeys?error=Missing+key+ID", http.StatusSeeOther)
+		return
+	}
+
+	key, err := h.Store.GetAPIKeyByID(id)
+	if err != nil || key.UserID != user.ID {
+		http.Redirect(w, r, "/web/apikeys?error=Key+not+found", http.StatusSeeOther)
+		return
+	}
+
+	if err := h.Store.DeleteAPIKey(id); err != nil {
+		log.Printf("web: delete api key: %v", err)
+		http.Redirect(w, r, "/web/apikeys?error=Failed+to+delete+key", http.StatusSeeOther)
+		return
+	}
+
+	http.Redirect(w, r, "/web/apikeys?success=Key+deleted", http.StatusSeeOther)
+}
+
 // ---------- Admin: Users ----------
 
 func (h *Handler) AdminUsersHandler(w http.ResponseWriter, r *http.Request) {
@@ -536,6 +630,7 @@ func (h *Handler) AdminBackendsCreateHandler(w http.ResponseWriter, r *http.Requ
 	poolSizeStr := r.FormValue("pool_size")
 	toolPrefix := strings.TrimSpace(r.FormValue("tool_prefix"))
 	env := strings.TrimSpace(r.FormValue("env"))
+	envMappings := strings.TrimSpace(r.FormValue("env_mappings"))
 	enabled := r.FormValue("enabled") == "on"
 
 	if id == "" || command == "" {
@@ -550,14 +645,18 @@ func (h *Handler) AdminBackendsCreateHandler(w http.ResponseWriter, r *http.Requ
 	if env == "" {
 		env = "{}"
 	}
+	if envMappings == "" {
+		envMappings = "{}"
+	}
 
 	b := &store.Backend{
-		ID:         id,
-		Command:    command,
-		PoolSize:   poolSize,
-		ToolPrefix: toolPrefix,
-		Env:        env,
-		Enabled:    enabled,
+		ID:          id,
+		Command:     command,
+		PoolSize:    poolSize,
+		ToolPrefix:  toolPrefix,
+		Env:         env,
+		EnvMappings: envMappings,
+		Enabled:     enabled,
 	}
 	if err := h.Store.CreateBackend(b); err != nil {
 		log.Printf("web: create backend: %v", err)
@@ -579,6 +678,7 @@ func (h *Handler) AdminBackendsEditHandler(w http.ResponseWriter, r *http.Reques
 	poolSizeStr := r.FormValue("pool_size")
 	toolPrefix := strings.TrimSpace(r.FormValue("tool_prefix"))
 	env := strings.TrimSpace(r.FormValue("env"))
+	envMappings := strings.TrimSpace(r.FormValue("env_mappings"))
 	enabled := r.FormValue("enabled") == "on"
 
 	poolSize := 1
@@ -588,14 +688,26 @@ func (h *Handler) AdminBackendsEditHandler(w http.ResponseWriter, r *http.Reques
 	if env == "" {
 		env = "{}"
 	}
+	if envMappings == "" {
+		envMappings = "{}"
+	}
+
+	// Get existing backend to preserve IsSystem flag
+	existing, err := h.Store.GetBackend(id)
+	isSystem := false
+	if err == nil {
+		isSystem = existing.IsSystem
+	}
 
 	b := &store.Backend{
-		ID:         id,
-		Command:    command,
-		PoolSize:   poolSize,
-		ToolPrefix: toolPrefix,
-		Env:        env,
-		Enabled:    enabled,
+		ID:          id,
+		Command:     command,
+		PoolSize:    poolSize,
+		ToolPrefix:  toolPrefix,
+		Env:         env,
+		EnvMappings: envMappings,
+		Enabled:     enabled,
+		IsSystem:    isSystem,
 	}
 	if err := h.Store.UpdateBackend(b); err != nil {
 		log.Printf("web: update backend: %v", err)
@@ -613,6 +725,14 @@ func (h *Handler) AdminBackendsDeleteHandler(w http.ResponseWriter, r *http.Requ
 	}
 
 	id := r.FormValue("id")
+
+	// Check if this is a system backend - prevent deletion
+	backend, err := h.Store.GetBackend(id)
+	if err == nil && backend.IsSystem {
+		http.Redirect(w, r, "/web/admin/backends?error=Cannot+delete+system+backend", http.StatusSeeOther)
+		return
+	}
+
 	if err := h.Store.DeleteBackend(id); err != nil {
 		log.Printf("web: delete backend: %v", err)
 		http.Redirect(w, r, "/web/admin/backends?error=Failed+to+delete+backend", http.StatusSeeOther)
@@ -691,4 +811,89 @@ func parseInt(s string) int {
 		}
 	}
 	return n
+}
+
+// ---------- Admin: OAuth Clients ----------
+
+func (h *Handler) AdminOAuthClientsHandler(w http.ResponseWriter, r *http.Request) {
+	user := userFromContext(r)
+
+	clients, err := h.Store.ListOAuthClients()
+	if err != nil {
+		log.Printf("web: list oauth clients: %v", err)
+		clients = nil
+	}
+
+	h.render(w, "admin_oauth_clients.html", pageData{
+		User:    user,
+		Title:   "OAuth Clients",
+		Error:   r.URL.Query().Get("error"),
+		Success: r.URL.Query().Get("success"),
+		Data:    clients,
+	})
+}
+
+func (h *Handler) AdminOAuthClientsCreateHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	user := userFromContext(r)
+
+	clientName := r.FormValue("name")
+	if clientName == "" {
+		clientName = "OAuth Client"
+	}
+
+	// Generate client credentials
+	clientID := store.GenerateID()
+	clientSecret := store.GenerateID()
+
+	// Default redirect URI (can be changed later)
+	defaultRedirect := "http://127.0.0.1:19876/mcp/oauth/callback"
+
+	client := &store.OAuthClient{
+		ClientID:     clientID,
+		ClientSecret: clientSecret,
+		ClientName:   clientName,
+		RedirectURIs: "[\"" + defaultRedirect + "\"]",
+	}
+
+	if err := h.Store.CreateOAuthClient(client); err != nil {
+		log.Printf("web: create oauth client: %v", err)
+		http.Redirect(w, r, "/web/admin/oauth-clients?error=Failed+to+create+client", http.StatusSeeOther)
+		return
+	}
+
+	// Re-fetch all clients for display
+	clients, _ := h.Store.ListOAuthClients()
+
+	h.render(w, "admin_oauth_clients.html", pageData{
+		User:  user,
+		Title: "OAuth Clients",
+		Data:  clients,
+		Extra: map[string]interface{}{"CreatedClient": client},
+	})
+}
+
+func (h *Handler) AdminOAuthClientsDeleteHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	clientID := r.FormValue("id")
+	if clientID == "" {
+		http.Redirect(w, r, "/web/admin/oauth-clients?error=Missing+client+ID", http.StatusSeeOther)
+		return
+	}
+
+	if err := h.Store.DeleteOAuthClient(clientID); err != nil {
+		log.Printf("web: delete oauth client: %v", err)
+		http.Redirect(w, r, "/web/admin/oauth-clients?error=Failed+to+delete+client", http.StatusSeeOther)
+		return
+	}
+
+	http.Redirect(w, r, "/web/admin/oauth-clients?success=Client+deleted", http.StatusSeeOther)
 }

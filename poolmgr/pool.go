@@ -471,6 +471,10 @@ func (pool *Pool) WarmChan() chan *ManagedProcess {
 	return pool.Warm
 }
 
+func (pool *Pool) BroadcastChan() chan []byte {
+	return pool.broadcastCh
+}
+
 func (pool *Pool) Wg() *sync.WaitGroup {
 	return &pool.wg
 }
