@@ -111,7 +111,10 @@ func (s *MCPBridgeServer) handleToolsList(w http.ResponseWriter, r *http.Request
 			}
 		case <-time.After(10 * time.Second):
 			pool.UnregisterRequest(reqID)
-			fmt.Printf("[DEBUG handleToolsList] TIMEOUT waiting for tools/list from backend %s\n", backend.ID)
+			fmt.Printf("[DEBUG handleToolsList] TIMEOUT waiting for tools/list from backend %s, killing stuck process\n", backend.ID)
+			// Don't return stuck process to pool - kill it and let pool refill
+			proc.Kill()
+			continue
 		}
 
 		pool.Warm <- proc
@@ -189,6 +192,9 @@ func (s *MCPBridgeServer) handleToolsCall(w http.ResponseWriter, r *http.Request
 			pool.UnregisterRequest(reqID)
 			w.WriteHeader(http.StatusGatewayTimeout)
 			w.Write([]byte(`{"jsonrpc":"2.0","error":{"code":-32000,"message":"Request timeout after 30s"}}`))
+			// Don't return stuck process to pool - kill it and let pool refill
+			proc.Kill()
+			return
 		}
 
 		pool.Warm <- proc
@@ -244,6 +250,9 @@ func (s *MCPBridgeServer) handleDefaultBackend(w http.ResponseWriter, r *http.Re
 			pool.UnregisterRequest(reqID)
 			w.WriteHeader(http.StatusGatewayTimeout)
 			w.Write([]byte(`{"jsonrpc":"2.0","error":{"code":-32000,"message":"Request timeout after 30s"}}`))
+			// Don't return stuck process to pool - kill it and let pool refill
+			proc.Kill()
+			return
 		}
 
 		pool.Warm <- proc

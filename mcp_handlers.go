@@ -136,7 +136,10 @@ func handleToolsList(a *app, w http.ResponseWriter, r *http.Request, userID stri
 				}
 			case <-time.After(10 * time.Second):
 				pool.UnregisterRequest(reqID)
-				log.Printf("tools/list timeout from backend %s", backend.ID)
+				log.Printf("tools/list timeout from backend %s, killing stuck process", backend.ID)
+				// Don't return stuck process to pool - kill it and let pool refill
+				proc.Kill()
+				continue
 			}
 
 			pool.Warm <- proc
