@@ -177,21 +177,25 @@ func (s *MCPBridgeServer) handleToolsCall(w http.ResponseWriter, r *http.Request
 
 		respCh := pool.RegisterRequest(reqID)
 		proc.Stdin.Write(buf.Bytes())
+		fmt.Printf("[DEBUG handleToolsCall] sent request to backend, waiting for response (timeout=60s)\n")
 
 		select {
 		case response, ok := <-respCh:
 			pool.UnregisterRequest(reqID)
 			if ok && len(response) > 0 {
+				fmt.Printf("[DEBUG handleToolsCall] received response, len=%d\n", len(response))
 				w.Header().Set("Content-Type", "application/json")
 				w.Write(response)
 			} else {
+				fmt.Printf("[DEBUG handleToolsCall] empty or invalid response\n")
 				w.WriteHeader(http.StatusGatewayTimeout)
 				w.Write([]byte(`{"jsonrpc":"2.0","error":{"code":-32000,"message":"No response received"}}`))
 			}
-		case <-time.After(30 * time.Second):
+		case <-time.After(60 * time.Second):
 			pool.UnregisterRequest(reqID)
+			fmt.Printf("[DEBUG handleToolsCall] TIMEOUT after 60s, killing stuck process\n")
 			w.WriteHeader(http.StatusGatewayTimeout)
-			w.Write([]byte(`{"jsonrpc":"2.0","error":{"code":-32000,"message":"Request timeout after 30s"}}`))
+			w.Write([]byte(`{"jsonrpc":"2.0","error":{"code":-32000,"message":"Request timeout after 60s"}}`))
 			// Don't return stuck process to pool - kill it and let pool refill
 			proc.Kill()
 			return
@@ -246,10 +250,10 @@ func (s *MCPBridgeServer) handleDefaultBackend(w http.ResponseWriter, r *http.Re
 				w.WriteHeader(http.StatusGatewayTimeout)
 				w.Write([]byte(`{"jsonrpc":"2.0","error":{"code":-32000,"message":"No response received"}}`))
 			}
-		case <-time.After(30 * time.Second):
+		case <-time.After(60 * time.Second):
 			pool.UnregisterRequest(reqID)
 			w.WriteHeader(http.StatusGatewayTimeout)
-			w.Write([]byte(`{"jsonrpc":"2.0","error":{"code":-32000,"message":"Request timeout after 30s"}}`))
+			w.Write([]byte(`{"jsonrpc":"2.0","error":{"code":-32000,"message":"Request timeout after 60s"}}`))
 			// Don't return stuck process to pool - kill it and let pool refill
 			proc.Kill()
 			return
