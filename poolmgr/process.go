@@ -119,9 +119,17 @@ func isAllowedCommand(command string) error {
 		}
 	}
 
-	// Allow absolute paths
-	if strings.HasPrefix(command, "/") && !strings.Contains(command, " ") {
-		return nil
+	// Allow absolute paths (even with arguments)
+	if strings.HasPrefix(command, "/") {
+		// Extract the command part (before any spaces)
+		cmdPart := command
+		if idx := strings.Index(command, " "); idx > 0 {
+			cmdPart = command[:idx]
+		}
+		// Verify it's a reasonable absolute path (no shell metacharacters)
+		if !strings.ContainsAny(cmdPart, ";|&`$()<>") {
+			return nil
+		}
 	}
 
 	// Allow simple shell constructs (but not arbitrary shell execution)
@@ -154,9 +162,14 @@ func spawnProcessRaw(command string, env []string) (*ManagedProcess, error) {
 		} else {
 			cmd = exec.Command(command)
 		}
-	} else if strings.HasPrefix(command, "/") && !strings.Contains(command, " ") {
-		// Absolute path with no arguments — execute directly.
-		cmd = exec.Command(command)
+	} else if strings.HasPrefix(command, "/") {
+		// Absolute path — parse command and arguments
+		if strings.Contains(command, " ") {
+			parts := strings.Fields(command)
+			cmd = exec.Command(parts[0], parts[1:]...)
+		} else {
+			cmd = exec.Command(command)
+		}
 	} else {
 		cmd = exec.Command("sh", "-c", command)
 	}
