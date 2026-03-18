@@ -1,2 +1,0 @@
-{"level":"info","message":"MCP SSE Bridge started on :8080 (command=sh -c 'cat; sleep 1', pool=2, db=mcp-bridge.db, idleGC=15m0s)","time":"2026-03-17T10:34:02Z"}
-2026/03/17 10:34:02 listen tcp :8080: bind: address already in use
