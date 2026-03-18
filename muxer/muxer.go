@@ -114,7 +114,7 @@ func (tm *ToolMuxer) HandleToolsCall(userID string, body []byte) ([]byte, *PoolR
 		return nil, nil, err
 	}
 
-	command, poolSize, _, _, ok := tm.getBackendConfig(backendID)
+	command, _, minPoolSize, maxPoolSize, _, _, ok := tm.getBackendConfig(backendID)
 	if !ok {
 		return nil, nil, fmt.Errorf("backend %q not found in store or config", backendID)
 	}
@@ -124,7 +124,7 @@ func (tm *ToolMuxer) HandleToolsCall(userID string, body []byte) ([]byte, *PoolR
 
 	// Get or create a per-user pool with the user's credentials in the env.
 	pool := tm.poolManager.GetOrCreateUserPool(
-		backendID, userID, command, poolSize, env,
+		backendID, userID, command, minPoolSize, maxPoolSize, env,
 	)
 
 	router := &PoolRouter{
@@ -153,6 +153,7 @@ func (tm *ToolMuxer) HandleToolsCall(userID string, body []byte) ([]byte, *PoolR
 // This allows system admins to set sensible defaults while users can override
 // them, but the systemwide values take final precedence.
 func (tm *ToolMuxer) BuildEnvForUser(userID, backendID string) []string {
+	log.Printf("BuildEnvForUser called for userID: %s, backendID: %s", userID, backendID)
 	// Start with bridge's own environment as a base.
 	envMap := make(map[string]string)
 	for _, e := range os.Environ() {
@@ -160,20 +161,29 @@ func (tm *ToolMuxer) BuildEnvForUser(userID, backendID string) []string {
 			envMap[e[:idx]] = e[idx+1:]
 		}
 	}
+	log.Printf("Base environment vars count: %d", len(envMap))
 
 	// Get backend configuration including env mappings.
-	_, _, systemwideEnv, envMappings, ok := tm.getBackendConfig(backendID)
+	_, _, _, _, systemwideEnv, envMappings, ok := tm.getBackendConfig(backendID)
 	if !ok {
+		log.Printf("No backend config found for %s, using legacy path", backendID)
 		// Fallback: no backend config, just use legacy path.
 		tm.buildLegacyEnv(userID, backendID, envMap)
-		return mapToSlice(envMap)
+		result := mapToSlice(envMap)
+		log.Printf("Legacy env result: %v", result)
+		return result
 	}
+	log.Printf("Backend config for %s: systemwideEnv=%v, envMappings=%v", backendID, systemwideEnv, envMappings)
 
 	// Step 1: Apply user tokens (lower priority than systemwide).
 	if tm.store != nil {
 		tokens, err := tm.store.GetUserTokens(userID, backendID)
-		if err == nil {
+		if err != nil {
+			log.Printf("Error getting user tokens for %s/%s: %v", userID, backendID, err)
+		} else {
+			log.Printf("Found %d user tokens for %s/%s", len(tokens), userID, backendID)
 			for _, tok := range tokens {
+				log.Printf("Setting env from user token: %s=%s", tok.EnvKey, tok.Value)
 				envMap[tok.EnvKey] = tok.Value
 			}
 		}
@@ -184,26 +194,33 @@ func (tm *ToolMuxer) BuildEnvForUser(userID, backendID string) []string {
 			for _, secretRef := range backendCfg.Secrets {
 				value, err := tm.secrets.Get(userID, secretRef.EnvKey)
 				if err == nil {
+					log.Printf("Setting env from legacy secret: %s=%s", secretRef.EnvKey, value)
 					envMap[secretRef.EnvKey] = value
 				}
 			}
 		}
 	}
 
+	log.Printf("Env after user tokens: %v", envMap)
+
 	// Step 2: Map user token keys to backend-specific keys (if mappings configured).
 	if len(envMappings) > 0 {
+		log.Printf("Applying env mappings: %v", envMappings)
 		mappedEnv := make(map[string]string)
 		for userKey, value := range envMap {
 			// Check if this key has a mapping.
 			if backendKey, hasMapping := envMappings[userKey]; hasMapping {
 				// Map to backend-specific key.
+				log.Printf("Mapping user key %s -> backend key %s with value %s", userKey, backendKey, value)
 				mappedEnv[backendKey] = value
 			} else {
 				// No mapping - pass through unchanged.
+				log.Printf("No mapping for user key %s, passing through", userKey)
 				mappedEnv[userKey] = value
 			}
 		}
 		envMap = mappedEnv
+		log.Printf("Env after mapping: %v", envMap)
 	}
 
 	// Step 3: Apply systemwide backend env (highest priority - can override user values).
@@ -211,10 +228,13 @@ func (tm *ToolMuxer) BuildEnvForUser(userID, backendID string) []string {
 		if existing, wasSet := envMap[k]; wasSet {
 			log.Printf("muxer: env override: user value for %q=%q replaced by systemwide default %q", k, existing, v)
 		}
+		log.Printf("Setting systemwide env: %s=%s", k, v)
 		envMap[k] = v
 	}
 
-	return mapToSlice(envMap)
+	result := mapToSlice(envMap)
+	log.Printf("Final env for user %s, backend %s: %v", userID, backendID, result)
+	return result
 }
 
 // buildLegacyEnv handles the fallback path when no backend config is found.
@@ -334,8 +354,8 @@ func (tm *ToolMuxer) GetPrefixForBackend(backendID string) string {
 
 // getBackendConfig retrieves backend configuration. It checks the SQLite store
 // first (DB is source of truth), then falls back to the config map.
-// Returns command, poolSize, env (systemwide), envMappings (key mappings), and ok.
-func (tm *ToolMuxer) getBackendConfig(backendID string) (command string, poolSize int, env map[string]string, envMappings map[string]string, ok bool) {
+// Returns command, poolSize, minPoolSize, maxPoolSize, env (systemwide), envMappings (key mappings), and ok.
+func (tm *ToolMuxer) getBackendConfig(backendID string) (command string, poolSize, minPoolSize, maxPoolSize int, env map[string]string, envMappings map[string]string, ok bool) {
 	// Try store first.
 	if tm.store != nil {
 		b, err := tm.store.GetBackend(backendID)
@@ -360,16 +380,26 @@ func (tm *ToolMuxer) getBackendConfig(backendID string) (command string, poolSiz
 				mappings = make(map[string]string)
 			}
 
-			return b.Command, b.PoolSize, envMap, mappings, true
+			// Use MinPoolSize/MaxPoolSize if set, otherwise fall back to PoolSize
+			minSize := b.MinPoolSize
+			maxSize := b.MaxPoolSize
+			if minSize == 0 {
+				minSize = 1
+			}
+			if maxSize == 0 {
+				maxSize = minSize // 0 means unlimited, but we'll use min for default
+			}
+
+			return b.Command, b.PoolSize, minSize, maxSize, envMap, mappings, true
 		}
 	}
 
 	// Fallback to config.
 	if bc, found := tm.config.Backends[backendID]; found {
-		return bc.Command, bc.PoolSize, bc.Env, nil, true
+		return bc.Command, bc.PoolSize, bc.PoolSize, bc.PoolSize, bc.Env, nil, true
 	}
 
-	return "", 0, nil, nil, false
+	return "", 0, 0, 0, nil, nil, false
 }
 
 // listBackendIDs returns all backend IDs, preferring the DB store.

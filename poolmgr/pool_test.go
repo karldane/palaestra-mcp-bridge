@@ -465,7 +465,7 @@ func TestSpawnProcess_NilEnvInherits(t *testing.T) {
 
 func TestNewPoolWithEnv(t *testing.T) {
 	env := []string{"FOO=bar", "PATH=/usr/bin:/bin"}
-	pool := NewPoolWithEnv("test", 1, "cat", env)
+	pool := NewPoolWithEnv("test", 1, 1, "cat", env)
 	defer pool.Shutdown()
 
 	if len(pool.Env) != 2 {
@@ -502,7 +502,7 @@ func TestPoolManager_GetOrCreateUserPool(t *testing.T) {
 	defer pm.ShutdownAll()
 
 	env := []string{"MY_TOKEN=abc123", "PATH=/usr/bin:/bin"}
-	pool := pm.GetOrCreateUserPool("jira", "user-1", "cat", 1, env)
+	pool := pm.GetOrCreateUserPool("jira", "user-1", "cat", 1, 1, env)
 	if pool == nil {
 		t.Fatal("expected non-nil pool")
 	}
@@ -518,19 +518,84 @@ func TestPoolManager_GetOrCreateUserPool(t *testing.T) {
 	}
 
 	// Same key should return same pool
-	pool2 := pm.GetOrCreateUserPool("jira", "user-1", "cat", 1, env)
+	pool2 := pm.GetOrCreateUserPool("jira", "user-1", "cat", 1, 1, env)
 	if pool != pool2 {
 		t.Error("expected same pool for same backendID:userID")
 	}
 
 	// Different user should get different pool
-	pool3 := pm.GetOrCreateUserPool("jira", "user-2", "cat", 1, []string{"OTHER=val"})
+	pool3 := pm.GetOrCreateUserPool("jira", "user-2", "cat", 1, 1, []string{"OTHER=val"})
 	if pool3 == pool {
 		t.Error("expected different pool for different userID")
 	}
 
 	if pm.PoolCount() != 2 {
 		t.Errorf("PoolCount = %d, want 2", pm.PoolCount())
+	}
+}
+
+func TestPoolManager_UserIsolation(t *testing.T) {
+	pm := NewPoolManager("cat", 1)
+	defer pm.ShutdownAll()
+
+	env := []string{"USER_TOKEN=user-a-secret"}
+	poolA := pm.GetOrCreateUserPool("backend1", "user-a", "cat", 1, 1, env)
+
+	envB := []string{"USER_TOKEN=user-b-secret"}
+	poolB := pm.GetOrCreateUserPool("backend1", "user-b", "cat", 1, 1, envB)
+
+	if poolA == poolB {
+		t.Fatal("different users should get different pools")
+	}
+
+	if poolA.DedicatedUser() != "user-a" {
+		t.Errorf("poolA DedicatedUser = %q, want user-a", poolA.DedicatedUser())
+	}
+	if poolB.DedicatedUser() != "user-b" {
+		t.Errorf("poolB DedicatedUser = %q, want user-b", poolB.DedicatedUser())
+	}
+
+	if !poolA.WaitForWarm(3 * time.Second) {
+		t.Fatal("timeout waiting for warm process for user-a")
+	}
+	if !poolB.WaitForWarm(3 * time.Second) {
+		t.Fatal("timeout waiting for warm process for user-b")
+	}
+
+	procA := poolA.TryAcquireWarm()
+	if procA == nil {
+		t.Fatal("expected to acquire warm process from poolA")
+	}
+	poolA.ReleaseWarm(procA)
+
+	procB := poolB.TryAcquireWarm()
+	if procB == nil {
+		t.Fatal("expected to acquire warm process from poolB")
+	}
+	if procA == procB {
+		t.Error("different users should have different processes")
+	}
+	poolB.ReleaseWarm(procB)
+
+	if pm.PoolCount() != 2 {
+		t.Errorf("PoolCount = %d, want 2", pm.PoolCount())
+	}
+}
+
+func TestPoolManager_SameUserSameBackendSameEnv(t *testing.T) {
+	pm := NewPoolManager("cat", 1)
+	defer pm.ShutdownAll()
+
+	env := []string{"TOKEN=secret123"}
+	pool1 := pm.GetOrCreateUserPool("backend", "user1", "cat", 1, 1, env)
+	pool2 := pm.GetOrCreateUserPool("backend", "user1", "cat", 1, 1, env)
+
+	if pool1 != pool2 {
+		t.Error("same user + same backend should get same pool")
+	}
+
+	if pm.PoolCount() != 1 {
+		t.Errorf("PoolCount = %d, want 1", pm.PoolCount())
 	}
 }
 
@@ -542,7 +607,7 @@ func TestPoolManager_IdleGC(t *testing.T) {
 	defer pm.ShutdownAll()
 
 	env := []string{"PATH=/usr/bin:/bin"}
-	pool := pm.GetOrCreateUserPool("jira", "user-1", "cat", 1, env)
+	pool := pm.GetOrCreateUserPool("jira", "user-1", "cat", 1, 1, env)
 	if pool == nil {
 		t.Fatal("expected non-nil pool")
 	}
@@ -564,7 +629,7 @@ func TestPoolManager_IdleGC_PreservesActivePools(t *testing.T) {
 	defer pm.ShutdownAll()
 
 	env := []string{"PATH=/usr/bin:/bin"}
-	pool := pm.GetOrCreateUserPool("jira", "user-1", "cat", 1, env)
+	pool := pm.GetOrCreateUserPool("jira", "user-1", "cat", 1, 1, env)
 	if pool == nil {
 		t.Fatal("expected non-nil pool")
 	}
@@ -616,8 +681,8 @@ func TestPoolManager_RemovePoolsByBackend_SharedAndUserPools(t *testing.T) {
 	// Create a shared pool for "jira"
 	pm.GetOrCreatePool("jira", "cat", 1)
 	// Create per-user pools for "jira"
-	pm.GetOrCreateUserPool("jira", "user-1", "cat", 1, env)
-	pm.GetOrCreateUserPool("jira", "user-2", "cat", 1, env)
+	pm.GetOrCreateUserPool("jira", "user-1", "cat", 1, 1, env)
+	pm.GetOrCreateUserPool("jira", "user-2", "cat", 1, 1, env)
 	// Create a pool for a different backend
 	pm.GetOrCreatePool("github", "cat", 1)
 
@@ -655,9 +720,9 @@ func TestPoolManager_RemovePoolsByBackend_OnlyUserPools(t *testing.T) {
 	defer pm.ShutdownAll()
 
 	env := []string{"PATH=/usr/bin:/bin"}
-	pm.GetOrCreateUserPool("jira", "user-1", "cat", 1, env)
-	pm.GetOrCreateUserPool("jira", "user-2", "cat", 1, env)
-	pm.GetOrCreateUserPool("jira", "user-3", "cat", 1, env)
+	pm.GetOrCreateUserPool("jira", "user-1", "cat", 1, 1, env)
+	pm.GetOrCreateUserPool("jira", "user-2", "cat", 1, 1, env)
+	pm.GetOrCreateUserPool("jira", "user-3", "cat", 1, 1, env)
 
 	if pm.PoolCount() != 3 {
 		t.Fatalf("PoolCount = %d, want 3", pm.PoolCount())

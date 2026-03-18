@@ -13,7 +13,8 @@
         <tr>
           <th>ID</th>
           <th>Command</th>
-          <th>Pool</th>
+          <th>Min Pool</th>
+          <th>Max Pool</th>
           <th>Prefix</th>
           <th>Type</th>
           <th>Enabled</th>
@@ -23,21 +24,22 @@
       </thead>
       <tbody>
         {{range .Data}}
-        <tr data-env="{{.Env}}" data-env-mappings="{{.EnvMappings}}" data-is-system="{{.IsSystem}}">
+        <tr data-env='{{.Env | json}}' data-env-mappings='{{.EnvMappings | json}}' data-is-system="{{.IsSystem}}" data-min-pool="{{.MinPoolSize}}" data-max-pool="{{.MaxPoolSize}}">
           <td><strong>{{.ID}}</strong>{{if .IsSystem}} <span class="badge badge-disabled">system</span>{{end}}</td>
           <td class="mono" style="max-width:300px;overflow:hidden;text-overflow:ellipsis;">{{.Command}}</td>
-          <td>{{.PoolSize}}</td>
+          <td>{{.MinPoolSize}}</td>
+          <td>{{.MaxPoolSize}}</td>
           <td>{{if .ToolPrefix}}<span class="mono">{{.ToolPrefix}}</span>{{else}}<span class="text-muted">none</span>{{end}}</td>
           <td>{{if .IsSystem}}<span class="text-muted">system</span>{{else}}<span class="text-muted">user</span>{{end}}</td>
           <td>{{if .Enabled}}<span class="badge badge-enabled">enabled</span>{{else}}<span class="badge badge-disabled">disabled</span>{{end}}</td>
           <td id="probe-status-{{.ID}}"><span class="text-muted">--</span></td>
           <td style="white-space:nowrap;">
             {{if not .IsSystem}}
-            <button type="button" class="btn btn-sm btn-secondary" onclick="probeBackend('{{.ID}}')" id="probe-btn-{{.ID}}">Test</button>
-            <button type="button" class="btn btn-sm btn-secondary" onclick="editBackend('{{.ID}}')">Edit</button>
+            <button type="button" class="btn btn-sm btn-secondary" onclick="probeBackend('{{.ID | js}}')" id="probe-btn-{{.ID}}">Test</button>
+            <button type="button" class="btn btn-sm btn-secondary" onclick="editBackend('{{.ID | js}}')">Edit</button>
             <form method="post" action="/web/admin/backends/delete" style="display:inline;">
               <input type="hidden" name="id" value="{{.ID}}">
-              <button type="submit" class="btn btn-sm btn-danger" onclick="return confirm('Delete backend {{.ID}}? This also deletes associated user tokens.')">Delete</button>
+              <button type="submit" class="btn btn-sm btn-danger" onclick="return confirm('Delete backend {{.ID | js}}? This also deletes associated user tokens.')">Delete</button>
             </form>
             {{else}}
             <span class="text-muted" style="font-size:0.85em;">system</span>
@@ -75,8 +77,15 @@
           <input type="text" id="backend-id" name="id" placeholder="e.g. atlassian" required>
         </div>
         <div class="form-row">
-          <label for="pool_size">Pool Size</label>
-          <input type="number" id="pool_size" name="pool_size" value="1" min="1">
+          <label for="min_pool_size">Min Pool Size</label>
+          <input type="number" id="min_pool_size" name="min_pool_size" value="1" min="1">
+        </div>
+      </div>
+      <div class="grid-2">
+        <div class="form-row">
+          <label for="max_pool_size">Max Pool Size</label>
+          <input type="number" id="max_pool_size" name="max_pool_size" value="1" min="1" placeholder="0=unlimited">
+          <small class="text-muted">Set same as Min for fixed size, 0 for unlimited</small>
         </div>
       </div>
       <div class="form-row">
@@ -139,8 +148,12 @@ function editBackend(id) {
   idField.style.background = '#f3f4f6';
 
   document.getElementById('command').value = cells[1].textContent.trim();
-  document.getElementById('pool_size').value = cells[2].textContent.trim();
-  // Skip column 3 (prefix) - column indices shifted due to new "Type" column
+  // Column 2 is MinPoolSize, Column 3 is MaxPoolSize
+  var minPool = row.getAttribute('data-min-pool');
+  var maxPool = row.getAttribute('data-max-pool');
+  document.getElementById('min_pool_size').value = minPool ? minPool : '1';
+  document.getElementById('max_pool_size').value = maxPool ? maxPool : '1';
+  // Column 4 is ToolPrefix, column 5 is Type (system/user), column 6 is Enabled
   document.getElementById('tool_prefix').value = (cells[4].textContent.trim() === 'none') ? '' : cells[4].textContent.trim();
   document.getElementById('enabled').checked = cells[6].textContent.trim() === 'enabled';
 
@@ -153,8 +166,10 @@ function editBackend(id) {
   // Disable fields for system backends
   document.getElementById('command').readOnly = isSystem;
   document.getElementById('command').style.background = isSystem ? '#f3f4f6' : '';
-  document.getElementById('pool_size').readOnly = isSystem;
-  document.getElementById('pool_size').style.background = isSystem ? '#f3f4f6' : '';
+  document.getElementById('min_pool_size').readOnly = isSystem;
+  document.getElementById('min_pool_size').style.background = isSystem ? '#f3f4f6' : '';
+  document.getElementById('max_pool_size').readOnly = isSystem;
+  document.getElementById('max_pool_size').style.background = isSystem ? '#f3f4f6' : '';
   document.getElementById('enabled').disabled = isSystem;
 
   document.getElementById('form-submit-btn').textContent = 'Update Backend';
@@ -175,9 +190,12 @@ function cancelEdit() {
   document.getElementById('command').value = '';
   document.getElementById('command').readOnly = false;
   document.getElementById('command').style.background = '';
-  document.getElementById('pool_size').value = '1';
-  document.getElementById('pool_size').readOnly = false;
-  document.getElementById('pool_size').style.background = '';
+  document.getElementById('min_pool_size').value = '1';
+  document.getElementById('min_pool_size').readOnly = false;
+  document.getElementById('min_pool_size').style.background = '';
+  document.getElementById('max_pool_size').value = '1';
+  document.getElementById('max_pool_size').readOnly = false;
+  document.getElementById('max_pool_size').style.background = '';
   document.getElementById('tool_prefix').value = '';
   document.getElementById('enabled').checked = true;
   document.getElementById('enabled').disabled = false;

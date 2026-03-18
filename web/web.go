@@ -6,6 +6,7 @@ package web
 import (
 	"encoding/json"
 	"fmt"
+	"html"
 	"html/template"
 	"log"
 	"net/http"
@@ -40,8 +41,19 @@ type Handler struct {
 
 // NewHandler creates a Handler by parsing templates from the given directory.
 func NewHandler(st *store.Store, templateDir string) (*Handler, error) {
+	// Create template with functions first, then parse
+	tmpl := template.New("").Funcs(template.FuncMap{
+		"js": func(s string) template.JS {
+			return template.JS(html.EscapeString(s))
+		},
+		"json": func(v interface{}) template.JS {
+			b, _ := json.Marshal(v)
+			return template.JS(b)
+		},
+	})
+
 	pattern := filepath.Join(templateDir, "*.html")
-	tmpl, err := template.ParseGlob(pattern)
+	tmpl, err := tmpl.ParseGlob(pattern)
 	if err != nil {
 		return nil, fmt.Errorf("parse templates %s: %w", pattern, err)
 	}
@@ -248,6 +260,7 @@ func (h *Handler) loginPost(w http.ResponseWriter, r *http.Request) {
 		HttpOnly: true,
 		SameSite: http.SameSiteLaxMode,
 		MaxAge:   int(sessionTTL.Seconds()),
+		Secure:   !isLocalhost(r),
 	})
 
 	http.Redirect(w, r, "/web/", http.StatusSeeOther)
@@ -627,20 +640,30 @@ func (h *Handler) AdminBackendsCreateHandler(w http.ResponseWriter, r *http.Requ
 
 	id := strings.TrimSpace(r.FormValue("id"))
 	command := strings.TrimSpace(r.FormValue("command"))
-	poolSizeStr := r.FormValue("pool_size")
+	minPoolSizeStr := r.FormValue("min_pool_size")
+	maxPoolSizeStr := r.FormValue("max_pool_size")
 	toolPrefix := strings.TrimSpace(r.FormValue("tool_prefix"))
 	env := strings.TrimSpace(r.FormValue("env"))
 	envMappings := strings.TrimSpace(r.FormValue("env_mappings"))
 	enabled := r.FormValue("enabled") == "on"
 
+	// Validate backend ID: alphanumeric, dashes, underscores, max 50 chars
 	if id == "" || command == "" {
 		http.Redirect(w, r, "/web/admin/backends?error=ID+and+command+required", http.StatusSeeOther)
 		return
 	}
+	if !isValidBackendID(id) {
+		http.Redirect(w, r, "/web/admin/backends?error=Invalid+backend+ID:+use+only+letters,+numbers,+dashes,+and+underscores", http.StatusSeeOther)
+		return
+	}
 
-	poolSize := 1
-	if n := parseInt(poolSizeStr); n > 0 {
-		poolSize = n
+	minPoolSize := 1
+	if n := parseInt(minPoolSizeStr); n > 0 {
+		minPoolSize = n
+	}
+	maxPoolSize := minPoolSize
+	if ms := parseInt(maxPoolSizeStr); ms > 0 {
+		maxPoolSize = ms
 	}
 	if env == "" {
 		env = "{}"
@@ -652,7 +675,9 @@ func (h *Handler) AdminBackendsCreateHandler(w http.ResponseWriter, r *http.Requ
 	b := &store.Backend{
 		ID:          id,
 		Command:     command,
-		PoolSize:    poolSize,
+		PoolSize:    minPoolSize,
+		MinPoolSize: minPoolSize,
+		MaxPoolSize: maxPoolSize,
 		ToolPrefix:  toolPrefix,
 		Env:         env,
 		EnvMappings: envMappings,
@@ -675,15 +700,30 @@ func (h *Handler) AdminBackendsEditHandler(w http.ResponseWriter, r *http.Reques
 
 	id := r.FormValue("id")
 	command := strings.TrimSpace(r.FormValue("command"))
-	poolSizeStr := r.FormValue("pool_size")
+	minPoolSizeStr := r.FormValue("min_pool_size")
+	maxPoolSizeStr := r.FormValue("max_pool_size")
 	toolPrefix := strings.TrimSpace(r.FormValue("tool_prefix"))
 	env := strings.TrimSpace(r.FormValue("env"))
 	envMappings := strings.TrimSpace(r.FormValue("env_mappings"))
 	enabled := r.FormValue("enabled") == "on"
 
-	poolSize := 1
-	if n := parseInt(poolSizeStr); n > 0 {
-		poolSize = n
+	// Validate inputs
+	if id == "" || command == "" {
+		http.Redirect(w, r, "/web/admin/backends?error=ID+and+command+required", http.StatusSeeOther)
+		return
+	}
+	if !isValidBackendID(id) {
+		http.Redirect(w, r, "/web/admin/backends?error=Invalid+backend+ID", http.StatusSeeOther)
+		return
+	}
+
+	minPoolSize := 1
+	if n := parseInt(minPoolSizeStr); n > 0 {
+		minPoolSize = n
+	}
+	maxPoolSize := minPoolSize
+	if ms := parseInt(maxPoolSizeStr); ms > 0 {
+		maxPoolSize = ms
 	}
 	if env == "" {
 		env = "{}"
@@ -702,7 +742,9 @@ func (h *Handler) AdminBackendsEditHandler(w http.ResponseWriter, r *http.Reques
 	b := &store.Backend{
 		ID:          id,
 		Command:     command,
-		PoolSize:    poolSize,
+		PoolSize:    minPoolSize,
+		MinPoolSize: minPoolSize,
+		MaxPoolSize: maxPoolSize,
 		ToolPrefix:  toolPrefix,
 		Env:         env,
 		EnvMappings: envMappings,
@@ -811,6 +853,27 @@ func parseInt(s string) int {
 		}
 	}
 	return n
+}
+
+// isValidBackendID validates backend ID: alphanumeric, dashes, underscores, max 50 chars
+func isValidBackendID(id string) bool {
+	if len(id) > 50 {
+		return false
+	}
+	for _, c := range id {
+		if !((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '-' || c == '_') {
+			return false
+		}
+	}
+	return true
+}
+
+// isLocalhost returns true if the request is from localhost
+func isLocalhost(r *http.Request) bool {
+	host := r.Host
+	return host == "localhost" || host == "localhost:8080" ||
+		host == "127.0.0.1" || host == "127.0.0.1:8080" ||
+		host == "[::1]" || host == "[::1]:8080"
 }
 
 // ---------- Admin: OAuth Clients ----------

@@ -4,6 +4,23 @@
 server:
   port: "8080"
   logLevel: info    # debug | info | warn | error
+  authCodeTTL: "10m"       # How long auth codes live (e.g., "10m", "10 minutes")
+  accessTokenTTL: "24h"    # How long access tokens live (e.g., "24h", "28d", "672h")
+
+# Tool muxer configuration - maps user tokens to backend env vars
+toolMuxer:
+  # env mappings: maps user token keys to backend environment variable names
+  # Example: user token "ATLASSIAN_API_TOKEN" -> backend env var "API_TOKEN"
+  # envMappings:
+  #   ATLASSIAN_API_TOKEN: API_TOKEN
+  #   ATLASSIAN_EMAIL: EMAIL
+
+  # systemwideEnv: environment variables available to all backends
+  # systemwideEnv:
+  #   DOMAIN: example.atlassian.net
+
+  # toolPrefix: prefix for all tools from this backend (e.g., "atlassian_jira_create_issue")
+  # toolPrefix: ""
 
 backends:
   # Example: filesystem backend

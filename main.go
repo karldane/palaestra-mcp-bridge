@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -36,23 +37,40 @@ type app struct {
 func (a *app) getPoolForUser(userID, backendID string) *poolmgr.Pool {
 	// Look up backend from DB first, fall back to config.
 	var command string
-	var poolSize int
+	var poolSize, minPoolSize, maxPoolSize int
 
 	if b, err := a.store.GetBackend(backendID); err == nil {
 		command = b.Command
 		poolSize = b.PoolSize
+		minPoolSize = b.MinPoolSize
+		maxPoolSize = b.MaxPoolSize
+		// Set defaults
+		if minPoolSize == 0 {
+			minPoolSize = 1
+		}
+		if maxPoolSize == 0 {
+			maxPoolSize = minPoolSize
+		}
+		log.Printf("[DEBUG getPoolForUser] backend %s found in DB: command=%q, minPoolSize=%d, maxPoolSize=%d", backendID, command, minPoolSize, maxPoolSize)
 	} else if bc, ok := a.config.Backends[backendID]; ok {
 		command = bc.Command
 		poolSize = bc.PoolSize
+		minPoolSize = bc.PoolSize
+		maxPoolSize = bc.PoolSize
+		log.Printf("[DEBUG getPoolForUser] backend %s found in config: command=%q, poolSize=%d", backendID, command, poolSize)
 	} else {
 		// Shouldn't happen, but fall back to defaults.
 		command = "echo"
 		poolSize = 1
+		minPoolSize = 1
+		maxPoolSize = 1
+		log.Printf("[DEBUG getPoolForUser] WARNING: backend %s not found, using default echo", backendID)
 	}
 
 	env := a.toolMuxer.BuildEnvForUser(userID, backendID)
+	log.Printf("[DEBUG getPoolForUser] creating pool for backendID=%s, userID=%s, command=%q, min=%d, max=%d, envCount=%d", backendID, userID, command, minPoolSize, maxPoolSize, len(env))
 	return a.poolManager.GetOrCreateUserPool(
-		backendID, userID, command, poolSize, env,
+		backendID, userID, command, minPoolSize, maxPoolSize, env,
 	)
 }
 
@@ -233,12 +251,16 @@ func handleInitialize(a *app, w http.ResponseWriter, r *http.Request, userID str
 
 // handleToolsList aggregates tools from all enabled backends
 func handleToolsList(a *app, w http.ResponseWriter, r *http.Request, userID string, body []byte, id interface{}) {
+	log.Printf("CUSTOM DEBUG: handleToolsList called for userID: %s", userID)
+	log.Printf("handleToolsList called for userID: %s", userID)
 	backends, err := a.store.ListBackends()
 	if err != nil {
+		log.Printf("Error listing backends: %v", err)
 		// Fallback to default backend on error
 		handleDefaultBackend(a, w, r, userID, body, id)
 		return
 	}
+	log.Printf("Found %d backends", len(backends))
 	if len(backends) == 0 {
 		// No backends configured, return only system tools
 		var allTools []map[string]interface{}
@@ -304,8 +326,10 @@ func handleToolsList(a *app, w http.ResponseWriter, r *http.Request, userID stri
 
 	for _, backend := range backends {
 		if !backend.Enabled {
+			log.Printf("Skipping disabled backend: %s", backend.ID)
 			continue
 		}
+		log.Printf("Processing backend: %s (tool_prefix: %s, pool_size: %d)", backend.ID, backend.ToolPrefix, backend.PoolSize)
 
 		pool := a.getPoolForUser(userID, backend.ID)
 		pool.TouchLastUsed()
@@ -321,6 +345,7 @@ func handleToolsList(a *app, w http.ResponseWriter, r *http.Request, userID stri
 			}
 			reqBody, _ := json.Marshal(req)
 			reqBody = append(reqBody, '\n')
+			log.Printf("Sending tools/list request to backend %s: %s", backend.ID, string(reqBody))
 
 			respCh := pool.RegisterRequest(reqID)
 			proc.Stdin.Write(reqBody)
@@ -329,6 +354,7 @@ func handleToolsList(a *app, w http.ResponseWriter, r *http.Request, userID stri
 			case response, ok := <-respCh:
 				pool.UnregisterRequest(reqID)
 				if ok && len(response) > 0 {
+					log.Printf("Received response from backend %s: %s", backend.ID, string(response))
 					var result struct {
 						Result struct {
 							Tools []map[string]interface{} `json:"tools"`
@@ -342,16 +368,23 @@ func handleToolsList(a *app, w http.ResponseWriter, r *http.Request, userID stri
 								firstError = fmt.Errorf("backend %s error: %v", backend.ID, result.Error)
 							}
 						} else {
+							log.Printf("tools/list success from backend %s, got %d tools", backend.ID, len(result.Result.Tools))
 							// Add prefix to tool names if configured
 							prefix := a.toolMuxer.GetPrefixForBackend(backend.ID)
+							log.Printf("Tool prefix for backend %s: %s", backend.ID, prefix)
 							for _, tool := range result.Result.Tools {
 								if name, ok := tool["name"].(string); ok && prefix != "" {
+									log.Printf("Adding prefix %s to tool %s", prefix, name)
 									tool["name"] = prefix + "_" + name
 								}
 								allTools = append(allTools, tool)
 							}
 						}
+					} else {
+						log.Printf("Error unmarshaling response from backend %s: %v", backend.ID, err)
 					}
+				} else {
+					log.Printf("Empty or invalid response from backend %s", backend.ID)
 				}
 			case <-time.After(10 * time.Second):
 				pool.UnregisterRequest(reqID)
@@ -399,6 +432,7 @@ func handleToolsList(a *app, w http.ResponseWriter, r *http.Request, userID stri
 			},
 		},
 	}
+	log.Printf("Adding %d system tools", len(systemTools))
 	allTools = append(allTools, systemTools...)
 
 	// Build aggregated response
@@ -414,6 +448,7 @@ func handleToolsList(a *app, w http.ResponseWriter, r *http.Request, userID stri
 			"tools": allTools,
 		},
 	}
+	log.Printf("Returning %d total tools", len(allTools))
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(response)
@@ -449,6 +484,53 @@ func handleToolsCall(a *app, w http.ResponseWriter, r *http.Request, userID stri
 						}
 					case "mcpbridge_refresh_tools":
 						result = "Refreshed tools from all enabled backends"
+					case "mcpbridge_capabilities":
+						// Get cached capabilities
+						cachedCaps, err := a.store.GetAllBackendCapabilities()
+						if err != nil {
+							cachedCaps = make(map[string]*store.BackendCapabilities)
+						}
+						backends, err := a.store.ListBackends()
+						if err != nil {
+							result = "Error: " + err.Error()
+						} else {
+							var namespaceSummary []string
+							var totalTools int
+							for _, backend := range backends {
+								if caps, ok := cachedCaps[backend.ID]; ok {
+									namespaceSummary = append(namespaceSummary, fmt.Sprintf("%s (%d tools)", backend.ID, caps.ToolCount))
+									totalTools += caps.ToolCount
+								}
+							}
+							result = "=== MCP Bridge Capabilities ===\n\n"
+							if len(namespaceSummary) > 0 {
+								result += "Available integrations: "
+								result += strings.Join(namespaceSummary, ", ")
+								result += fmt.Sprintf(", Bridge Admin (5 tools). Total: %d tools.\n\n", totalTools+5)
+							} else {
+								result += "No backends configured for this user. Bridge Admin (5 tools) is always available.\n\n"
+							}
+							result += "--- Backends ---\n"
+							for _, backend := range backends {
+								var status string
+								if backend.IsSystem {
+									status = "system (always available)"
+								} else {
+									status = "available (not configured)"
+								}
+								if caps, ok := cachedCaps[backend.ID]; ok {
+									result += fmt.Sprintf("- %s: %s (%d tools)\n", backend.ID, status, caps.ToolCount)
+								} else {
+									result += fmt.Sprintf("- %s: %s\n", backend.ID, status)
+								}
+							}
+							result += "\n--- System Tools (always available) ---\n"
+							result += "- mcpbridge_ping: Check bridge connectivity\n"
+							result += "- mcpbridge_version: Get version info\n"
+							result += "- mcpbridge_list_backends: List backends\n"
+							result += "- mcpbridge_refresh_tools: Refresh tools from backends\n"
+							result += "- mcpbridge_capabilities: This tool\n"
+						}
 					default:
 						result = "Unknown system tool: " + name
 					}
@@ -672,7 +754,15 @@ func seedBackendsFromConfig(st *store.Store, cfg *config.InternalConfig) {
 
 func main() {
 	seedUser := flag.Bool("seed", false, "Seed a default test user (admin@localhost / admin) if no users exist")
+	versionFlag := flag.Bool("version", false, "Print version and exit")
+	insecureTesting := flag.Bool("INSECURE_TESTING_MODE", false, "Enable insecure testing mode on port 8081 (no auth, admin user)")
 	flag.Parse()
+
+	if *versionFlag {
+		fmt.Println("mcp-bridge version 1.0.0")
+		os.Exit(0)
+	}
+	logJSON("info", "DEBUG: MAIN FUNCTION STARTED - UNIQUE STRING 12345")
 
 	command := os.Getenv("COMMAND")
 	if command == "" {
@@ -704,11 +794,20 @@ func main() {
 		if cfg.Server.Port != "" {
 			port = cfg.Server.Port
 		}
-		logJSON("info", fmt.Sprintf("loaded config from %s with %d backends", configPath, len(cfg.Backends)))
+		logJSON("info", fmt.Sprintf("loaded config from %s with %d backends, authCodeTTL=%v, accessTokenTTL=%v",
+			configPath, len(cfg.Backends), cfg.Server.AuthCodeTTL, cfg.Server.AccessTokenTTL))
 	} else {
+		logJSON("info", fmt.Sprintf("no config file loaded (tried %s): %v", configPath, err))
 		// No config file — single backend mode using env vars
 		cfg = &config.InternalConfig{
-			Server: config.ServerConfig{Port: port, LogLevel: "info"},
+			Server: config.ServerConfig{
+				Port:                 port,
+				LogLevel:             "info",
+				AuthCodeTTL:          "10m",
+				AccessTokenTTL:       "24h",
+				AuthCodeTTLParsed:    auth.DefaultCodeTTL,
+				AccessTokenTTLParsed: auth.DefaultTokenTTL,
+			},
 			Backends: map[string]config.BackendConfig{
 				"default": {
 					Command:  command,
@@ -763,8 +862,8 @@ func main() {
 	authHandler := &auth.Handler{
 		Store:    st,
 		Issuer:   issuer,
-		CodeTTL:  auth.DefaultCodeTTL,
-		TokenTTL: auth.DefaultTokenTTL,
+		CodeTTL:  cfg.Server.AuthCodeTTLParsed,
+		TokenTTL: cfg.Server.AccessTokenTTLParsed,
 	}
 
 	// ---- Wire up app ----
@@ -804,19 +903,38 @@ func main() {
 	webHandler.OnProbeBackend = func(backendID string) ([]byte, error) {
 		b, err := st.GetBackend(backendID)
 		if err != nil {
-			return nil, fmt.Errorf("backend %s not found: %w", backendID, err)
+			return nil, fmt.Errorf("backend %s found: %w", backendID, err)
 		}
-		// Build the environment: bridge env + backend static env.
-		var env []string
+		// Build the environment: start with base env
+		env := os.Environ()
+
+		// Apply Env mappings with a dummy token for testing
+		// The mappings convert user token keys to backend-specific keys
+		if b.EnvMappings != "" && b.EnvMappings != "{}" {
+			var mappings map[string]string
+			if err := json.Unmarshal([]byte(b.EnvMappings), &mappings); err == nil {
+				// Use a dummy token value for testing - the user can put their
+				// actual token in Env template if they want real auth
+				dummyToken := "probe_test_token"
+				for _, backendKey := range mappings {
+					env = append(env, backendKey+"="+dummyToken)
+				}
+			}
+		}
+
+		// Apply static Env template (higher priority than mappings)
 		if b.Env != "" && b.Env != "{}" {
 			var envMap map[string]string
 			if err := json.Unmarshal([]byte(b.Env), &envMap); err == nil {
-				env = os.Environ()
 				for k, v := range envMap {
 					env = append(env, k+"="+v)
 				}
 			}
 		}
+
+		// Debug: include command and env in result
+		fmt.Printf("[DEBUG ProbeBackend] backend=%s, command=%q, env=%v\n", backendID, b.Command, env)
+
 		result := poolmgr.ProbeBackend(b.Command, env, 10*time.Second)
 		return json.Marshal(result)
 	}
@@ -832,6 +950,43 @@ func main() {
 
 	logJSON("info", fmt.Sprintf("MCP SSE Bridge started on :%s (command=%s, pool=%d, db=%s, idleGC=%s)",
 		port, command, poolSize, dbPath, idleTimeout))
+
+	// Start insecure testing server on port 8081 if enabled
+	if *insecureTesting {
+		fmt.Println("================================================================================")
+		fmt.Println("                    *** INSECURE TESTING MODE ENABLED ***                     ")
+		fmt.Println("                                                                                ")
+		fmt.Println("  THIS BRIDGE IS RUNNING IN INSECURE TESTING MODE.                             ")
+		fmt.Println("  Port 8081 is open WITHOUT AUTHENTICATION - DO NOT EXPOSE TO THE INTERNET!   ")
+		fmt.Println("  All requests on port 8081 are authenticated as admin user.                  ")
+		fmt.Println("================================================================================")
+
+		// Get admin user from DB
+		adminUser, err := st.GetUserByEmail("admin@localhost")
+		if err != nil {
+			log.Fatalf("INSECURE_TESTING_MODE requires admin@localhost user to exist: %v", err)
+		}
+
+		// Create mux for testing server (same as production but without auth)
+		testMux := http.NewServeMux()
+		authHandler.Register(testMux)
+		webHandler.Register(testMux)
+		testMux.HandleFunc("/healthz", healthzHandler)
+		testMux.HandleFunc("/readyz", readyzHandler(a))
+
+		// Testing server uses the same MCP bridge but injects admin user into context
+		testMux.Handle("/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			ctx := context.WithValue(r.Context(), auth.UserIDKey, adminUser.ID)
+			mcpBridgeServer.Handler().ServeHTTP(w, r.WithContext(ctx))
+		}))
+
+		go func() {
+			logJSON("info", "INSECURE TESTING SERVER started on :8081 (no auth, admin user)")
+			if err := http.ListenAndServe(":8081", testMux); err != nil && err != http.ErrServerClosed {
+				log.Printf("INSECURE TESTING SERVER error: %v", err)
+			}
+		}()
+	}
 
 	if err := http.ListenAndServe(":"+port, mux); err != nil {
 		log.Fatal(err)

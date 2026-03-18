@@ -1012,7 +1012,7 @@ func TestIntegration_LiveReload_EditBackendTearsDownPools(t *testing.T) {
 
 	// Create a user pool for this backend so we can verify it gets torn down.
 	env := a.toolMuxer.BuildEnvForUser("test-user-1", "live-be")
-	pool := a.poolManager.GetOrCreateUserPool("live-be", "test-user-1", "cat", 1, env)
+	pool := a.poolManager.GetOrCreateUserPool("live-be", "test-user-1", "cat", 1, 1, env)
 	if pool == nil {
 		t.Fatal("expected pool to be created")
 	}
@@ -1046,12 +1046,13 @@ func TestIntegration_LiveReload_EditBackendTearsDownPools(t *testing.T) {
 
 	// Edit the backend via the web UI.
 	form := url.Values{
-		"id":          {"live-be"},
-		"command":     {"echo updated"},
-		"pool_size":   {"2"},
-		"tool_prefix": {"live"},
-		"env":         {"{}"},
-		"enabled":     {"on"},
+		"id":            {"live-be"},
+		"command":       {"echo updated"},
+		"min_pool_size": {"2"},
+		"max_pool_size": {"2"},
+		"tool_prefix":   {"live"},
+		"env":           {"{}"},
+		"enabled":       {"on"},
 	}
 	req := httptest.NewRequest(http.MethodPost, "/web/admin/backends/edit", strings.NewReader(form.Encode()))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
@@ -1095,7 +1096,7 @@ func TestIntegration_LiveReload_DeleteBackendTearsDownPools(t *testing.T) {
 		t.Fatalf("CreateBackend: %v", err)
 	}
 	env := a.toolMuxer.BuildEnvForUser("test-user-1", "del-live")
-	a.poolManager.GetOrCreateUserPool("del-live", "test-user-1", "cat", 1, env)
+	a.poolManager.GetOrCreateUserPool("del-live", "test-user-1", "cat", 1, 1, env)
 
 	admin := &store.User{
 		Name: "Admin", Email: "admin@del.test", Password: "pw", Role: "admin",
@@ -1255,6 +1256,84 @@ func TestIntegration_InlineMCPWithAPIKey(t *testing.T) {
 
 		if result["status"] != "ok" {
 			t.Errorf("expected status ok, got %v", result["status"])
+		}
+	})
+
+	// Test 4: tools/call with mcpbridge_list_backends
+	t.Run("tools/call mcpbridge_list_backends works", func(t *testing.T) {
+		body := `{"jsonrpc":"2.0","method":"tools/call","id":3,"params":{"name":"mcpbridge_list_backends"}}`
+		req := httptest.NewRequest("POST", "/", strings.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Authorization", "Bearer "+apiKey)
+
+		w := httptest.NewRecorder()
+		a.auth.Middleware(rootHandler(a)).ServeHTTP(w, req)
+
+		if w.Code != http.StatusOK {
+			t.Fatalf("expected 200, got %d, body: %s", w.Code, w.Body.String())
+		}
+
+		var resp map[string]interface{}
+		if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+			t.Fatalf("invalid JSON response: %v", err)
+		}
+
+		result, ok := resp["result"].(map[string]interface{})
+		if !ok {
+			t.Fatal("expected result in response")
+		}
+
+		if result["status"] != "ok" {
+			t.Errorf("expected status ok, got %v", result["status"])
+		}
+	})
+
+	// Test 5: tools/call with mcpbridge_capabilities
+	t.Run("tools/call mcpbridge_capabilities works", func(t *testing.T) {
+		body := `{"jsonrpc":"2.0","method":"tools/call","id":4,"params":{"name":"mcpbridge_capabilities"}}`
+		req := httptest.NewRequest("POST", "/", strings.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Authorization", "Bearer "+apiKey)
+
+		w := httptest.NewRecorder()
+		a.auth.Middleware(rootHandler(a)).ServeHTTP(w, req)
+
+		if w.Code != http.StatusOK {
+			t.Fatalf("expected 200, got %d, body: %s", w.Code, w.Body.String())
+		}
+
+		var resp map[string]interface{}
+		if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+			t.Fatalf("invalid JSON response: %v", err)
+		}
+
+		result, ok := resp["result"].(map[string]interface{})
+		if !ok {
+			t.Fatal("expected result in response")
+		}
+
+		// Check for content (the tool should return text content)
+		content, ok := result["content"].([]interface{})
+		if !ok || len(content) == 0 {
+			t.Fatal("expected content in result")
+		}
+		textContent, ok := content[0].(map[string]interface{})
+		if !ok {
+			t.Fatal("expected text content")
+		}
+		text, ok := textContent["text"].(string)
+		if !ok {
+			t.Fatal("expected text string")
+		}
+		// Verify the output contains expected information
+		if !strings.Contains(text, "MCP Bridge Capabilities") {
+			t.Errorf("expected output to contain 'MCP Bridge Capabilities', got: %s", text)
+		}
+		if !strings.Contains(text, "Bridge Admin") {
+			t.Errorf("expected output to contain 'Bridge Admin', got: %s", text)
+		}
+		if !strings.Contains(text, "mcpbridge_") {
+			t.Errorf("expected output to contain 'mcpbridge_', got: %s", text)
 		}
 	})
 }

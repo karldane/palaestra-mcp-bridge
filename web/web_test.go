@@ -830,12 +830,13 @@ func TestAdminBackends_Create(t *testing.T) {
 	cookie := loginCookie(t, h, mux, "admin@test.com", "secret")
 
 	form := url.Values{
-		"id":          {"new-be"},
-		"command":     {"echo hello"},
-		"pool_size":   {"3"},
-		"tool_prefix": {"pref"},
-		"env":         {`{"KEY":"val"}`},
-		"enabled":     {"on"},
+		"id":            {"new-be"},
+		"command":       {"echo hello"},
+		"min_pool_size": {"3"},
+		"max_pool_size": {"5"},
+		"tool_prefix":   {"pref"},
+		"env":           {`{"KEY":"val"}`},
+		"enabled":       {"on"},
 	}
 	req := authedRequest(http.MethodPost, "/web/admin/backends/create", form.Encode(), cookie)
 	w := httptest.NewRecorder()
@@ -849,7 +850,7 @@ func TestAdminBackends_Create(t *testing.T) {
 	if err != nil {
 		t.Fatalf("backend not found: %v", err)
 	}
-	if b.Command != "echo hello" || b.PoolSize != 3 || b.ToolPrefix != "pref" || !b.Enabled {
+	if b.Command != "echo hello" || b.MinPoolSize != 3 || b.MaxPoolSize != 5 || b.ToolPrefix != "pref" || !b.Enabled {
 		t.Errorf("unexpected backend: %+v", b)
 	}
 }
@@ -920,12 +921,13 @@ func TestAdminBackends_Edit(t *testing.T) {
 	cookie := loginCookie(t, h, mux, "admin@test.com", "secret")
 
 	form := url.Values{
-		"id":          {"edit-be"},
-		"command":     {"new-cmd"},
-		"pool_size":   {"5"},
-		"tool_prefix": {"new-pref"},
-		"env":         {`{"A":"B"}`},
-		"enabled":     {"on"},
+		"id":            {"edit-be"},
+		"command":       {"new-cmd"},
+		"min_pool_size": {"5"},
+		"max_pool_size": {"10"},
+		"tool_prefix":   {"new-pref"},
+		"env":           {`{"A":"B"}`},
+		"enabled":       {"on"},
 	}
 	req := authedRequest(http.MethodPost, "/web/admin/backends/edit", form.Encode(), cookie)
 	w := httptest.NewRecorder()
@@ -936,7 +938,7 @@ func TestAdminBackends_Edit(t *testing.T) {
 	}
 
 	b, _ := st.GetBackend("edit-be")
-	if b.Command != "new-cmd" || b.PoolSize != 5 || b.ToolPrefix != "new-pref" {
+	if b.Command != "new-cmd" || b.MinPoolSize != 5 || b.MaxPoolSize != 10 || b.ToolPrefix != "new-pref" {
 		t.Errorf("unexpected backend after edit: %+v", b)
 	}
 }

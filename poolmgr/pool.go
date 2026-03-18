@@ -62,17 +62,32 @@ type Pool struct {
 	DedicatedFor    string
 	lastUsed        time.Time
 	lastUsedMu      sync.Mutex
+	MinPoolSize     int // Minimum warm processes to maintain
+	MaxPoolSize     int // Maximum warm processes (0 = unlimited)
+	CurrentSize     int // Current number of warm processes
 }
 
 func NewPool(backendID string, size int, command string) *Pool {
-	return NewPoolWithEnv(backendID, size, command, nil)
+	// Use size as both min and max (0 means unlimited, so we use size for max)
+	return NewPoolWithEnv(backendID, size, size, command, nil)
 }
 
 // NewPoolWithEnv creates a pool that spawns processes with the given explicit
 // environment. If env is nil, spawned processes inherit the bridge process env.
-func NewPoolWithEnv(backendID string, size int, command string, env []string) *Pool {
+// minPoolSize: minimum warm processes to maintain
+// maxPoolSize: maximum warm processes (0 = unlimited)
+func NewPoolWithEnv(backendID string, minPoolSize, maxPoolSize int, command string, env []string) *Pool {
+	// If maxPoolSize is 0, set it to minPoolSize (no dynamic scaling)
+	if maxPoolSize == 0 {
+		maxPoolSize = minPoolSize
+	}
+	// Ensure channel capacity is at least maxPoolSize
+	channelSize := maxPoolSize
+	if channelSize < 1 {
+		channelSize = 1
+	}
 	pool := &Pool{
-		Warm:            make(chan *ManagedProcess, size),
+		Warm:            make(chan *ManagedProcess, channelSize),
 		Spawning:        make(chan struct{}, 1),
 		Command:         command,
 		Env:             env,
@@ -81,9 +96,13 @@ func NewPoolWithEnv(backendID string, size int, command string, env []string) *P
 		broadcastCh:     make(chan []byte, 100),
 		BackendID:       backendID,
 		lastUsed:        time.Now(),
+		MinPoolSize:     minPoolSize,
+		MaxPoolSize:     maxPoolSize,
+		CurrentSize:     0,
 	}
 
-	for i := 0; i < size; i++ {
+	// Spawn initial processes up to minPoolSize
+	for i := 0; i < minPoolSize; i++ {
 		pool.wg.Add(1)
 		go pool.spawnAndHandshake()
 	}
@@ -187,12 +206,41 @@ func (pool *Pool) spawnAndHandshake() {
 		return
 	}
 
-	pool.Warm <- proc
+	// Skip MCP handshake for simple commands that don't speak MCP
+	if isSimpleCommand(pool.Command) {
+		pool.mu.Lock()
+		pool.CurrentSize++
+		pool.mu.Unlock()
+		pool.Warm <- proc
+		pool.mu.Lock()
+		pool.backoffDelay = 100 * time.Millisecond
+		pool.mu.Unlock()
+		return
+	}
 
-	go func() {
-		time.Sleep(200 * time.Millisecond)
-		pool.performMCPHandshake(proc)
-	}()
+	// Run MCP handshake FIRST, before marking as warm
+	// This ensures WaitForWarm only returns processes that have completed handshake
+	if pool.performMCPHandshake(proc) {
+		pool.mu.Lock()
+		pool.CurrentSize++
+		pool.mu.Unlock()
+		pool.Warm <- proc
+	} else {
+		// Handshake failed - don't add to warm pool, process will be cleaned up
+		proc.Kill()
+		// Retry spawning after a delay
+		if !pool.IsClosed() {
+			pool.mu.Lock()
+			delay := pool.backoffDelay
+			pool.backoffDelay = min(pool.backoffDelay*2, 5*time.Second)
+			pool.mu.Unlock()
+			time.AfterFunc(delay, func() {
+				pool.wg.Add(1)
+				go pool.spawnAndHandshake()
+			})
+		}
+		return
+	}
 
 	pool.mu.Lock()
 	pool.backoffDelay = 100 * time.Millisecond
@@ -270,22 +318,69 @@ func (pool *Pool) IsReady() bool {
 }
 
 func (pool *Pool) WaitForWarm(timeout time.Duration) bool {
+	fmt.Printf("[DEBUG WaitForWarm] backend=%s, timeout=%v, current warm count=%d\n", pool.BackendID, timeout, len(pool.Warm))
 	deadline := time.Now().Add(timeout)
 	for time.Now().Before(deadline) {
 		if len(pool.Warm) > 0 {
+			fmt.Printf("[DEBUG WaitForWarm] backend=%s, found warm process\n", pool.BackendID)
 			return true
 		}
 		time.Sleep(50 * time.Millisecond)
 	}
+	fmt.Printf("[DEBUG WaitForWarm] backend=%s, timed out waiting for warm\n", pool.BackendID)
 	return false
+}
+
+// WaitForWarmWithMax tries to acquire a warm process. If MaxPoolSize is set and all
+// processes are currently in use (CurrentSize >= MaxPoolSize), it returns immediately
+// with an error indicating max is reached. Otherwise it waits up to the timeout for
+// a process to become available.
+func (pool *Pool) WaitForWarmWithMax(timeout time.Duration) (*ManagedProcess, error) {
+	maxPoolSize := pool.MaxPoolSize
+
+	// If we have a max and we're at or above it, check if there's a process available
+	if maxPoolSize > 0 {
+		currentSize := pool.GetCurrentSize()
+		if currentSize >= maxPoolSize {
+			// All processes are busy - try to get one anyway (may have been released)
+			select {
+			case proc := <-pool.Warm:
+				return proc, nil
+			default:
+				// All processes are definitely busy and we're at max - return error
+				return nil, fmt.Errorf("max_pool_size reached: %d/%d processes busy", currentSize, maxPoolSize)
+			}
+		}
+	}
+
+	// Try to get a process without waiting
+	select {
+	case proc := <-pool.Warm:
+		return proc, nil
+	default:
+	}
+
+	// Wait for a process to become available
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		select {
+		case proc := <-pool.Warm:
+			return proc, nil
+		default:
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	return nil, fmt.Errorf("timeout waiting for warm process")
 }
 
 // SpawnProcess starts a new child process with the given command. If env is
 // non-nil, cmd.Env is set explicitly (the child does NOT inherit the bridge
 // environment); if env is nil, the child inherits the bridge's environment.
 func SpawnProcess(pool *Pool, command string, env []string) (*ManagedProcess, error) {
+	fmt.Printf("[DEBUG SpawnProcess] backend=%s, command=%q\n", pool.BackendID, command)
 	proc, err := spawnProcessRaw(command, env)
 	if err != nil {
+		fmt.Printf("[DEBUG SpawnProcess] ERROR: %v\n", err)
 		return nil, err
 	}
 
@@ -295,12 +390,86 @@ func SpawnProcess(pool *Pool, command string, env []string) (*ManagedProcess, er
 	return proc, nil
 }
 
+// isSimpleCommand returns true if the command is a simple command that doesn't
+// speak MCP (like cat, yes, npx, false). These commands skip MCP handshake.
+func isSimpleCommand(command string) bool {
+	return command == "cat" || command == "npx" || command == "yes" ||
+		command == "false" || command == "sh -c 'echo invalid'" ||
+		strings.HasPrefix(command, "github-mcp-server") ||
+		strings.HasPrefix(command, "npx ")
+}
+
+// isAllowedCommand validates that the command is safe to execute.
+// It allows:
+// - Simple commands: cat, npx, yes, false, echo, sleep, env
+// - Commands starting with allowed prefixes: npx -, github-mcp-server, npm, node
+// - Absolute paths (starting with /)
+// Returns an error if the command is not allowed.
+func isAllowedCommand(command string) error {
+	// Deny patterns that could be dangerous
+	dangerous := []string{"rm -", "rmdir", "del ", "format", "mkfs", "dd if=",
+		">/dev/", "&& rm", "|| rm", "; rm", "| rm", "`", "$(", "\\x"}
+	for _, d := range dangerous {
+		if strings.Contains(command, d) {
+			return fmt.Errorf("command contains dangerous pattern: %s", d)
+		}
+	}
+
+	// Allow simple commands
+	simple := map[string]bool{
+		"cat": true, "npx": true, "yes": true, "false": true, "echo": true, "sleep": true, "env": true,
+	}
+	if simple[command] {
+		return nil
+	}
+
+	// Allow commands with specific prefixes (MCP servers and common tools)
+	allowedPrefixes := []string{
+		"npx ", "npm ", "node ", "github-mcp-server",
+		"github-mcp-server ", "uvx ", "bunx ", "sleep ",
+		"echo ", "env ",
+	}
+	for _, prefix := range allowedPrefixes {
+		if strings.HasPrefix(command, prefix) {
+			return nil
+		}
+	}
+
+	// Allow absolute paths
+	if strings.HasPrefix(command, "/") && !strings.Contains(command, " ") {
+		return nil
+	}
+
+	// Allow simple shell constructs (but not arbitrary shell execution)
+	if strings.HasPrefix(command, "sh -c '") || strings.HasPrefix(command, "sh -c \"") {
+		return nil
+	}
+
+	return fmt.Errorf("command not in allowlist: %s", command)
+}
+
 // spawnProcessRaw starts a child process without launching any capture
 // goroutines. The caller is responsible for reading stdout/stderr.
 func spawnProcessRaw(command string, env []string) (*ManagedProcess, error) {
+	// Validate command before execution
+	if err := isAllowedCommand(command); err != nil {
+		return nil, fmt.Errorf("command not allowed: %w", err)
+	}
+
 	var cmd *exec.Cmd
-	if command == "cat" || command == "npx" || command == "yes" || command == "false" || command == "sh -c 'echo invalid'" {
-		cmd = exec.Command(command)
+	// Check if command is a simple command without shell features
+	isSimple := command == "cat" || command == "npx" || command == "yes" ||
+		command == "false" || command == "sh -c 'echo invalid'" ||
+		strings.HasPrefix(command, "github-mcp-server") ||
+		strings.HasPrefix(command, "npx ")
+	if isSimple && !strings.Contains(command, ";") && !strings.Contains(command, "&&") && !strings.Contains(command, "||") {
+		// For commands like "github-mcp-server stdio" or "npx -y ..."
+		if strings.Contains(command, " ") {
+			parts := strings.Fields(command)
+			cmd = exec.Command(parts[0], parts[1:]...)
+		} else {
+			cmd = exec.Command(command)
+		}
 	} else if strings.HasPrefix(command, "/") && !strings.Contains(command, " ") {
 		// Absolute path with no arguments — execute directly.
 		cmd = exec.Command(command)
@@ -486,6 +655,9 @@ func (pool *Pool) SpawnAndHandshake() {
 func (pool *Pool) TryAcquireWarm() *ManagedProcess {
 	select {
 	case proc := <-pool.Warm:
+		pool.mu.Lock()
+		pool.CurrentSize--
+		pool.mu.Unlock()
 		return proc
 	default:
 		return nil
@@ -494,16 +666,28 @@ func (pool *Pool) TryAcquireWarm() *ManagedProcess {
 
 func (pool *Pool) ReleaseWarm(proc *ManagedProcess) {
 	if proc != nil {
+		pool.mu.Lock()
+		pool.CurrentSize++
+		pool.mu.Unlock()
 		pool.Warm <- proc
 	}
 }
 
 func (pool *Pool) SetWarm(proc *ManagedProcess) {
+	pool.mu.Lock()
+	pool.CurrentSize++
+	pool.mu.Unlock()
 	pool.Warm <- proc
 }
 
 func (pool *Pool) GetWarmCount() int {
 	return len(pool.Warm)
+}
+
+func (pool *Pool) GetCurrentSize() int {
+	pool.mu.Lock()
+	defer pool.mu.Unlock()
+	return pool.CurrentSize
 }
 
 func (pool *Pool) IsSpawning() bool {
@@ -626,9 +810,8 @@ func (pm *PoolManager) GetOrCreatePool(backendID, command string, poolSize int) 
 }
 
 // GetOrCreateUserPool returns an existing pool keyed by "backendID:userID",
-// or creates a new one with the given command, pool size, and explicit env.
-// It also touches the pool's last-used timestamp for idle GC.
-func (pm *PoolManager) GetOrCreateUserPool(backendID, userID, command string, poolSize int, env []string) *Pool {
+// or creates a new one with the given command, min/max pool sizes, and environment.
+func (pm *PoolManager) GetOrCreateUserPool(backendID, userID, command string, minPoolSize, maxPoolSize int, env []string) *Pool {
 	key := backendID + ":" + userID
 
 	pm.mu.RLock()
@@ -648,11 +831,19 @@ func (pm *PoolManager) GetOrCreateUserPool(backendID, userID, command string, po
 		return pool
 	}
 
-	pool := NewPoolWithEnv(key, poolSize, command, env)
+	// Ensure defaults
+	if minPoolSize < 1 {
+		minPoolSize = 1
+	}
+	if maxPoolSize < minPoolSize {
+		maxPoolSize = minPoolSize
+	}
+
+	pool := NewPoolWithEnv(key, minPoolSize, maxPoolSize, command, env)
 	pool.SetDedicated(userID)
 	pm.pools[key] = pool
 	pool.TouchLastUsed()
-	logJSON("info", fmt.Sprintf("created user pool %s (command=%s, poolSize=%d)", key, command, poolSize))
+	logJSON("info", fmt.Sprintf("created user pool %s (command=%s, min=%d, max=%d)", key, command, minPoolSize, maxPoolSize))
 	return pool
 }
 
@@ -745,6 +936,43 @@ func (pm *PoolManager) PoolCount() int {
 	pm.mu.RLock()
 	defer pm.mu.RUnlock()
 	return len(pm.pools)
+}
+
+type PoolStatus struct {
+	BackendID   string
+	UserID      string
+	Command     string
+	WarmCount   int
+	CurrentSize int
+	MinPoolSize int
+	MaxPoolSize int
+}
+
+func (pm *PoolManager) GetPoolsForUser(userID string) []PoolStatus {
+	pm.mu.RLock()
+	defer pm.mu.RUnlock()
+
+	var statuses []PoolStatus
+	for key, pool := range pm.pools {
+		// Key format: backendID:userID
+		if !strings.HasSuffix(key, ":"+userID) {
+			continue
+		}
+		parts := strings.SplitN(key, ":", 2)
+		if len(parts) != 2 {
+			continue
+		}
+		statuses = append(statuses, PoolStatus{
+			BackendID:   parts[0],
+			UserID:      parts[1],
+			Command:     pool.Command,
+			WarmCount:   pool.GetWarmCount(),
+			CurrentSize: pool.GetCurrentSize(),
+			MinPoolSize: pool.MinPoolSize,
+			MaxPoolSize: pool.MaxPoolSize,
+		})
+	}
+	return statuses
 }
 
 type SafetyRecycler struct {

@@ -4,6 +4,7 @@ import (
 	"crypto/rand"
 	"database/sql"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"strings"
 	"time"
@@ -55,6 +56,8 @@ func (s *Store) migrate() error {
 	s.db.Exec(`ALTER TABLE users ADD COLUMN role TEXT NOT NULL DEFAULT 'user'`)
 	s.db.Exec(`ALTER TABLE backends ADD COLUMN env_mappings TEXT NOT NULL DEFAULT '{}'`)
 	s.db.Exec(`ALTER TABLE backends ADD COLUMN is_system INTEGER NOT NULL DEFAULT 0`)
+	s.db.Exec(`ALTER TABLE backends ADD COLUMN min_pool_size INTEGER NOT NULL DEFAULT 1`)
+	s.db.Exec(`ALTER TABLE backends ADD COLUMN max_pool_size INTEGER NOT NULL DEFAULT 0`)
 
 	// Migration: rename token to session_id in web_sessions
 	// SQLite doesn't support ALTER TABLE rename column, so we handle this in queries
@@ -153,6 +156,14 @@ CREATE TABLE IF NOT EXISTS api_keys (
 	last_used_at DATETIME,
 	created_at  DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
+
+-- Cached capabilities for each backend (global - same tools for all users)
+CREATE TABLE IF NOT EXISTS backend_capabilities (
+	backend_id  TEXT PRIMARY KEY REFERENCES backends(id) ON DELETE CASCADE,
+	tools       TEXT NOT NULL,
+	tool_count  INTEGER NOT NULL DEFAULT 0,
+	updated_at  DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
 `
 
 // ---------- Backends ----------
@@ -166,6 +177,8 @@ type Backend struct {
 	EnvMappings string // JSON object - maps user token keys to backend-specific keys
 	Enabled     bool
 	IsSystem    bool // true for mcpbridge - system backend that can't be deleted by non-admins
+	MinPoolSize int  // Minimum warm processes to maintain
+	MaxPoolSize int  // Maximum warm processes allowed (0 = unlimited)
 }
 
 func (s *Store) CreateBackend(b *Backend) error {
@@ -180,10 +193,13 @@ func (s *Store) CreateBackend(b *Backend) error {
 	if b.EnvMappings == "" {
 		b.EnvMappings = "{}"
 	}
+	if b.MinPoolSize == 0 {
+		b.MinPoolSize = 1
+	}
 	_, err := s.db.Exec(
-		`INSERT INTO backends (id, command, pool_size, tool_prefix, env, env_mappings, enabled, is_system)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-		b.ID, b.Command, b.PoolSize, b.ToolPrefix, b.Env, b.EnvMappings, enabled, isSystem,
+		`INSERT INTO backends (id, command, pool_size, min_pool_size, max_pool_size, tool_prefix, env, env_mappings, enabled, is_system)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		b.ID, b.Command, b.PoolSize, b.MinPoolSize, b.MaxPoolSize, b.ToolPrefix, b.Env, b.EnvMappings, enabled, isSystem,
 	)
 	return err
 }
@@ -192,8 +208,8 @@ func (s *Store) GetBackend(id string) (*Backend, error) {
 	b := &Backend{}
 	var enabled, isSystem int
 	err := s.db.QueryRow(
-		`SELECT id, command, pool_size, tool_prefix, env, env_mappings, enabled, is_system FROM backends WHERE id = ?`, id,
-	).Scan(&b.ID, &b.Command, &b.PoolSize, &b.ToolPrefix, &b.Env, &b.EnvMappings, &enabled, &isSystem)
+		`SELECT id, command, pool_size, min_pool_size, max_pool_size, tool_prefix, env, env_mappings, enabled, is_system FROM backends WHERE id = ?`, id,
+	).Scan(&b.ID, &b.Command, &b.PoolSize, &b.MinPoolSize, &b.MaxPoolSize, &b.ToolPrefix, &b.Env, &b.EnvMappings, &enabled, &isSystem)
 	if err != nil {
 		return nil, err
 	}
@@ -204,7 +220,7 @@ func (s *Store) GetBackend(id string) (*Backend, error) {
 
 func (s *Store) ListBackends() ([]*Backend, error) {
 	rows, err := s.db.Query(
-		`SELECT id, command, pool_size, tool_prefix, env, env_mappings, enabled, is_system FROM backends ORDER BY id`,
+		`SELECT id, command, pool_size, min_pool_size, max_pool_size, tool_prefix, env, env_mappings, enabled, is_system FROM backends ORDER BY id`,
 	)
 	if err != nil {
 		return nil, err
@@ -215,11 +231,14 @@ func (s *Store) ListBackends() ([]*Backend, error) {
 	for rows.Next() {
 		b := &Backend{}
 		var enabled, isSystem int
-		if err := rows.Scan(&b.ID, &b.Command, &b.PoolSize, &b.ToolPrefix, &b.Env, &b.EnvMappings, &enabled, &isSystem); err != nil {
+		if err := rows.Scan(&b.ID, &b.Command, &b.PoolSize, &b.MinPoolSize, &b.MaxPoolSize, &b.ToolPrefix, &b.Env, &b.EnvMappings, &enabled, &isSystem); err != nil {
 			return nil, err
 		}
 		b.Enabled = enabled != 0
 		b.IsSystem = isSystem != 0
+		if b.MinPoolSize == 0 {
+			b.MinPoolSize = 1
+		}
 		backends = append(backends, b)
 	}
 	return backends, rows.Err()
@@ -237,15 +256,93 @@ func (s *Store) UpdateBackend(b *Backend) error {
 	if b.EnvMappings == "" {
 		b.EnvMappings = "{}"
 	}
+	if b.MinPoolSize == 0 {
+		b.MinPoolSize = 1
+	}
 	_, err := s.db.Exec(
-		`UPDATE backends SET command=?, pool_size=?, tool_prefix=?, env=?, env_mappings=?, enabled=?, is_system=? WHERE id=?`,
-		b.Command, b.PoolSize, b.ToolPrefix, b.Env, b.EnvMappings, enabled, isSystem, b.ID,
+		`UPDATE backends SET command=?, pool_size=?, min_pool_size=?, max_pool_size=?, tool_prefix=?, env=?, env_mappings=?, enabled=?, is_system=? WHERE id=?`,
+		b.Command, b.PoolSize, b.MinPoolSize, b.MaxPoolSize, b.ToolPrefix, b.Env, b.EnvMappings, enabled, isSystem, b.ID,
 	)
 	return err
 }
 
 func (s *Store) DeleteBackend(id string) error {
 	_, err := s.db.Exec(`DELETE FROM backends WHERE id = ?`, id)
+	return err
+}
+
+// ---------- Backend Capabilities Cache ----------
+
+type BackendCapabilities struct {
+	BackendID string
+	Tools     []map[string]interface{}
+	ToolCount int
+	UpdatedAt time.Time
+}
+
+func (s *Store) SetBackendCapabilities(backendID string, tools []map[string]interface{}) error {
+	toolsJSON, err := json.Marshal(tools)
+	if err != nil {
+		return err
+	}
+
+	_, err = s.db.Exec(`
+		INSERT INTO backend_capabilities (backend_id, tools, tool_count, updated_at)
+		VALUES (?, ?, ?, CURRENT_TIMESTAMP)
+		ON CONFLICT(backend_id) DO UPDATE SET tools = excluded.tools, tool_count = excluded.tool_count, updated_at = excluded.updated_at`,
+		backendID, toolsJSON, len(tools),
+	)
+	return err
+}
+
+func (s *Store) GetBackendCapabilities(backendID string) (*BackendCapabilities, error) {
+	var caps BackendCapabilities
+	var toolsJSON []byte
+	var updatedAt sql.NullTime
+	err := s.db.QueryRow(
+		`SELECT backend_id, tools, tool_count, updated_at FROM backend_capabilities WHERE backend_id = ?`,
+		backendID,
+	).Scan(&caps.BackendID, &toolsJSON, &caps.ToolCount, &updatedAt)
+	if err != nil {
+		return nil, err
+	}
+	if err := json.Unmarshal(toolsJSON, &caps.Tools); err != nil {
+		return nil, err
+	}
+	if updatedAt.Valid {
+		caps.UpdatedAt = updatedAt.Time
+	}
+	return &caps, nil
+}
+
+func (s *Store) GetAllBackendCapabilities() (map[string]*BackendCapabilities, error) {
+	rows, err := s.db.Query(`SELECT backend_id, tools, tool_count, updated_at FROM backend_capabilities`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	result := make(map[string]*BackendCapabilities)
+	for rows.Next() {
+		var caps BackendCapabilities
+		var toolsJSON []byte
+		var updatedAt sql.NullTime
+		if err := rows.Scan(&caps.BackendID, &toolsJSON, &caps.ToolCount, &updatedAt); err != nil {
+			return nil, err
+		}
+		if err := json.Unmarshal(toolsJSON, &caps.Tools); err != nil {
+			return nil, err
+		}
+		if updatedAt.Valid {
+			caps.UpdatedAt = updatedAt.Time
+		}
+		result[caps.BackendID] = &caps
+	}
+	return result, rows.Err()
+}
+
+func (s *Store) DeleteBackendCapabilities(backendID string) error {
+	_, err := s.db.Exec(`DELETE FROM backend_capabilities WHERE backend_id = ?`, backendID)
 	return err
 }
 
