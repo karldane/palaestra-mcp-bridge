@@ -74,8 +74,7 @@ func SpawnProcess(pool *Pool, command string, env []string) (*ManagedProcess, er
 func isSimpleCommand(command string) bool {
 	return command == "cat" || command == "npx" || command == "yes" ||
 		command == "false" || command == "sh -c 'echo invalid'" ||
-		strings.HasPrefix(command, "github-mcp-server") ||
-		strings.HasPrefix(command, "npx ")
+		strings.HasPrefix(command, "github-mcp-server")
 }
 
 // isAllowedCommand validates that the command is safe to execute.

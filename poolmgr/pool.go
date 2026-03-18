@@ -237,6 +237,7 @@ func (pool *Pool) spawnAndHandshake() {
 		pool.Warm <- proc
 	} else {
 		// Handshake failed - don't add to warm pool, process will be cleaned up
+		shared.Errorf("MCP handshake failed for backend %s, killing process and retrying", pool.BackendID)
 		proc.Kill()
 		// Retry spawning after a delay
 		if !pool.IsClosed() {
@@ -312,8 +313,9 @@ func (pool *Pool) performMCPHandshake(proc *ManagedProcess) bool {
 				}
 			}
 		}
-	case <-time.After(500 * time.Millisecond):
+	case <-time.After(5 * time.Second):
 		pool.UnregisterRequest(initID)
+		shared.Errorf("MCP handshake timeout for backend %s after 5 seconds", pool.BackendID)
 		return false
 	}
 

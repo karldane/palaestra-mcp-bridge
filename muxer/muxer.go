@@ -3,6 +3,7 @@ package muxer
 import (
 	"encoding/json"
 	"fmt"
+	"os"
 	"strings"
 	"sync"
 
@@ -145,14 +146,24 @@ func (tm *ToolMuxer) HandleToolsCall(userID string, body []byte) ([]byte, *PoolR
 
 // BuildEnvForUser constructs a []string of "KEY=VALUE" pairs for the given
 // user and backend. The precedence is (highest to lowest):
-//  1. User tokens (mapped via env_mappings if configured)
-//  2. Systemwide backend env (can override user values)
-//
-// Only configured env vars are included - no system environment variables.
+//  1. System environment (PATH, HOME, etc.)
+//  2. User tokens (mapped via env_mappings if configured)
+//  3. Systemwide backend env (can override user values)
 func (tm *ToolMuxer) BuildEnvForUser(userID, backendID string) []string {
 	shared.Debugf("BuildEnvForUser called for userID: %s, backendID: %s", userID, backendID)
-	// Start with empty environment - only add configured vars
+	// Start with essential system environment variables
 	envMap := make(map[string]string)
+	// Include essential system vars that many tools need
+	if path := os.Getenv("PATH"); path != "" {
+		envMap["PATH"] = path
+	}
+	if home := os.Getenv("HOME"); home != "" {
+		envMap["HOME"] = home
+	}
+	if user := os.Getenv("USER"); user != "" {
+		envMap["USER"] = user
+	}
+	shared.Debugf("Starting with %d essential system env vars", len(envMap))
 
 	// Get backend configuration including env mappings.
 	_, _, _, _, systemwideEnv, envMappings, ok := tm.getBackendConfig(backendID)
