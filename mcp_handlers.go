@@ -337,10 +337,13 @@ func handleToolsCall(a *app, w http.ResponseWriter, r *http.Request, userID stri
 				w.WriteHeader(http.StatusGatewayTimeout)
 				w.Write([]byte(`{"jsonrpc":"2.0","error":{"code":-32000,"message":"No response received"}}`))
 			}
-		case <-time.After(30 * time.Second):
+		case <-time.After(60 * time.Second):
 			pool.UnregisterRequest(reqID)
 			w.WriteHeader(http.StatusGatewayTimeout)
-			w.Write([]byte(`{"jsonrpc":"2.0","error":{"code":-32000,"message":"Request timeout after 30s"}}`))
+			w.Write([]byte(`{"jsonrpc":"2.0","error":{"code":-32000,"message":"Request timeout after 60s"}}`))
+			// Don't return stuck process to pool - kill it and let pool refill
+			proc.Kill()
+			return
 		}
 
 		pool.Warm <- proc
@@ -392,10 +395,13 @@ func handleDefaultBackend(a *app, w http.ResponseWriter, r *http.Request, userID
 				w.WriteHeader(http.StatusGatewayTimeout)
 				w.Write([]byte(`{"jsonrpc":"2.0","error":{"code":-32000,"message":"No response received"}}`))
 			}
-		case <-time.After(30 * time.Second):
+		case <-time.After(60 * time.Second):
 			pool.UnregisterRequest(reqID)
 			w.WriteHeader(http.StatusGatewayTimeout)
-			w.Write([]byte(`{"jsonrpc":"2.0","error":{"code":-32000,"message":"Request timeout after 30s"}}`))
+			w.Write([]byte(`{"jsonrpc":"2.0","error":{"code":-32000,"message":"Request timeout after 60s"}}`))
+			// Don't return stuck process to pool - kill it and let pool refill
+			proc.Kill()
+			return
 		}
 
 		pool.Warm <- proc
