@@ -1,0 +1,86 @@
+{{define "admin_oauth_clients.html"}}
+{{template "head" .}}
+{{template "nav" .}}
+<div class="container">
+  <h1>OAuth Clients</h1>
+  <p class="lead">Manage OAuth clients for external applications like OpenCode.</p>
+
+  {{if .Extra.CreatedClient}}
+  <div class="alert alert-success">
+    <strong>OAuth Client Created!</strong>
+    <p>Copy these credentials now - you won't see the secret again.</p>
+    <div style="margin-top:0.5rem;">
+      <strong>Client ID:</strong>
+      <pre style="display:inline;background:#1e1e2e;color:#cdd6f4;padding:0.25rem 0.5rem;border-radius:4px;">{{.Extra.CreatedClient.ClientID}}</pre>
+    </div>
+    <div style="margin-top:0.5rem;">
+      <strong>Client Secret:</strong>
+      <pre style="display:inline;background:#1e1e2e;color:#cdd6f4;padding:0.25rem 0.5rem;border-radius:4px;">{{.Extra.CreatedClient.ClientSecret}}</pre>
+    </div>
+  </div>
+  {{end}}
+
+  {{template "alerts" .}}
+
+  <div class="card">
+    <h2>Create OAuth Client</h2>
+    <form method="post" action="/web/admin/oauth-clients/create">
+      <div class="form-row">
+        <label for="name">Client Name</label>
+        <input type="text" id="name" name="name" placeholder="e.g., OpenCode" required>
+      </div>
+      <button type="submit" class="btn btn-primary">Create Client</button>
+    </form>
+  </div>
+
+  <div class="card">
+    <h2>OAuth Clients</h2>
+    {{if .Data}}
+    <table>
+      <thead>
+        <tr>
+          <th>Name</th>
+          <th>Client ID</th>
+          <th>Created</th>
+          <th>Actions</th>
+        </tr>
+      </thead>
+      <tbody>
+        {{range .Data}}
+        <tr>
+          <td>{{.ClientName}}</td>
+          <td><code style="font-size:0.85em;">{{.ClientID}}</code></td>
+          <td class="text-muted">{{.CreatedAt.Format "2006-01-02 15:04"}}</td>
+          <td>
+            <form method="post" action="/web/admin/oauth-clients/delete" style="display:inline;">
+              <input type="hidden" name="id" value="{{.ClientID}}">
+              <button type="submit" class="btn btn-sm btn-danger" onclick="return confirm('Delete client {{.ClientName}}?')">Delete</button>
+            </form>
+          </td>
+        </tr>
+        {{end}}
+      </tbody>
+    </table>
+    {{else}}
+    <p class="text-muted">No OAuth clients yet. Create one above.</p>
+    {{end}}
+  </div>
+
+  <div class="card">
+    <h2>OpenCode Configuration</h2>
+    <p>Add this to your OpenCode config:</p>
+    <pre style="background:#1e1e2e;color:#cdd6f4;padding:0.75rem;border-radius:4px;">{
+  "mcp": {
+    "MCP Bridge": {
+      "type": "remote",
+      "url": "http://localhost:8080",
+      "oauth": {
+        "clientId": "&lt;your-client-id&gt;"
+      }
+    }
+  }
+}</pre>
+  </div>
+</div>
+{{template "foot" .}}
+{{end}}

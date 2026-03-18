@@ -1,0 +1,1 @@
+{"level":"info","message":"MCP SSE Bridge started on :8080 (command=sh -c 'cat; sleep 1', pool=2, db=mcp-bridge.db, idleGC=15m0s)","time":"2026-03-17T11:18:22Z"}

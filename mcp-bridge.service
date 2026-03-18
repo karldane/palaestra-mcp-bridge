@@ -1,0 +1,16 @@
+[Unit]
+Description=MCP Bridge Service
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=/home/karld@tusk-watf.tuskerdirect.com/Nextcloud/Tusker/code/mcp-bridge/mcp-bridge
+WorkingDirectory=/home/karld@tusk-watf.tuskerdirect.com/Nextcloud/Tusker/code/mcp-bridge
+Restart=always
+RestartSec=5
+EnvironmentFile=/home/karld@tusk-watf.tuskerdirect.com/Nextcloud/Tusker/code/mcp-bridge/.env
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=default.target

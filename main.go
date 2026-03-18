@@ -18,6 +18,7 @@ import (
 	"github.com/mcp-bridge/mcp-bridge/config"
 	"github.com/mcp-bridge/mcp-bridge/muxer"
 	"github.com/mcp-bridge/mcp-bridge/poolmgr"
+	"github.com/mcp-bridge/mcp-bridge/shared"
 	"github.com/mcp-bridge/mcp-bridge/store"
 	"github.com/mcp-bridge/mcp-bridge/web"
 )
@@ -263,44 +264,7 @@ func handleToolsList(a *app, w http.ResponseWriter, r *http.Request, userID stri
 	log.Printf("Found %d backends", len(backends))
 	if len(backends) == 0 {
 		// No backends configured, return only system tools
-		var allTools []map[string]interface{}
-
-		// Add system tools
-		systemTools := []map[string]interface{}{
-			{
-				"name":        "mcpbridge_ping",
-				"description": "Check bridge connectivity and get current timestamp",
-				"inputSchema": map[string]interface{}{
-					"type":       "object",
-					"properties": map[string]interface{}{},
-				},
-			},
-			{
-				"name":        "mcpbridge_version",
-				"description": "Get mcp-bridge version information",
-				"inputSchema": map[string]interface{}{
-					"type":       "object",
-					"properties": map[string]interface{}{},
-				},
-			},
-			{
-				"name":        "mcpbridge_list_backends",
-				"description": "List configured backends",
-				"inputSchema": map[string]interface{}{
-					"type":       "object",
-					"properties": map[string]interface{}{},
-				},
-			},
-			{
-				"name":        "mcpbridge_refresh_tools",
-				"description": "Refresh and list tools from all enabled backends",
-				"inputSchema": map[string]interface{}{
-					"type":       "object",
-					"properties": map[string]interface{}{},
-				},
-			},
-		}
-		allTools = append(allTools, systemTools...)
+		allTools := shared.SystemToolsAsMap()
 
 		// Build aggregated response
 		respID := id
@@ -398,40 +362,7 @@ func handleToolsList(a *app, w http.ResponseWriter, r *http.Request, userID stri
 	}
 
 	// Add system tools
-	systemTools := []map[string]interface{}{
-		{
-			"name":        "mcpbridge_ping",
-			"description": "Check bridge connectivity and get current timestamp",
-			"inputSchema": map[string]interface{}{
-				"type":       "object",
-				"properties": map[string]interface{}{},
-			},
-		},
-		{
-			"name":        "mcpbridge_version",
-			"description": "Get mcp-bridge version information",
-			"inputSchema": map[string]interface{}{
-				"type":       "object",
-				"properties": map[string]interface{}{},
-			},
-		},
-		{
-			"name":        "mcpbridge_list_backends",
-			"description": "List configured backends",
-			"inputSchema": map[string]interface{}{
-				"type":       "object",
-				"properties": map[string]interface{}{},
-			},
-		},
-		{
-			"name":        "mcpbridge_refresh_tools",
-			"description": "Refresh and list tools from all enabled backends",
-			"inputSchema": map[string]interface{}{
-				"type":       "object",
-				"properties": map[string]interface{}{},
-			},
-		},
-	}
+	systemTools := shared.SystemToolsAsMap()
 	log.Printf("Adding %d system tools", len(systemTools))
 	allTools = append(allTools, systemTools...)
 
