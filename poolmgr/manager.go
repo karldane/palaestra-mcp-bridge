@@ -207,13 +207,15 @@ func (pm *PoolManager) PoolCount() int {
 }
 
 type PoolStatus struct {
-	BackendID   string
-	UserID      string
-	Command     string
-	WarmCount   int
-	CurrentSize int
-	MinPoolSize int
-	MaxPoolSize int
+	BackendID     string
+	UserID        string
+	Command       string
+	WarmCount     int
+	CurrentSize   int
+	MinPoolSize   int
+	MaxPoolSize   int
+	MemoryBytes   uint64   // Total memory usage in bytes
+	ProcessMemory []uint64 // Per-process memory in bytes
 }
 
 func (pm *PoolManager) GetPoolsForUser(userID string) []PoolStatus {
@@ -230,7 +232,7 @@ func (pm *PoolManager) GetPoolsForUser(userID string) []PoolStatus {
 		if len(parts) != 2 {
 			continue
 		}
-		statuses = append(statuses, PoolStatus{
+		status := PoolStatus{
 			BackendID:   parts[0],
 			UserID:      parts[1],
 			Command:     pool.Command,
@@ -238,7 +240,43 @@ func (pm *PoolManager) GetPoolsForUser(userID string) []PoolStatus {
 			CurrentSize: pool.GetCurrentSize(),
 			MinPoolSize: pool.MinPoolSize,
 			MaxPoolSize: pool.MaxPoolSize,
-		})
+		}
+		// Get memory usage for all warm processes
+		status.ProcessMemory = pool.GetProcessMemory()
+		for _, mem := range status.ProcessMemory {
+			status.MemoryBytes += mem
+		}
+		statuses = append(statuses, status)
+	}
+	return statuses
+}
+
+// GetAllPools returns pool status for all pools (admin view)
+func (pm *PoolManager) GetAllPools() []PoolStatus {
+	pm.mu.RLock()
+	defer pm.mu.RUnlock()
+
+	var statuses []PoolStatus
+	for key, pool := range pm.pools {
+		parts := strings.SplitN(key, ":", 2)
+		if len(parts) != 2 {
+			continue
+		}
+		status := PoolStatus{
+			BackendID:   parts[0],
+			UserID:      parts[1],
+			Command:     pool.Command,
+			WarmCount:   pool.GetWarmCount(),
+			CurrentSize: pool.GetCurrentSize(),
+			MinPoolSize: pool.MinPoolSize,
+			MaxPoolSize: pool.MaxPoolSize,
+		}
+		// Get memory usage for all warm processes
+		status.ProcessMemory = pool.GetProcessMemory()
+		for _, mem := range status.ProcessMemory {
+			status.MemoryBytes += mem
+		}
+		statuses = append(statuses, status)
 	}
 	return statuses
 }

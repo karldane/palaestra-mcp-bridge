@@ -9,6 +9,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/shirou/gopsutil/v3/process"
 )
 
 type LogEntry struct {
@@ -40,6 +42,22 @@ func (m *ManagedProcess) Kill() {
 	if m.Cmd.Process != nil {
 		m.Cmd.Process.Kill()
 	}
+}
+
+// GetMemoryUsage returns the memory usage in bytes for this process
+func (m *ManagedProcess) GetMemoryUsage() (uint64, error) {
+	if m.Cmd.Process == nil {
+		return 0, fmt.Errorf("process not started")
+	}
+	proc, err := process.NewProcess(int32(m.Cmd.Process.Pid))
+	if err != nil {
+		return 0, err
+	}
+	memInfo, err := proc.MemoryInfo()
+	if err != nil {
+		return 0, err
+	}
+	return memInfo.RSS, nil
 }
 
 func SpawnProcess(pool *Pool, command string, env []string) (*ManagedProcess, error) {

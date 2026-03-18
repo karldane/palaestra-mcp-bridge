@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/mcp-bridge/mcp-bridge/poolmgr"
 	"github.com/mcp-bridge/mcp-bridge/store"
 )
 
@@ -88,12 +89,22 @@ func (h *Handler) AdminBackendsHandler(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Internal Server Error", http.StatusInternalServerError)
 		return
 	}
+
+	// Get pool status if pool manager is available
+	var poolStatuses []poolmgr.PoolStatus
+	if h.PoolManager != nil {
+		poolStatuses = h.PoolManager.GetAllPools()
+	}
+
 	h.render(w, "admin_backends.html", pageData{
 		User:    user,
 		Title:   "Manage Backends",
 		Data:    backends,
 		Error:   r.URL.Query().Get("error"),
 		Success: r.URL.Query().Get("success"),
+		Extra: map[string]interface{}{
+			"PoolStatuses": poolStatuses,
+		},
 	})
 }
 

@@ -494,3 +494,30 @@ func (pool *Pool) LastUsed() time.Time {
 	defer pool.lastUsedMu.Unlock()
 	return pool.lastUsed
 }
+
+// GetProcessMemory returns memory usage for all warm processes in the pool
+func (pool *Pool) GetProcessMemory() []uint64 {
+	pool.mu.Lock()
+	defer pool.mu.Unlock()
+
+	var memory []uint64
+	// We need to temporarily drain the channel to check all processes
+	var processes []*ManagedProcess
+	for {
+		select {
+		case proc := <-pool.Warm:
+			processes = append(processes, proc)
+		default:
+			goto done
+		}
+	}
+done:
+	// Get memory for each process and put them back
+	for _, proc := range processes {
+		if mem, err := proc.GetMemoryUsage(); err == nil {
+			memory = append(memory, mem)
+		}
+		pool.Warm <- proc
+	}
+	return memory
+}

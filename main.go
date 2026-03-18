@@ -19,7 +19,6 @@ import (
 	"github.com/mcp-bridge/mcp-bridge/web"
 )
 
-
 func main() {
 	seedUser := flag.Bool("seed", false, "Seed a default test user (admin@localhost / admin) if no users exist")
 	versionFlag := flag.Bool("version", false, "Print version and exit")
@@ -158,6 +157,7 @@ func main() {
 	if err != nil {
 		log.Fatalf("failed to load web templates: %v", err)
 	}
+	webHandler.PoolManager = pm // Wire pool manager for admin pool status
 	// Wire live reload: when an admin creates/edits/deletes a backend via the
 	// web UI, refresh the muxer prefix map and tear down stale pools so that
 	// subsequent requests pick up the new configuration immediately.

@@ -54,6 +54,58 @@
     {{end}}
   </div>
 
+  <!-- Pool Status Section -->
+  {{if .Extra.PoolStatuses}}
+  <div class="card">
+    <h2>Pool Status</h2>
+    <p class="text-muted">Active process pools and memory usage</p>
+    <table>
+      <thead>
+        <tr>
+          <th>Backend</th>
+          <th>User</th>
+          <th>Warm/Current</th>
+          <th>Pool Size</th>
+          <th>Total Memory</th>
+          <th>Per-Process Memory</th>
+        </tr>
+      </thead>
+      <tbody>
+        {{range .Extra.PoolStatuses}}
+        <tr>
+          <td><strong>{{.BackendID}}</strong></td>
+          <td><span class="mono">{{.UserID}}</span></td>
+          <td>{{.WarmCount}}/{{.CurrentSize}}</td>
+          <td>{{.MinPoolSize}}-{{.MaxPoolSize}}</td>
+          <td>
+            {{if .MemoryBytes}}
+              {{$mb := divide .MemoryBytes 1048576}}
+              {{if gt $mb 1024}}
+                {{divideFloat $mb 1024 | printf "%.2f"}} GB
+              {{else}}
+                {{$mb}} MB
+              {{end}}
+            {{else}}
+              <span class="text-muted">--</span>
+            {{end}}
+          </td>
+          <td>
+            {{if .ProcessMemory}}
+              {{range .ProcessMemory}}
+                {{$pmb := divide . 1048576}}
+                <span class="badge badge-enabled">{{$pmb}} MB</span>
+              {{end}}
+            {{else}}
+              <span class="text-muted">--</span>
+            {{end}}
+          </td>
+        </tr>
+        {{end}}
+      </tbody>
+    </table>
+  </div>
+  {{end}}
+
   <!-- Probe result detail area (hidden until a probe runs) -->
   <div class="card" id="probe-detail" style="display:none;">
     <h2>Probe Result: <span id="probe-detail-id"></span></h2>

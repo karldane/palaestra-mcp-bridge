@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"time"
 
+	"github.com/mcp-bridge/mcp-bridge/poolmgr"
 	"github.com/mcp-bridge/mcp-bridge/store"
 )
 
@@ -22,8 +23,9 @@ const (
 
 // Handler holds the shared dependencies for all web routes.
 type Handler struct {
-	Store     *store.Store
-	Templates *template.Template
+	Store       *store.Store
+	Templates   *template.Template
+	PoolManager *poolmgr.PoolManager
 
 	// OnBackendChange is called after a backend is created, edited, or
 	// deleted. The callback receives the backend ID so the caller can
@@ -47,6 +49,18 @@ func NewHandler(st *store.Store, templateDir string) (*Handler, error) {
 		"json": func(v interface{}) template.JS {
 			b, _ := json.Marshal(v)
 			return template.JS(b)
+		},
+		"divide": func(a, b uint64) uint64 {
+			if b == 0 {
+				return 0
+			}
+			return a / b
+		},
+		"divideFloat": func(a, b float64) float64 {
+			if b == 0 {
+				return 0
+			}
+			return a / b
 		},
 	})
 
