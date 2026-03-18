@@ -2,11 +2,11 @@ package web
 
 import (
 	"encoding/json"
+	"fmt"
 	"log"
 	"net/http"
 	"strings"
 
-	"github.com/mcp-bridge/mcp-bridge/poolmgr"
 	"github.com/mcp-bridge/mcp-bridge/store"
 )
 
@@ -81,6 +81,30 @@ func (h *Handler) AdminUsersDeleteHandler(w http.ResponseWriter, r *http.Request
 	http.Redirect(w, r, "/web/admin/users?success=User+deleted", http.StatusSeeOther)
 }
 
+// PoolStatusDisplay is a display-friendly version of poolmgr.PoolStatus
+type PoolStatusDisplay struct {
+	BackendID     string
+	UserID        string
+	Command       string
+	WarmCount     int
+	CurrentSize   int
+	MinPoolSize   int
+	MaxPoolSize   int
+	TotalMemory   string
+	ProcessMemory []string
+}
+
+func formatMemory(bytes uint64) string {
+	if bytes == 0 {
+		return "--"
+	}
+	mb := float64(bytes) / 1024 / 1024
+	if mb > 1024 {
+		return fmt.Sprintf("%.2f GB", mb/1024)
+	}
+	return fmt.Sprintf("%.0f MB", mb)
+}
+
 func (h *Handler) AdminBackendsHandler(w http.ResponseWriter, r *http.Request) {
 	user := userFromContext(r)
 	backends, err := h.Store.ListBackends()
@@ -91,9 +115,25 @@ func (h *Handler) AdminBackendsHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Get pool status if pool manager is available
-	var poolStatuses []poolmgr.PoolStatus
+	var poolStatuses []PoolStatusDisplay
 	if h.PoolManager != nil {
-		poolStatuses = h.PoolManager.GetAllPools()
+		pools := h.PoolManager.GetAllPools()
+		for _, p := range pools {
+			display := PoolStatusDisplay{
+				BackendID:   p.BackendID,
+				UserID:      p.UserID,
+				Command:     p.Command,
+				WarmCount:   p.WarmCount,
+				CurrentSize: p.CurrentSize,
+				MinPoolSize: p.MinPoolSize,
+				MaxPoolSize: p.MaxPoolSize,
+				TotalMemory: formatMemory(p.MemoryBytes),
+			}
+			for _, mem := range p.ProcessMemory {
+				display.ProcessMemory = append(display.ProcessMemory, formatMemory(mem))
+			}
+			poolStatuses = append(poolStatuses, display)
+		}
 	}
 
 	h.render(w, "admin_backends.html", pageData{

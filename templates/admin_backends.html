@@ -77,23 +77,11 @@
           <td><span class="mono">{{.UserID}}</span></td>
           <td>{{.WarmCount}}/{{.CurrentSize}}</td>
           <td>{{.MinPoolSize}}-{{.MaxPoolSize}}</td>
-          <td>
-            {{if .MemoryBytes}}
-              {{$mb := divide .MemoryBytes 1048576}}
-              {{if gt $mb 1024}}
-                {{divideFloat $mb 1024 | printf "%.2f"}} GB
-              {{else}}
-                {{$mb}} MB
-              {{end}}
-            {{else}}
-              <span class="text-muted">--</span>
-            {{end}}
-          </td>
+          <td>{{.TotalMemory}}</td>
           <td>
             {{if .ProcessMemory}}
               {{range .ProcessMemory}}
-                {{$pmb := divide . 1048576}}
-                <span class="badge badge-enabled">{{$pmb}} MB</span>
+                <span class="badge badge-enabled">{{.}}</span>
               {{end}}
             {{else}}
               <span class="text-muted">--</span>
