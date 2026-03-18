@@ -783,3 +783,32 @@ func TestProbeBackend_Timeout(t *testing.T) {
 		t.Errorf("DurationMs = %d, expected at least ~500ms", result.DurationMs)
 	}
 }
+
+func TestIsAllowedCommand_AbsolutePathWithArgs(t *testing.T) {
+	tests := []struct {
+		name    string
+		cmd     string
+		allowed bool
+	}{
+		{"absolute path with args", "/home/user/.local/bin/github-mcp-server stdio", true},
+		{"absolute path no args", "/usr/bin/cat", true},
+		{"npx command", "npx -y @modelcontextprotocol/server-filesystem", true},
+		{"github-mcp-server", "github-mcp-server stdio", true},
+		{"simple cat", "cat", true},
+		{"dangerous rm", "rm -rf /", false},
+		{"shell injection", "/bin/sh; rm -rf /", false},
+		{"relative path", "./my-script", false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := isAllowedCommand(tt.cmd)
+			if tt.allowed && err != nil {
+				t.Errorf("isAllowedCommand(%q) = %v, want nil", tt.cmd, err)
+			}
+			if !tt.allowed && err == nil {
+				t.Errorf("isAllowedCommand(%q) = nil, want error", tt.cmd)
+			}
+		})
+	}
+}
