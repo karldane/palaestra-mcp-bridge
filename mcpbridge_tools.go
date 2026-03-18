@@ -195,7 +195,7 @@ func (s *MCPBridgeServer) handleCapabilitiesTool(ctx context.Context, request mc
 		return mcp.NewToolResultText("Error: " + err.Error()), nil
 	}
 
-	userTokens, err := s.app.store.GetUserTokens(userID, "")
+	userTokens, err := s.app.store.GetAllUserTokens(userID)
 	if err != nil {
 		userTokens = []*store.UserToken{}
 	}

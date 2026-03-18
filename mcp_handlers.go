@@ -209,12 +209,24 @@ func handleToolsCall(a *app, w http.ResponseWriter, r *http.Request, userID stri
 						if err != nil {
 							result = "Error: " + err.Error()
 						} else {
+							// Get user tokens to determine which backends are configured
+							userTokens, err := a.store.GetAllUserTokens(userID)
+							if err != nil {
+								userTokens = []*store.UserToken{}
+							}
+							userBackendTokens := make(map[string]bool)
+							for _, token := range userTokens {
+								userBackendTokens[token.BackendID] = true
+							}
+
 							var namespaceSummary []string
 							var totalTools int
 							for _, backend := range backends {
-								if caps, ok := cachedCaps[backend.ID]; ok {
-									namespaceSummary = append(namespaceSummary, fmt.Sprintf("%s (%d tools)", backend.ID, caps.ToolCount))
-									totalTools += caps.ToolCount
+								if userBackendTokens[backend.ID] {
+									if caps, ok := cachedCaps[backend.ID]; ok {
+										namespaceSummary = append(namespaceSummary, fmt.Sprintf("%s (%d tools)", backend.ID, caps.ToolCount))
+										totalTools += caps.ToolCount
+									}
 								}
 							}
 							result = "=== MCP Bridge Capabilities ===\n\n"
@@ -230,6 +242,8 @@ func handleToolsCall(a *app, w http.ResponseWriter, r *http.Request, userID stri
 								var status string
 								if backend.IsSystem {
 									status = "system (always available)"
+								} else if userBackendTokens[backend.ID] {
+									status = "configured"
 								} else {
 									status = "available (not configured)"
 								}

@@ -1336,6 +1336,75 @@ func TestIntegration_InlineMCPWithAPIKey(t *testing.T) {
 			t.Errorf("expected output to contain 'mcpbridge_', got: %s", text)
 		}
 	})
+
+	// Test 6: Bug fix - mcpbridge_capabilities should show backends as "configured" when user has tokens
+	t.Run("tools/call mcpbridge_capabilities shows configured backends", func(t *testing.T) {
+		// Create a backend and add tokens for the user
+		backend := &store.Backend{
+			ID:       "test-backend",
+			Command:  "cat",
+			PoolSize: 1,
+			Enabled:  true,
+		}
+		if err := a.store.CreateBackend(backend); err != nil {
+			t.Fatalf("failed to create backend: %v", err)
+		}
+
+		// Add a token for the user - need to get the user ID from the database
+		// The user was created in testAppNoBackends with ID "test-user-inline"
+		token := &store.UserToken{
+			UserID:    "test-user-inline",
+			BackendID: "test-backend",
+			EnvKey:    "API_KEY",
+			Value:     "secret123",
+		}
+		if err := a.store.SetUserToken(token); err != nil {
+			t.Fatalf("failed to set user token: %v", err)
+		}
+
+		body := `{"jsonrpc":"2.0","method":"tools/call","id":5,"params":{"name":"mcpbridge_capabilities"}}`
+		req := httptest.NewRequest("POST", "/", strings.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Authorization", "Bearer "+apiKey)
+
+		w := httptest.NewRecorder()
+		a.auth.Middleware(rootHandler(a)).ServeHTTP(w, req)
+
+		if w.Code != http.StatusOK {
+			t.Fatalf("expected 200, got %d, body: %s", w.Code, w.Body.String())
+		}
+
+		var resp map[string]interface{}
+		if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+			t.Fatalf("invalid JSON response: %v", err)
+		}
+
+		result, ok := resp["result"].(map[string]interface{})
+		if !ok {
+			t.Fatal("expected result in response")
+		}
+
+		content, ok := result["content"].([]interface{})
+		if !ok || len(content) == 0 {
+			t.Fatal("expected content in result")
+		}
+		textContent, ok := content[0].(map[string]interface{})
+		if !ok {
+			t.Fatal("expected text content")
+		}
+		text, ok := textContent["text"].(string)
+		if !ok {
+			t.Fatal("expected text string")
+		}
+
+		// Verify backend shows as "configured" when user has tokens
+		if strings.Contains(text, "test-backend: available (not configured)") {
+			t.Errorf("BUG: backend should show 'configured' but shows 'available (not configured)'. Output: %s", text)
+		}
+		if !strings.Contains(text, "test-backend: configured") {
+			t.Errorf("expected backend to show 'configured', got: %s", text)
+		}
+	})
 }
 
 // testAppNoBackends creates a test app with no real backends in the database.
