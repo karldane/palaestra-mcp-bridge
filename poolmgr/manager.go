@@ -79,24 +79,42 @@ func (pm *PoolManager) GetOrCreatePool(backendID, command string, poolSize int) 
 
 // GetOrCreateUserPool returns an existing pool keyed by "backendID:userID",
 // or creates a new one with the given command, min/max pool sizes, and environment.
+// If the env has changed, the existing pool is shut down and recreated.
 func (pm *PoolManager) GetOrCreateUserPool(backendID, userID, command string, minPoolSize, maxPoolSize int, env []string) *Pool {
 	key := backendID + ":" + userID
 
 	pm.mu.RLock()
 	if pool, ok := pm.pools[key]; ok {
+		// Check if env has changed
+		if pool.EnvMatches(env) {
+			pm.mu.RUnlock()
+			pool.TouchLastUsed()
+			return pool
+		}
+		// Env changed - need to recreate
 		pm.mu.RUnlock()
-		pool.TouchLastUsed()
-		return pool
+		logJSON("info", fmt.Sprintf("env changed for pool %s, shutting down and recreating", key))
+		pool.Shutdown()
+
+		pm.mu.Lock()
+		delete(pm.pools, key)
+		pm.mu.Unlock()
+	} else {
+		pm.mu.RUnlock()
 	}
-	pm.mu.RUnlock()
 
 	pm.mu.Lock()
 	defer pm.mu.Unlock()
 
 	// Double-check after upgrade.
 	if pool, ok := pm.pools[key]; ok {
-		pool.TouchLastUsed()
-		return pool
+		if pool.EnvMatches(env) {
+			pool.TouchLastUsed()
+			return pool
+		}
+		// Another thread recreated with wrong env - shut it down
+		pool.Shutdown()
+		delete(pm.pools, key)
 	}
 
 	// Ensure defaults

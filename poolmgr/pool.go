@@ -13,23 +13,24 @@ type Pool struct {
 	mu              sync.Mutex
 	Spawning        chan struct{}
 	Command         string
-	Env             []string // explicit environment for spawned processes; nil = inherit bridge env
-	closed          bool
-	wg              sync.WaitGroup
+	Env             []string
+	EnvHash         string // Hash of env for comparison
 	backoffDelay    time.Duration
-	activeCount     int
-	activeMu        sync.Mutex
-	pendingMu       sync.Mutex
+	wg              sync.WaitGroup
 	pendingRequests map[string]*PendingRequest
+	pendingMu       sync.Mutex
 	broadcastCh     chan []byte
 	broadcastMu     sync.Mutex
+	closed          bool
 	BackendID       string
-	DedicatedFor    string
-	lastUsed        time.Time
-	lastUsedMu      sync.Mutex
 	MinPoolSize     int // Minimum warm processes to maintain
 	MaxPoolSize     int // Maximum warm processes (0 = unlimited)
-	CurrentSize     int // Current number of warm processes
+	CurrentSize     int // Current number of warm + spawning processes
+	activeCount     int // Number of processes currently in use
+	activeMu        sync.Mutex
+	dedicatedUser   string
+	lastUsed        time.Time
+	lastUsedMu      sync.Mutex
 }
 
 func NewPool(backendID string, size int, command string) *Pool {
@@ -41,6 +42,25 @@ func NewPool(backendID string, size int, command string) *Pool {
 // environment. If env is nil, spawned processes inherit the bridge process env.
 // minPoolSize: minimum warm processes to maintain
 // maxPoolSize: maximum warm processes (0 = unlimited)
+func hashEnv(env []string) string {
+	// Sort env vars to ensure consistent hashing regardless of order
+	sorted := make([]string, len(env))
+	copy(sorted, env)
+	for i := 0; i < len(sorted); i++ {
+		for j := i + 1; j < len(sorted); j++ {
+			if sorted[i] > sorted[j] {
+				sorted[i], sorted[j] = sorted[j], sorted[i]
+			}
+		}
+	}
+	// Simple hash of sorted env vars
+	h := ""
+	for _, e := range sorted {
+		h += e + "|"
+	}
+	return h
+}
+
 func NewPoolWithEnv(backendID string, minPoolSize, maxPoolSize int, command string, env []string) *Pool {
 	// If maxPoolSize is 0, set it to minPoolSize (no dynamic scaling)
 	if maxPoolSize == 0 {
@@ -56,6 +76,7 @@ func NewPoolWithEnv(backendID string, minPoolSize, maxPoolSize int, command stri
 		Spawning:        make(chan struct{}, 1),
 		Command:         command,
 		Env:             env,
+		EnvHash:         hashEnv(env),
 		backoffDelay:    100 * time.Millisecond,
 		pendingRequests: make(map[string]*PendingRequest),
 		broadcastCh:     make(chan []byte, 100),
@@ -86,19 +107,26 @@ func (pool *Pool) IsClosed() bool {
 func (pool *Pool) SetDedicated(userID string) {
 	pool.mu.Lock()
 	defer pool.mu.Unlock()
-	pool.DedicatedFor = userID
+	pool.dedicatedUser = userID
 }
 
 func (pool *Pool) IsDedicated() bool {
 	pool.mu.Lock()
 	defer pool.mu.Unlock()
-	return pool.DedicatedFor != ""
+	return pool.dedicatedUser != ""
 }
 
 func (pool *Pool) DedicatedUser() string {
 	pool.mu.Lock()
 	defer pool.mu.Unlock()
-	return pool.DedicatedFor
+	return pool.dedicatedUser
+}
+
+// EnvMatches checks if the given env matches the pool's current env
+func (pool *Pool) EnvMatches(env []string) bool {
+	pool.mu.Lock()
+	defer pool.mu.Unlock()
+	return pool.EnvHash == hashEnv(env)
 }
 
 func (pool *Pool) responseDispatcher() {
