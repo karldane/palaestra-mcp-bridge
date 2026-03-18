@@ -10,14 +10,9 @@ import (
 	"sync"
 	"time"
 
+	"github.com/mcp-bridge/mcp-bridge/shared"
 	"github.com/shirou/gopsutil/v3/process"
 )
-
-type LogEntry struct {
-	Level   string `json:"level"`
-	Message string `json:"message"`
-	Time    string `json:"time"`
-}
 
 type ManagedProcess struct {
 	Cmd       *exec.Cmd
@@ -61,10 +56,10 @@ func (m *ManagedProcess) GetMemoryUsage() (uint64, error) {
 }
 
 func SpawnProcess(pool *Pool, command string, env []string) (*ManagedProcess, error) {
-	fmt.Printf("[DEBUG SpawnProcess] backend=%s, command=%q\n", pool.BackendID, command)
+	shared.Debugf("SpawnProcess: backend=%s, command=%q", pool.BackendID, command)
 	proc, err := spawnProcessRaw(command, env)
 	if err != nil {
-		fmt.Printf("[DEBUG SpawnProcess] ERROR: %v\n", err)
+		shared.Debugf("SpawnProcess ERROR: %v", err)
 		return nil, err
 	}
 
@@ -216,10 +211,17 @@ func captureStdout(pool *Pool, proc *ManagedProcess) {
 	}()
 
 	scanner := bufio.NewScanner(proc.Stdout)
+	// Increase buffer size to handle large responses (e.g., GitHub MCP server init)
+	const maxCapacity = 512 * 1024 // 512KB
+	buf := make([]byte, maxCapacity)
+	scanner.Buffer(buf, maxCapacity)
+
 	for scanner.Scan() {
 		data := scanner.Bytes()
 		dataCopy := make([]byte, len(data))
 		copy(dataCopy, data)
+
+		shared.Debugf("captureStdout read line: %s", string(dataCopy))
 
 		proc.mu.Lock()
 		select {
@@ -230,6 +232,10 @@ func captureStdout(pool *Pool, proc *ManagedProcess) {
 
 		pool.BroadcastToSSE(dataCopy)
 	}
+	if err := scanner.Err(); err != nil {
+		shared.Debugf("captureStdout scanner error: %v", err)
+	}
+	shared.Debug("captureStdout exiting")
 }
 
 func captureStderr(proc *ManagedProcess) {
@@ -239,7 +245,7 @@ func captureStderr(proc *ManagedProcess) {
 		if err != nil {
 			break
 		}
-		logJSON("debug", fmt.Sprintf("mcp stderr: %s", string(buf[:n])))
+		shared.Debugf("mcp stderr: %s", string(buf[:n]))
 	}
 }
 
@@ -267,14 +273,4 @@ func min(a, b time.Duration) time.Duration {
 		return a
 	}
 	return b
-}
-
-func logJSON(level, message string) {
-	entry := LogEntry{
-		Level:   level,
-		Message: message,
-		Time:    time.Now().UTC().Format(time.RFC3339),
-	}
-	data, _ := json.Marshal(entry)
-	fmt.Println(string(data))
 }

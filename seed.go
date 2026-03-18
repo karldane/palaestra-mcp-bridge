@@ -2,24 +2,11 @@ package main
 
 import (
 	"encoding/json"
-	"fmt"
-	"time"
 
 	"github.com/mcp-bridge/mcp-bridge/config"
-	"github.com/mcp-bridge/mcp-bridge/poolmgr"
+	"github.com/mcp-bridge/mcp-bridge/shared"
 	"github.com/mcp-bridge/mcp-bridge/store"
 )
-
-// logJSON outputs a structured JSON log entry
-func logJSON(level, message string) {
-	entry := poolmgr.LogEntry{
-		Level:   level,
-		Message: message,
-		Time:    time.Now().UTC().Format(time.RFC3339),
-	}
-	data, _ := json.Marshal(entry)
-	fmt.Println(string(data))
-}
 
 // seedDefaultUser creates a test user (admin@localhost / admin) if no users
 // exist in the database. This is for local development and testing only.
@@ -29,9 +16,9 @@ func seedDefaultUser(st *store.Store) {
 		if existing.Role != "admin" {
 			existing.Role = "admin"
 			st.UpdateUser(existing)
-			logJSON("info", "seed: upgraded admin@localhost to role=admin")
+			shared.Info("seed: upgraded admin@localhost to role=admin")
 		} else {
-			logJSON("info", "seed: user admin@localhost already exists, skipping")
+			shared.Info("seed: user admin@localhost already exists, skipping")
 		}
 		return
 	}
@@ -43,10 +30,10 @@ func seedDefaultUser(st *store.Store) {
 		Role:     "admin",
 	}
 	if err := st.CreateUser(user); err != nil {
-		logJSON("error", fmt.Sprintf("seed: failed to create user: %v", err))
+		shared.Errorf("seed: failed to create user: %v", err)
 		return
 	}
-	logJSON("info", fmt.Sprintf("seed: created user admin@localhost (id=%s, password=admin)", user.ID))
+	shared.Infof("seed: created user admin@localhost (id=%s, password=admin)", user.ID)
 }
 
 // seedBackendsFromConfig imports backends from the config file into the SQLite
@@ -56,7 +43,7 @@ func seedDefaultUser(st *store.Store) {
 func seedBackendsFromConfig(st *store.Store, cfg *config.InternalConfig) {
 	existing, err := st.ListBackends()
 	if err != nil {
-		logJSON("error", fmt.Sprintf("seed-backends: list: %v", err))
+		shared.Errorf("seed-backends: list: %v", err)
 		return
 	}
 	if len(existing) > 0 {
@@ -80,12 +67,12 @@ func seedBackendsFromConfig(st *store.Store, cfg *config.InternalConfig) {
 			Enabled:    true,
 		}
 		if err := st.CreateBackend(b); err != nil {
-			logJSON("error", fmt.Sprintf("seed-backends: create %s: %v", id, err))
+			shared.Errorf("seed-backends: create %s: %v", id, err)
 			continue
 		}
 		count++
 	}
 	if count > 0 {
-		logJSON("info", fmt.Sprintf("seed-backends: imported %d backends from config into DB", count))
+		shared.Infof("seed-backends: imported %d backends from config into DB", count)
 	}
 }

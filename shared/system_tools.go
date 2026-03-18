@@ -12,6 +12,14 @@ type SystemToolDefinition struct {
 // SystemTools returns all system tools provided by the bridge
 var SystemTools = []SystemToolDefinition{
 	{
+		Name:        "mcpbridge_0_README",
+		Description: "🚨 START HERE! 🚨 CRITICAL: Read this BEFORE using any other tools! Contains essential usage guidance, hints for all backends, and company-specific information. Failure to read this first may result in incorrect queries and wasted API calls.",
+		InputSchema: mcp.ToolInputSchema{
+			Type:       "object",
+			Properties: map[string]interface{}{},
+		},
+	},
+	{
 		Name:        "mcpbridge_ping",
 		Description: "Check bridge connectivity and get current timestamp",
 		InputSchema: mcp.ToolInputSchema{

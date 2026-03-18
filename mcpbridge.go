@@ -28,7 +28,27 @@ func NewMCPBridgeServer(a *app, toolMuxer *muxer.ToolMuxer) *MCPBridgeServer {
 
 func (s *MCPBridgeServer) Handler() http.Handler {
 	// Create MCP server with our tools
-	mcpServer := server.NewMCPServer("mcp-bridge", "1.0.0")
+	instructions := `MCP Bridge provides unified access to multiple backend systems including GitHub and Atlassian (Jira/Confluence).
+
+IMPORTANT: Call the 'mcpbridge_0_README' tool first for complete, up-to-date usage guidance specific to your configuration.
+
+Available backends are configured per-user. Backend tools are prefixed with their source (e.g., github_pr_search, atlassian_jira_search_issues).
+
+System Tools:
+- mcpbridge_0_README: Essential guidance - READ THIS FIRST
+- mcpbridge_capabilities: List available backends and tools
+- mcpbridge_ping: Check connectivity
+- mcpbridge_list_backends: Show configured backends
+- mcpbridge_refresh_tools: Refresh tool list from backends
+- mcpbridge_pool_status: Show resource usage
+
+Best Practices:
+1. Start with mcpbridge_0_README to understand available tools and usage hints
+2. Use backend-specific filters (e.g., org:tusker-direct for GitHub, projectKey=PROJ for Jira)
+3. Use pagination (5-10 items per request) for large result sets`
+
+	mcpServer := server.NewMCPServer("mcp-bridge", "1.0.0",
+		server.WithInstructions(instructions))
 
 	// Add mcpbridge system tools
 	s.registerSystemTools(mcpServer)

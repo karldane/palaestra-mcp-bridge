@@ -14,19 +14,19 @@ import (
 
 // handleToolsList aggregates tools from all enabled backends
 func (s *MCPBridgeServer) handleToolsList(w http.ResponseWriter, r *http.Request, userID string, body []byte, id interface{}) {
-	fmt.Printf("[DEBUG handleToolsList] userID=%s START\n", userID)
+	shared.Debugf("handleToolsList: userID=%s START", userID)
 	backends, err := s.app.store.ListBackends()
 	if err != nil {
-		fmt.Printf("[DEBUG handleToolsList] ERROR listing backends: %v\n", err)
+		shared.Debugf("handleToolsList: ERROR listing backends: %v", err)
 		s.handleDefaultBackend(w, r, userID, body, id)
 		return
 	}
-	fmt.Printf("[DEBUG handleToolsList] found %d backends in DB\n", len(backends))
+	shared.Debugf("handleToolsList: found %d backends in DB", len(backends))
 	for i, b := range backends {
-		fmt.Printf("[DEBUG handleToolsList] backend[%d]: id=%s, enabled=%v, command=%s\n", i, b.ID, b.Enabled, b.Command)
+		shared.Debugf("handleToolsList: backend[%d]: id=%s, enabled=%v, command=%s", i, b.ID, b.Enabled, b.Command)
 	}
 	if len(backends) == 0 {
-		fmt.Printf("[DEBUG handleToolsList] no backends, falling back to default\n")
+		shared.Debugf("handleToolsList: no backends, falling back to default")
 		s.handleDefaultBackend(w, r, userID, body, id)
 		return
 	}
@@ -36,20 +36,20 @@ func (s *MCPBridgeServer) handleToolsList(w http.ResponseWriter, r *http.Request
 
 	for _, backend := range backends {
 		if !backend.Enabled {
-			fmt.Printf("[DEBUG handleToolsList] skipping disabled backend: %s\n", backend.ID)
+			shared.Debugf("handleToolsList: skipping disabled backend: %s", backend.ID)
 			continue
 		}
 
-		fmt.Printf("[DEBUG handleToolsList] processing backend: %s for user: %s\n", backend.ID, userID)
+		shared.Debugf("handleToolsList: processing backend: %s for user: %s", backend.ID, userID)
 		pool := s.app.getPoolForUser(userID, backend.ID)
 		pool.TouchLastUsed()
 
 		proc, err := pool.WaitForWarmWithMax(15 * time.Second)
 		if err != nil {
 			if strings.Contains(err.Error(), "max_pool_size reached") {
-				fmt.Printf("[DEBUG handleToolsList] max pool size reached for backend %s: %v\n", backend.ID, err)
+				shared.Debugf("handleToolsList: max pool size reached for backend %s: %v", backend.ID, err)
 			} else {
-				fmt.Printf("[DEBUG handleToolsList] timeout waiting for warm process for backend %s\n", backend.ID)
+				shared.Debugf("handleToolsList: timeout waiting for warm process for backend %s", backend.ID)
 			}
 			allTools = append(allTools, map[string]interface{}{
 				"name":        backend.ID + "_error",
@@ -58,7 +58,7 @@ func (s *MCPBridgeServer) handleToolsList(w http.ResponseWriter, r *http.Request
 			continue
 		}
 
-		fmt.Printf("[DEBUG handleToolsList] got warm process for backend %s\n", backend.ID)
+		shared.Debugf("handleToolsList: got warm process for backend %s", backend.ID)
 		reqID := fmt.Sprintf("list-%s-%d", backend.ID, time.Now().UnixNano())
 		req := map[string]interface{}{
 			"jsonrpc": "2.0",
@@ -67,7 +67,7 @@ func (s *MCPBridgeServer) handleToolsList(w http.ResponseWriter, r *http.Request
 		}
 		reqBody, _ := json.Marshal(req)
 		reqBody = append(reqBody, '\n')
-		fmt.Printf("[DEBUG handleToolsList] sending tools/list to backend %s, reqID=%s\n", backend.ID, reqID)
+		shared.Debugf("handleToolsList: sending tools/list to backend %s, reqID=%s", backend.ID, reqID)
 
 		respCh := pool.RegisterRequest(reqID)
 		proc.Stdin.Write(reqBody)
@@ -75,7 +75,7 @@ func (s *MCPBridgeServer) handleToolsList(w http.ResponseWriter, r *http.Request
 		select {
 		case response, ok := <-respCh:
 			pool.UnregisterRequest(reqID)
-			fmt.Printf("[DEBUG handleToolsList] received response from backend %s, ok=%v, len=%d\n", backend.ID, ok, len(response))
+			shared.Debugf("handleToolsList: received response from backend %s, ok=%v, len=%d", backend.ID, ok, len(response))
 			if ok && len(response) > 0 {
 				var result struct {
 					Result struct {
@@ -85,33 +85,42 @@ func (s *MCPBridgeServer) handleToolsList(w http.ResponseWriter, r *http.Request
 				}
 				if err := json.Unmarshal(response, &result); err == nil {
 					if result.Error != nil {
-						fmt.Printf("[DEBUG handleToolsList] tools/list error from backend %s: %v\n", backend.ID, result.Error)
+						shared.Debugf("handleToolsList: tools/list error from backend %s: %v", backend.ID, result.Error)
 						if firstError == nil {
 							firstError = fmt.Errorf("backend %s error: %v", backend.ID, result.Error)
 						}
 					} else {
-						fmt.Printf("[DEBUG handleToolsList] backend %s returned %d tools\n", backend.ID, len(result.Result.Tools))
+						shared.Debugf("handleToolsList: backend %s returned %d tools", backend.ID, len(result.Result.Tools))
 						if err := s.app.store.SetBackendCapabilities(backend.ID, result.Result.Tools); err != nil {
-							fmt.Printf("[DEBUG handleToolsList] failed to cache capabilities for %s: %v\n", backend.ID, err)
+							shared.Debugf("handleToolsList: failed to cache capabilities for %s: %v", backend.ID, err)
 						} else {
-							fmt.Printf("[DEBUG handleToolsList] cached %d tools for backend %s\n", len(result.Result.Tools), backend.ID)
+							shared.Debugf("handleToolsList: cached %d tools for backend %s", len(result.Result.Tools), backend.ID)
 						}
 						prefix := s.toolMuxer.GetPrefixForBackend(backend.ID)
-						fmt.Printf("[DEBUG handleToolsList] prefix for backend %s: %q\n", backend.ID, prefix)
+						shared.Debugf("handleToolsList: prefix for backend %s: %q", backend.ID, prefix)
 						for _, tool := range result.Result.Tools {
 							if name, ok := tool["name"].(string); ok && prefix != "" {
 								tool["name"] = prefix + "_" + name
+							}
+							// Merge backend tool hints into annotations
+							if backend.ToolHints != "" {
+								annotations, hasAnnotations := tool["annotations"].(map[string]interface{})
+								if !hasAnnotations {
+									annotations = make(map[string]interface{})
+									tool["annotations"] = annotations
+								}
+								annotations["hints"] = backend.ToolHints
 							}
 							allTools = append(allTools, tool)
 						}
 					}
 				} else {
-					fmt.Printf("[DEBUG handleToolsList] JSON unmarshal error from backend %s: %v\n", backend.ID, err)
+					shared.Debugf("handleToolsList: JSON unmarshal error from backend %s: %v", backend.ID, err)
 				}
 			}
 		case <-time.After(10 * time.Second):
 			pool.UnregisterRequest(reqID)
-			fmt.Printf("[DEBUG handleToolsList] TIMEOUT waiting for tools/list from backend %s, killing stuck process\n", backend.ID)
+			shared.Debugf("handleToolsList: TIMEOUT waiting for tools/list from backend %s, killing stuck process", backend.ID)
 			// Don't return stuck process to pool - kill it and let pool refill
 			proc.Kill()
 			continue
@@ -144,7 +153,7 @@ func (s *MCPBridgeServer) handleToolsList(w http.ResponseWriter, r *http.Request
 func (s *MCPBridgeServer) handleToolsCall(w http.ResponseWriter, r *http.Request, userID string, body []byte, id interface{}) {
 	modifiedBody, router, err := s.toolMuxer.HandleToolsCall(userID, body)
 	if err != nil {
-		fmt.Printf("tools/call routing error: %v\n", err)
+		shared.Errorf("tools/call routing error: %v", err)
 		s.handleDefaultBackend(w, r, userID, body, id)
 		return
 	}
@@ -177,23 +186,23 @@ func (s *MCPBridgeServer) handleToolsCall(w http.ResponseWriter, r *http.Request
 
 		respCh := pool.RegisterRequest(reqID)
 		proc.Stdin.Write(buf.Bytes())
-		fmt.Printf("[DEBUG handleToolsCall] sent request to backend, waiting for response (timeout=60s)\n")
+		shared.Debugf("handleToolsCall: sent request to backend, waiting for response (timeout=60s)")
 
 		select {
 		case response, ok := <-respCh:
 			pool.UnregisterRequest(reqID)
 			if ok && len(response) > 0 {
-				fmt.Printf("[DEBUG handleToolsCall] received response, len=%d\n", len(response))
+				shared.Debugf("handleToolsCall: received response, len=%d", len(response))
 				w.Header().Set("Content-Type", "application/json")
 				w.Write(response)
 			} else {
-				fmt.Printf("[DEBUG handleToolsCall] empty or invalid response\n")
+				shared.Debugf("handleToolsCall: empty or invalid response")
 				w.WriteHeader(http.StatusGatewayTimeout)
 				w.Write([]byte(`{"jsonrpc":"2.0","error":{"code":-32000,"message":"No response received"}}`))
 			}
 		case <-time.After(60 * time.Second):
 			pool.UnregisterRequest(reqID)
-			fmt.Printf("[DEBUG handleToolsCall] TIMEOUT after 60s, killing stuck process\n")
+			shared.Debugf("handleToolsCall: TIMEOUT after 60s, killing stuck process")
 			w.WriteHeader(http.StatusGatewayTimeout)
 			w.Write([]byte(`{"jsonrpc":"2.0","error":{"code":-32000,"message":"Request timeout after 60s"}}`))
 			// Don't return stuck process to pool - kill it and let pool refill

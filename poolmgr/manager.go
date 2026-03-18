@@ -1,10 +1,11 @@
 package poolmgr
 
 import (
-	"fmt"
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/mcp-bridge/mcp-bridge/shared"
 )
 
 type PoolManager struct {
@@ -93,7 +94,7 @@ func (pm *PoolManager) GetOrCreateUserPool(backendID, userID, command string, mi
 		}
 		// Env changed - need to recreate
 		pm.mu.RUnlock()
-		logJSON("info", fmt.Sprintf("env changed for pool %s, shutting down and recreating", key))
+		shared.Infof("env changed for pool %s, shutting down and recreating", key)
 		pool.Shutdown()
 
 		pm.mu.Lock()
@@ -129,7 +130,7 @@ func (pm *PoolManager) GetOrCreateUserPool(backendID, userID, command string, mi
 	pool.SetDedicated(userID)
 	pm.pools[key] = pool
 	pool.TouchLastUsed()
-	logJSON("info", fmt.Sprintf("created user pool %s (command=%s, min=%d, max=%d)", key, command, minPoolSize, maxPoolSize))
+	shared.Infof("created user pool %s (command=%s, min=%d, max=%d)", key, command, minPoolSize, maxPoolSize)
 	return pool
 }
 
@@ -211,7 +212,7 @@ func (pm *PoolManager) collectIdlePools() {
 			continue
 		}
 		if now.Sub(pool.LastUsed()) > pm.idleTimeout {
-			logJSON("info", fmt.Sprintf("idle GC: shutting down pool %s (idle %s)", key, now.Sub(pool.LastUsed())))
+			shared.Infof("idle GC: shutting down pool %s (idle %s)", key, now.Sub(pool.LastUsed()))
 			pool.Shutdown()
 			delete(pm.pools, key)
 		}

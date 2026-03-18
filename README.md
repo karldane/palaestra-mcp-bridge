@@ -22,6 +22,12 @@ admin interface.
   restart required)
 - **SSE streaming** &mdash; real-time stdout streaming via Server-Sent Events
 - **Health checks** &mdash; `/healthz` and `/readyz` endpoints
+- **Tool hints and instructions** &mdash; guide LLMs with global instructions,
+  per-backend hints, and native MCP server guidance via `mcpbridge_0_README`
+- **Configurable logging** &mdash; structured JSON logs with configurable
+  levels (debug/info/warn/error), ideal for Kubernetes
+- **Security-first** &mdash; tokens and secrets never logged; clean
+  environment (no system env vars) passed to backends
 
 ## Requirements
 
@@ -108,6 +114,12 @@ go build -o mcp-bridge .
 See [config.yaml.example](config.yaml.example) for a fully annotated
 example. Backends can be seeded from config on first run, but the database
 is the source of truth &mdash; use the admin UI for ongoing changes.
+
+### Key Configuration Options
+
+- `server.logLevel` - Control logging verbosity: `debug`, `info` (default), `warn`, or `error`
+- `server.port` - HTTP listen port (default: 8080)
+- Backends defined in config are seeded on first run only
 
 ## Development
 

@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
-	"log"
 	"net/http"
 	"strings"
 	"time"
@@ -36,16 +35,16 @@ func handleInitialize(a *app, w http.ResponseWriter, r *http.Request, userID str
 
 // handleToolsList aggregates tools from all enabled backends
 func handleToolsList(a *app, w http.ResponseWriter, r *http.Request, userID string, body []byte, id interface{}) {
-	log.Printf("CUSTOM DEBUG: handleToolsList called for userID: %s", userID)
-	log.Printf("handleToolsList called for userID: %s", userID)
+	shared.Debugf("handleToolsList called for userID: %s", userID)
+	shared.Debugf("handleToolsList called for userID: %s", userID)
 	backends, err := a.store.ListBackends()
 	if err != nil {
-		log.Printf("Error listing backends: %v", err)
+		shared.Errorf("Error listing backends: %v", err)
 		// Fallback to default backend on error
 		handleDefaultBackend(a, w, r, userID, body, id)
 		return
 	}
-	log.Printf("Found %d backends", len(backends))
+	shared.Debugf("Found %d backends", len(backends))
 	if len(backends) == 0 {
 		// No backends configured, return only system tools
 		allTools := shared.SystemToolsAsMap()
@@ -74,10 +73,10 @@ func handleToolsList(a *app, w http.ResponseWriter, r *http.Request, userID stri
 
 	for _, backend := range backends {
 		if !backend.Enabled {
-			log.Printf("Skipping disabled backend: %s", backend.ID)
+			shared.Debugf("Skipping disabled backend: %s", backend.ID)
 			continue
 		}
-		log.Printf("Processing backend: %s (tool_prefix: %s, pool_size: %d)", backend.ID, backend.ToolPrefix, backend.PoolSize)
+		shared.Debugf("Processing backend: %s (tool_prefix: %s, pool_size: %d)", backend.ID, backend.ToolPrefix, backend.PoolSize)
 
 		pool := a.getPoolForUser(userID, backend.ID)
 		pool.TouchLastUsed()
@@ -93,7 +92,7 @@ func handleToolsList(a *app, w http.ResponseWriter, r *http.Request, userID stri
 			}
 			reqBody, _ := json.Marshal(req)
 			reqBody = append(reqBody, '\n')
-			log.Printf("Sending tools/list request to backend %s: %s", backend.ID, string(reqBody))
+			shared.Debugf("Sending tools/list request to backend %s: %s", backend.ID, string(reqBody))
 
 			respCh := pool.RegisterRequest(reqID)
 			proc.Stdin.Write(reqBody)
@@ -102,7 +101,7 @@ func handleToolsList(a *app, w http.ResponseWriter, r *http.Request, userID stri
 			case response, ok := <-respCh:
 				pool.UnregisterRequest(reqID)
 				if ok && len(response) > 0 {
-					log.Printf("Received response from backend %s: %s", backend.ID, string(response))
+					shared.Debugf("Received response from backend %s", backend.ID, string(response))
 					var result struct {
 						Result struct {
 							Tools []map[string]interface{} `json:"tools"`
@@ -111,32 +110,32 @@ func handleToolsList(a *app, w http.ResponseWriter, r *http.Request, userID stri
 					}
 					if err := json.Unmarshal(response, &result); err == nil {
 						if result.Error != nil {
-							log.Printf("tools/list error from backend %s: %v", backend.ID, result.Error)
+							shared.Errorf("tools/list error from backend %s: %v", backend.ID, result.Error)
 							if firstError == nil {
 								firstError = fmt.Errorf("backend %s error: %v", backend.ID, result.Error)
 							}
 						} else {
-							log.Printf("tools/list success from backend %s, got %d tools", backend.ID, len(result.Result.Tools))
+							shared.Infof("tools/list success from backend %s, got %d tools", backend.ID, len(result.Result.Tools))
 							// Add prefix to tool names if configured
 							prefix := a.toolMuxer.GetPrefixForBackend(backend.ID)
-							log.Printf("Tool prefix for backend %s: %s", backend.ID, prefix)
+							shared.Debugf("Tool prefix for backend %s: %s", backend.ID, prefix)
 							for _, tool := range result.Result.Tools {
 								if name, ok := tool["name"].(string); ok && prefix != "" {
-									log.Printf("Adding prefix %s to tool %s", prefix, name)
+									shared.Debugf("Adding prefix %s to tool %s", prefix, name)
 									tool["name"] = prefix + "_" + name
 								}
 								allTools = append(allTools, tool)
 							}
 						}
 					} else {
-						log.Printf("Error unmarshaling response from backend %s: %v", backend.ID, err)
+						shared.Errorf("Error unmarshaling response from backend %s: %v", backend.ID, err)
 					}
 				} else {
-					log.Printf("Empty or invalid response from backend %s", backend.ID)
+					shared.Debugf("Empty or invalid response from backend %s", backend.ID)
 				}
 			case <-time.After(10 * time.Second):
 				pool.UnregisterRequest(reqID)
-				log.Printf("tools/list timeout from backend %s, killing stuck process", backend.ID)
+				shared.Errorf("tools/list timeout from backend %s, killing stuck process", backend.ID)
 				// Don't return stuck process to pool - kill it and let pool refill
 				proc.Kill()
 				continue
@@ -144,13 +143,13 @@ func handleToolsList(a *app, w http.ResponseWriter, r *http.Request, userID stri
 
 			pool.Warm <- proc
 		default:
-			log.Printf("No warm process for backend %s", backend.ID)
+			shared.Errorf("No warm process for backend %s", backend.ID)
 		}
 	}
 
 	// Add system tools
 	systemTools := shared.SystemToolsAsMap()
-	log.Printf("Adding %d system tools", len(systemTools))
+	shared.Debugf("Adding %d system tools", len(systemTools))
 	allTools = append(allTools, systemTools...)
 
 	// Build aggregated response
@@ -166,7 +165,7 @@ func handleToolsList(a *app, w http.ResponseWriter, r *http.Request, userID stri
 			"tools": allTools,
 		},
 	}
-	log.Printf("Returning %d total tools", len(allTools))
+	shared.Infof("Returning %d total tools", len(allTools))
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(response)
@@ -290,7 +289,7 @@ func handleToolsCall(a *app, w http.ResponseWriter, r *http.Request, userID stri
 	// Use muxer to route to correct backend
 	modifiedBody, router, err := a.toolMuxer.HandleToolsCall(userID, body)
 	if err != nil {
-		log.Printf("tools/call routing error: %v", err)
+		shared.Errorf("tools/call routing error: %v", err)
 		// Fallback to default backend
 		handleDefaultBackend(a, w, r, userID, body, id)
 		return

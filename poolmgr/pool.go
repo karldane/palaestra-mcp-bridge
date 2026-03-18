@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"sync"
 	"time"
+
+	"github.com/mcp-bridge/mcp-bridge/shared"
 )
 
 type Pool struct {
@@ -31,6 +33,8 @@ type Pool struct {
 	dedicatedUser   string
 	lastUsed        time.Time
 	lastUsedMu      sync.Mutex
+	Instructions    string // Instructions from backend's initialize response
+	instructionsMu  sync.Mutex
 }
 
 func NewPool(backendID string, size int, command string) *Pool {
@@ -131,16 +135,27 @@ func (pool *Pool) EnvMatches(env []string) bool {
 
 func (pool *Pool) responseDispatcher() {
 	for data := range pool.broadcastCh {
+		shared.Debugf("responseDispatcher received data: %s", string(data))
 		pool.pendingMu.Lock()
 		var resp JSONRPCResponse
-		if err := json.Unmarshal(data, &resp); err == nil && resp.ID != nil {
+		if err := json.Unmarshal(data, &resp); err != nil {
+			shared.Debugf("responseDispatcher failed to unmarshal: %v, data: %s", err, string(data))
+		} else if resp.ID != nil {
 			id := fmt.Sprintf("%v", resp.ID)
+			shared.Debugf("responseDispatcher looking for request id=%s, pending=%d", id, len(pool.pendingRequests))
 			if req, ok := pool.pendingRequests[id]; ok {
+				shared.Debugf("responseDispatcher found request, sending to channel")
 				select {
 				case req.ResponseCh <- data:
+					shared.Debugf("responseDispatcher sent response to channel for id=%s", id)
 				default:
+					shared.Debugf("responseDispatcher channel full for id=%s", id)
 				}
+			} else {
+				shared.Debugf("responseDispatcher no pending request for id=%s", id)
 			}
+		} else {
+			shared.Debugf("responseDispatcher received notification (no id): %s", string(data))
 		}
 		pool.pendingMu.Unlock()
 	}
@@ -180,7 +195,7 @@ func (pool *Pool) spawnAndHandshake() {
 
 	proc, err := SpawnProcess(pool, pool.Command, pool.Env)
 	if err != nil {
-		logJSON("error", fmt.Sprintf("failed to spawn process: %v", err))
+		shared.Errorf("failed to spawn process: %v", err)
 		if !pool.IsClosed() {
 			pool.mu.Lock()
 			delay := pool.backoffDelay
@@ -214,6 +229,8 @@ func (pool *Pool) spawnAndHandshake() {
 	// Run MCP handshake FIRST, before marking as warm
 	// This ensures WaitForWarm only returns processes that have completed handshake
 	if pool.performMCPHandshake(proc) {
+		// Small delay to allow server to fully initialize after handshake
+		time.Sleep(100 * time.Millisecond)
 		pool.mu.Lock()
 		pool.CurrentSize++
 		pool.mu.Unlock()
@@ -273,8 +290,28 @@ func (pool *Pool) performMCPHandshake(proc *ManagedProcess) bool {
 	proc.Stdin.Write(buf.Bytes())
 
 	select {
-	case <-respCh:
+	case resp := <-respCh:
 		pool.UnregisterRequest(initID)
+		// Extract instructions from initialize response
+		if len(resp) > 0 {
+			var initResult struct {
+				Result struct {
+					Instructions string `json:"instructions"`
+				} `json:"result"`
+			}
+			if err := json.Unmarshal(resp, &initResult); err == nil {
+				if initResult.Result.Instructions != "" {
+					pool.instructionsMu.Lock()
+					pool.Instructions = initResult.Result.Instructions
+					pool.instructionsMu.Unlock()
+					preview := initResult.Result.Instructions
+					if len(preview) > 100 {
+						preview = preview[:100] + "..."
+					}
+					shared.Debugf("Pool %s captured instructions: %s", pool.BackendID, preview)
+				}
+			}
+		}
 	case <-time.After(500 * time.Millisecond):
 		pool.UnregisterRequest(initID)
 		return false
@@ -297,6 +334,13 @@ func (pool *Pool) performMCPHandshake(proc *ManagedProcess) bool {
 	return true
 }
 
+// GetInstructions returns the instructions captured from the backend's initialize response.
+func (pool *Pool) GetInstructions() string {
+	pool.instructionsMu.Lock()
+	defer pool.instructionsMu.Unlock()
+	return pool.Instructions
+}
+
 func (pool *Pool) IsReady() bool {
 	select {
 	case proc := <-pool.Warm:
@@ -311,16 +355,16 @@ func (pool *Pool) IsReady() bool {
 }
 
 func (pool *Pool) WaitForWarm(timeout time.Duration) bool {
-	fmt.Printf("[DEBUG WaitForWarm] backend=%s, timeout=%v, current warm count=%d\n", pool.BackendID, timeout, len(pool.Warm))
+	shared.Debugf("WaitForWarm: backend=%s, timeout=%v, current warm count=%d", pool.BackendID, timeout, len(pool.Warm))
 	deadline := time.Now().Add(timeout)
 	for time.Now().Before(deadline) {
 		if len(pool.Warm) > 0 {
-			fmt.Printf("[DEBUG WaitForWarm] backend=%s, found warm process\n", pool.BackendID)
+			shared.Debugf("WaitForWarm: backend=%s, found warm process", pool.BackendID)
 			return true
 		}
 		time.Sleep(50 * time.Millisecond)
 	}
-	fmt.Printf("[DEBUG WaitForWarm] backend=%s, timed out waiting for warm\n", pool.BackendID)
+	shared.Debugf("WaitForWarm: backend=%s, timed out waiting for warm", pool.BackendID)
 	return false
 }
 

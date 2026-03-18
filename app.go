@@ -1,12 +1,11 @@
 package main
 
 import (
-	"log"
-
 	"github.com/mcp-bridge/mcp-bridge/auth"
 	"github.com/mcp-bridge/mcp-bridge/config"
 	"github.com/mcp-bridge/mcp-bridge/muxer"
 	"github.com/mcp-bridge/mcp-bridge/poolmgr"
+	"github.com/mcp-bridge/mcp-bridge/shared"
 	"github.com/mcp-bridge/mcp-bridge/store"
 )
 
@@ -39,24 +38,24 @@ func (a *app) getPoolForUser(userID, backendID string) *poolmgr.Pool {
 		if maxPoolSize == 0 {
 			maxPoolSize = minPoolSize
 		}
-		log.Printf("[DEBUG getPoolForUser] backend %s found in DB: command=%q, minPoolSize=%d, maxPoolSize=%d", backendID, command, minPoolSize, maxPoolSize)
+		shared.Debugf("getPoolForUser: backend %s found in DB: command=%q, minPoolSize=%d, maxPoolSize=%d", backendID, command, minPoolSize, maxPoolSize)
 	} else if bc, ok := a.config.Backends[backendID]; ok {
 		command = bc.Command
 		poolSize = bc.PoolSize
 		minPoolSize = bc.PoolSize
 		maxPoolSize = bc.PoolSize
-		log.Printf("[DEBUG getPoolForUser] backend %s found in config: command=%q, poolSize=%d", backendID, command, poolSize)
+		shared.Debugf("getPoolForUser: backend %s found in config: command=%q, poolSize=%d", backendID, command, poolSize)
 	} else {
 		// Shouldn't happen, but fall back to defaults.
 		command = "echo"
 		poolSize = 1
 		minPoolSize = 1
 		maxPoolSize = 1
-		log.Printf("[DEBUG getPoolForUser] WARNING: backend %s not found, using default echo", backendID)
+		shared.Debugf("getPoolForUser: backend %s not found, using default echo", backendID)
 	}
 
 	env := a.toolMuxer.BuildEnvForUser(userID, backendID)
-	log.Printf("[DEBUG getPoolForUser] creating pool for backendID=%s, userID=%s, command=%q, min=%d, max=%d, envCount=%d", backendID, userID, command, minPoolSize, maxPoolSize, len(env))
+	shared.Debugf("getPoolForUser: creating pool for backendID=%s, userID=%s, command=%q, min=%d, max=%d, envCount=%d", backendID, userID, command, minPoolSize, maxPoolSize, len(env))
 	return a.poolManager.GetOrCreateUserPool(
 		backendID, userID, command, minPoolSize, maxPoolSize, env,
 	)

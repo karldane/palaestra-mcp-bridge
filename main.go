@@ -15,6 +15,7 @@ import (
 	"github.com/mcp-bridge/mcp-bridge/config"
 	"github.com/mcp-bridge/mcp-bridge/muxer"
 	"github.com/mcp-bridge/mcp-bridge/poolmgr"
+	"github.com/mcp-bridge/mcp-bridge/shared"
 	"github.com/mcp-bridge/mcp-bridge/store"
 	"github.com/mcp-bridge/mcp-bridge/web"
 )
@@ -29,7 +30,7 @@ func main() {
 		fmt.Println("mcp-bridge version 1.0.0")
 		os.Exit(0)
 	}
-	logJSON("info", "DEBUG: MAIN FUNCTION STARTED - UNIQUE STRING 12345")
+	shared.Info("MCP Bridge starting...")
 
 	command := os.Getenv("COMMAND")
 	if command == "" {
@@ -61,10 +62,12 @@ func main() {
 		if cfg.Server.Port != "" {
 			port = cfg.Server.Port
 		}
-		logJSON("info", fmt.Sprintf("loaded config from %s with %d backends, authCodeTTL=%v, accessTokenTTL=%v",
-			configPath, len(cfg.Backends), cfg.Server.AuthCodeTTL, cfg.Server.AccessTokenTTL))
+		// Initialize log level from config
+		shared.SetLogLevel(cfg.Server.LogLevel)
+		shared.Infof("loaded config from %s with %d backends, authCodeTTL=%v, accessTokenTTL=%v",
+			configPath, len(cfg.Backends), cfg.Server.AuthCodeTTL, cfg.Server.AccessTokenTTL)
 	} else {
-		logJSON("info", fmt.Sprintf("no config file loaded (tried %s): %v", configPath, err))
+		shared.Infof("no config file loaded (tried %s): %v", configPath, err)
 		// No config file — single backend mode using env vars
 		cfg = &config.InternalConfig{
 			Server: config.ServerConfig{
@@ -164,7 +167,7 @@ func main() {
 	webHandler.OnBackendChange = func(backendID string) {
 		toolMuxer.RefreshPrefixes()
 		removed := pm.RemovePoolsByBackend(backendID)
-		logJSON("info", fmt.Sprintf("backend %s changed: refreshed prefixes, removed %d pool(s)", backendID, removed))
+		shared.Infof("backend %s changed: refreshed prefixes, removed %d pool(s)", backendID, removed)
 	}
 	// Wire probe: when admin clicks "Test" on a backend, spawn a temporary
 	// process and attempt the MCP handshake, returning JSON result bytes.
@@ -200,8 +203,8 @@ func main() {
 			}
 		}
 
-		// Debug: include command and env in result
-		fmt.Printf("[DEBUG ProbeBackend] backend=%s, command=%q, env=%v\n", backendID, b.Command, env)
+		// Debug: log backend being probed (don't log env var values)
+		shared.Debugf("ProbeBackend: backend=%s, command=%q, env_count=%d", backendID, b.Command, len(env))
 
 		result := poolmgr.ProbeBackend(b.Command, env, 10*time.Second)
 		return json.Marshal(result)
@@ -216,8 +219,8 @@ func main() {
 	mcpBridgeServer := NewMCPBridgeServer(a, toolMuxer)
 	mux.Handle("/", authHandler.Middleware(mcpBridgeServer.Handler()))
 
-	logJSON("info", fmt.Sprintf("MCP SSE Bridge started on :%s (command=%s, pool=%d, db=%s, idleGC=%s)",
-		port, command, poolSize, dbPath, idleTimeout))
+	shared.Infof("MCP SSE Bridge started on :%s (command=%s, pool=%d, db=%s, idleGC=%s)",
+		port, command, poolSize, dbPath, idleTimeout)
 
 	// Start insecure testing server on port 8081 if enabled
 	if *insecureTesting {
@@ -249,7 +252,7 @@ func main() {
 		}))
 
 		go func() {
-			logJSON("info", "INSECURE TESTING SERVER started on :8081 (no auth, admin user)")
+			shared.Info("INSECURE TESTING SERVER started on :8081 (no auth, admin user)")
 			if err := http.ListenAndServe(":8081", testMux); err != nil && err != http.ErrServerClosed {
 				log.Printf("INSECURE TESTING SERVER error: %v", err)
 			}

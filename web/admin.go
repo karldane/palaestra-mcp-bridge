@@ -136,6 +136,9 @@ func (h *Handler) AdminBackendsHandler(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// Get global hints
+	globalHints, _ := h.Store.GetSetting("global_hints")
+
 	h.render(w, "admin_backends.html", pageData{
 		User:    user,
 		Title:   "Manage Backends",
@@ -144,6 +147,7 @@ func (h *Handler) AdminBackendsHandler(w http.ResponseWriter, r *http.Request) {
 		Success: r.URL.Query().Get("success"),
 		Extra: map[string]interface{}{
 			"PoolStatuses": poolStatuses,
+			"GlobalHints":  globalHints,
 		},
 	})
 }
@@ -161,6 +165,7 @@ func (h *Handler) AdminBackendsCreateHandler(w http.ResponseWriter, r *http.Requ
 	toolPrefix := strings.TrimSpace(r.FormValue("tool_prefix"))
 	env := strings.TrimSpace(r.FormValue("env"))
 	envMappings := strings.TrimSpace(r.FormValue("env_mappings"))
+	toolHints := strings.TrimSpace(r.FormValue("tool_hints"))
 	enabled := r.FormValue("enabled") == "on"
 
 	// Validate backend ID: alphanumeric, dashes, underscores, max 50 chars
@@ -197,6 +202,7 @@ func (h *Handler) AdminBackendsCreateHandler(w http.ResponseWriter, r *http.Requ
 		ToolPrefix:  toolPrefix,
 		Env:         env,
 		EnvMappings: envMappings,
+		ToolHints:   toolHints,
 		Enabled:     enabled,
 	}
 	if err := h.Store.CreateBackend(b); err != nil {
@@ -221,6 +227,7 @@ func (h *Handler) AdminBackendsEditHandler(w http.ResponseWriter, r *http.Reques
 	toolPrefix := strings.TrimSpace(r.FormValue("tool_prefix"))
 	env := strings.TrimSpace(r.FormValue("env"))
 	envMappings := strings.TrimSpace(r.FormValue("env_mappings"))
+	toolHints := strings.TrimSpace(r.FormValue("tool_hints"))
 	enabled := r.FormValue("enabled") == "on"
 
 	// Validate inputs
@@ -264,6 +271,7 @@ func (h *Handler) AdminBackendsEditHandler(w http.ResponseWriter, r *http.Reques
 		ToolPrefix:  toolPrefix,
 		Env:         env,
 		EnvMappings: envMappings,
+		ToolHints:   toolHints,
 		Enabled:     enabled,
 		IsSystem:    isSystem,
 	}
@@ -436,4 +444,21 @@ func (h *Handler) AdminOAuthClientsDeleteHandler(w http.ResponseWriter, r *http.
 	}
 
 	http.Redirect(w, r, "/web/admin/oauth-clients?success=Client+deleted", http.StatusSeeOther)
+}
+
+func (h *Handler) AdminSettingsGlobalHintsHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	globalHints := strings.TrimSpace(r.FormValue("global_hints"))
+
+	if err := h.Store.SetSetting("global_hints", globalHints); err != nil {
+		log.Printf("web: save global hints: %v", err)
+		http.Redirect(w, r, "/web/admin/backends?error=Failed+to+save+global+hints", http.StatusSeeOther)
+		return
+	}
+
+	http.Redirect(w, r, "/web/admin/backends?success=Global+instructions+saved", http.StatusSeeOther)
 }

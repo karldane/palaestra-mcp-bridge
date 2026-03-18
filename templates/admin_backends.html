@@ -24,7 +24,7 @@
       </thead>
       <tbody>
         {{range .Data}}
-        <tr data-env='{{.Env | json}}' data-env-mappings='{{.EnvMappings | json}}' data-is-system="{{.IsSystem}}" data-min-pool="{{.MinPoolSize}}" data-max-pool="{{.MaxPoolSize}}">
+        <tr data-env='{{.Env | json}}' data-env-mappings='{{.EnvMappings | json}}' data-tool-hints='{{.ToolHints | json}}' data-is-system="{{.IsSystem}}" data-min-pool="{{.MinPoolSize}}" data-max-pool="{{.MaxPoolSize}}">
           <td><strong>{{.ID}}</strong>{{if .IsSystem}} <span class="badge badge-disabled">system</span>{{end}}</td>
           <td class="mono" style="max-width:300px;overflow:hidden;text-overflow:ellipsis;">{{.Command}}</td>
           <td>{{.MinPoolSize}}</td>
@@ -52,6 +52,22 @@
     {{else}}
     <p class="text-muted">No backends configured.</p>
     {{end}}
+  </div>
+
+  <!-- Global Settings Section -->
+  <div class="card">
+    <h2>Global README Settings</h2>
+    <p class="text-muted">These instructions appear in the mcpbridge_0_README tool for all users</p>
+    <form method="post" action="/web/admin/settings/global_hints">
+      <div class="form-row">
+        <label for="global_hints">Global Instructions</label>
+        <textarea id="global_hints" name="global_hints" rows="8" placeholder="Enter global instructions here. This appears at the top of the README tool for all users.&#10;&#10;Example:&#10;Welcome to our MCP Bridge system.&#10;&#10;When working with GitHub PRs referenced in Jira, you can find them via the github backend using the PR number.&#10;&#10;Common patterns:&#10;- Use org:tusker-direct for GitHub searches&#10;- Use projectKey=TUSKER for Jira queries">{{.Extra.GlobalHints}}</textarea>
+        <small class="text-muted">This text appears at the beginning of the README tool output for all users. Use it for company-wide guidance and cross-backend tips.</small>
+      </div>
+      <div class="form-row">
+        <button type="submit" class="btn btn-primary">Save Global Instructions</button>
+      </div>
+    </form>
   </div>
 
   <!-- Pool Status Section -->
@@ -152,6 +168,11 @@
         <small class="text-muted">Maps user token keys to backend-specific env var names. E.g., user sets "API_KEY", backend receives "KUBECONFIG_CONTENT".</small>
       </div>
       <div class="form-row">
+        <label for="tool_hints">Tool Usage Hints</label>
+        <textarea id="tool_hints" name="tool_hints" placeholder="Enter plain text hints for AI to use when calling tools from this backend.&#10;&#10;Example:&#10;Common filters: is:pr org:myorg state:open&#10;Use repo:owner/name for specific repos.&#10;JQL syntax: project=PROJ AND status!=Done"></textarea>
+        <small class="text-muted">These hints are appended to each tool's annotations and help AI assistants understand typical usage patterns.</small>
+      </div>
+      <div class="form-row">
         <button type="button" class="btn btn-secondary" onclick="previewEnv()">Preview Environment</button>
         <div id="env-preview" class="mono" style="margin-top:0.5rem;padding:0.5rem;background:#f3f4f6;border-radius:4px;display:none;"></div>
       </div>
@@ -197,11 +218,13 @@ function editBackend(id) {
   document.getElementById('tool_prefix').value = (cells[4].textContent.trim() === 'none') ? '' : cells[4].textContent.trim();
   document.getElementById('enabled').checked = cells[6].textContent.trim() === 'enabled';
 
-  // Get env and env_mappings from data attributes
+  // Get env, env_mappings, and tool_hints from data attributes
   var env = row.getAttribute('data-env');
   var envMappings = row.getAttribute('data-env-mappings');
+  var toolHints = row.getAttribute('data-tool-hints');
   document.getElementById('env').value = env ? env : '{}';
   document.getElementById('env_mappings').value = envMappings ? envMappings : '{}';
+  document.getElementById('tool_hints').value = toolHints ? toolHints : '';
 
   // Disable fields for system backends
   document.getElementById('command').readOnly = isSystem;
@@ -241,6 +264,7 @@ function cancelEdit() {
   document.getElementById('enabled').disabled = false;
   document.getElementById('env').value = '{}';
   document.getElementById('env_mappings').value = '{}';
+  document.getElementById('tool_hints').value = '';
   document.getElementById('env-preview').style.display = 'none';
 
   document.getElementById('form-submit-btn').textContent = 'Create Backend';

@@ -54,6 +54,12 @@ func (s *Store) migrate() error {
 	s.db.Exec(`ALTER TABLE backends ADD COLUMN is_system INTEGER NOT NULL DEFAULT 0`)
 	s.db.Exec(`ALTER TABLE backends ADD COLUMN min_pool_size INTEGER NOT NULL DEFAULT 1`)
 	s.db.Exec(`ALTER TABLE backends ADD COLUMN max_pool_size INTEGER NOT NULL DEFAULT 0`)
+	s.db.Exec(`ALTER TABLE backends ADD COLUMN tool_hints TEXT NOT NULL DEFAULT ''`)
+	s.db.Exec(`ALTER TABLE backends ADD COLUMN backend_instructions TEXT NOT NULL DEFAULT ''`)
+	s.db.Exec(`CREATE TABLE IF NOT EXISTS settings (
+		key TEXT PRIMARY KEY,
+		value TEXT NOT NULL
+	)`)
 
 	// Migration: rename token to session_id in web_sessions
 	// SQLite doesn't support ALTER TABLE rename column, so we handle this in queries
@@ -86,6 +92,8 @@ CREATE TABLE IF NOT EXISTS backends (
 	tool_prefix TEXT NOT NULL DEFAULT '',
 	env         TEXT NOT NULL DEFAULT '{}',
 	env_mappings TEXT NOT NULL DEFAULT '{}',
+	tool_hints  TEXT NOT NULL DEFAULT '',
+	backend_instructions TEXT NOT NULL DEFAULT '',
 	enabled     INTEGER NOT NULL DEFAULT 1,
 	is_system   INTEGER NOT NULL DEFAULT 0
 );
@@ -159,6 +167,12 @@ CREATE TABLE IF NOT EXISTS backend_capabilities (
 	tools       TEXT NOT NULL,
 	tool_count  INTEGER NOT NULL DEFAULT 0,
 	updated_at  DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+-- Global settings for MCP Bridge
+CREATE TABLE IF NOT EXISTS settings (
+	key TEXT PRIMARY KEY,
+	value TEXT NOT NULL
 );
 `
 

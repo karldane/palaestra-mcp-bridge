@@ -69,6 +69,63 @@ opencode will:
 3. Perform PKCE authorization flow
 4. Connect SSE and send JSON-RPC requests to the root path `/`
 
+### 6. Tool Hints and Instructions (New!)
+
+The bridge now provides contextual guidance to help LLMs use tools effectively:
+
+**Global Instructions** - Set via Admin UI (`/web/admin/backends`):
+- Company-wide guidance, common patterns, cross-backend tips
+- Appears in the `mcpbridge_0_README` tool output
+
+**Per-Backend Hints** - Configure per backend:
+- Backend-specific usage guidance (e.g., "Use org:tusker-direct for GitHub searches")
+- Appears in the README tool under each backend section
+
+**Backend Native Instructions** - Captured automatically:
+- Instructions provided by MCP servers during initialization (e.g., GitHub MCP Server's detailed guidance)
+- Automatically captured and displayed in README tool
+
+**The `mcpbridge_0_README` tool** should always be called first - it contains:
+- Global company information
+- Per-backend usage hints
+- Live backend instructions from initialize responses
+
+## Logging
+
+### Log Levels
+
+Control verbosity via `config.yaml`:
+
+```yaml
+server:
+  logLevel: info    # debug | info | warn | error
+```
+
+| Level | Output |
+|-------|--------|
+| `error` | Only errors |
+| `warn` | Warnings and errors |
+| `info` | Startup, important events, errors (default) |
+| `debug` | All request/response details, full debugging |
+
+**Note:** Debug logging is verbose and should only be used for troubleshooting. All logs are structured JSON written to stdout (ideal for Kubernetes).
+
+### Security Note
+
+**Token and secret values are never logged.** The bridge only logs:
+- Environment variable key names (not values)
+- Request/response metadata (not sensitive payloads)
+- Process lifecycle events
+
+### Clean Environment
+
+The bridge passes **only configured environment variables** to backend processes:
+- User tokens from the database
+- Systemwide backend env vars (from admin config)
+- Mapped env vars (via env_mappings)
+
+System environment variables (PATH, HOME, etc.) are **not** passed to backends. If your backend needs specific system variables, add them to the backend's environment configuration in the admin UI.
+
 ## Configuration Reference
 
 ### config.yaml

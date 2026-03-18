@@ -14,6 +14,16 @@ import (
 
 // registerSystemTools adds mcpbridge system tools to the MCP server
 func (s *MCPBridgeServer) registerSystemTools(mcpServer *server.MCPServer) {
+	// README tool - must be first!
+	mcpServer.AddTool(mcp.Tool{
+		Name:        "mcpbridge_0_README",
+		Description: "🚨 START HERE! 🚨 CRITICAL: Read this BEFORE using any other tools! Contains essential usage guidance, hints for all backends, and company-specific information. Failure to read this first may result in incorrect queries and wasted API calls.",
+		InputSchema: mcp.ToolInputSchema{
+			Type:       "object",
+			Properties: map[string]interface{}{},
+		},
+	}, s.handleReadmeTool)
+
 	// Ping tool
 	mcpServer.AddTool(mcp.Tool{
 		Name:        "mcpbridge_ping",
@@ -285,6 +295,70 @@ func (s *MCPBridgeServer) handlePoolStatusTool(ctx context.Context, request mcp.
 
 	result.WriteString(fmt.Sprintf("Total: %d pools, %d warm processes, %d current\n",
 		len(pools), totalWarm, totalCurrent))
+
+	return mcp.NewToolResultText(result.String()), nil
+}
+
+func (s *MCPBridgeServer) handleReadmeTool(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	userID := ctx.Value("user_id").(string)
+
+	var result strings.Builder
+	result.WriteString("╔════════════════════════════════════════════════════════════════════════╗\n")
+	result.WriteString("║           🚀 MCP BRIDGE - START HERE - READ ME FIRST 🚀               ║\n")
+	result.WriteString("╚════════════════════════════════════════════════════════════════════════╝\n\n")
+
+	// Get global settings
+	globalHints, _ := s.app.store.GetSetting("global_hints")
+	if globalHints != "" {
+		result.WriteString("📋 GLOBAL INFORMATION\n")
+		result.WriteString("═══════════════════════\n")
+		result.WriteString(globalHints)
+		result.WriteString("\n\n")
+	}
+
+	// Get enabled backends
+	backends, err := s.app.store.ListBackends()
+	if err != nil {
+		return mcp.NewToolResultText("Error listing backends: " + err.Error()), nil
+	}
+
+	userTokens, _ := s.app.store.GetAllUserTokens(userID)
+	userBackendTokens := make(map[string]bool)
+	for _, token := range userTokens {
+		userBackendTokens[token.BackendID] = true
+	}
+
+	for _, backend := range backends {
+		if !backend.Enabled || !userBackendTokens[backend.ID] {
+			continue
+		}
+
+		result.WriteString(fmt.Sprintf("\n📦 BACKEND: %s\n", strings.ToUpper(backend.ID)))
+		result.WriteString(strings.Repeat("═", 40+len(backend.ID)))
+		result.WriteString("\n\n")
+
+		// Per-backend tool hints
+		if backend.ToolHints != "" {
+			result.WriteString("📝 Usage Hints:\n")
+			result.WriteString(backend.ToolHints)
+			result.WriteString("\n\n")
+		}
+
+		// Backend's own instructions from initialize (get from pool - fresh)
+		pool := s.app.getPoolForUser(userID, backend.ID)
+		if pool != nil {
+			instructions := pool.GetInstructions()
+			if instructions != "" {
+				result.WriteString("📖 Backend Instructions:\n")
+				result.WriteString(instructions)
+				result.WriteString("\n\n")
+			}
+		}
+	}
+
+	result.WriteString("\n✅ You are now ready to use MCP Bridge tools!\n")
+	result.WriteString("Remember: When using GitHub search tools, use filters like 'is:pr org:tusker-direct'\n")
+	result.WriteString("For Jira, use projectKey=PROJ to filter by project.\n")
 
 	return mcp.NewToolResultText(result.String()), nil
 }

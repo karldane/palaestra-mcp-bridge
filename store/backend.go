@@ -8,16 +8,18 @@ import (
 
 // Backend represents an MCP backend server configuration.
 type Backend struct {
-	ID          string
-	Command     string
-	PoolSize    int
-	ToolPrefix  string
-	Env         string // JSON object - systemwide env vars (higher priority than user tokens)
-	EnvMappings string // JSON object - maps user token keys to backend-specific keys
-	Enabled     bool
-	IsSystem    bool // true for mcpbridge - system backend that can't be deleted by non-admins
-	MinPoolSize int  // Minimum warm processes to maintain
-	MaxPoolSize int  // Maximum warm processes allowed (0 = unlimited)
+	ID                  string
+	Command             string
+	PoolSize            int
+	ToolPrefix          string
+	Env                 string // JSON object - systemwide env vars (higher priority than user tokens)
+	EnvMappings         string // JSON object - maps user token keys to backend-specific keys
+	ToolHints           string // Plain text - usage hints for the README tool (per-backend guidance)
+	BackendInstructions string // Plain text - instructions provided by backend during initialize
+	Enabled             bool
+	IsSystem            bool // true for mcpbridge - system backend that can't be deleted by non-admins
+	MinPoolSize         int  // Minimum warm processes to maintain
+	MaxPoolSize         int  // Maximum warm processes allowed (0 = unlimited)
 }
 
 // CreateBackend inserts a new backend into the database.
@@ -37,9 +39,9 @@ func (s *Store) CreateBackend(b *Backend) error {
 		b.MinPoolSize = 1
 	}
 	_, err := s.db.Exec(
-		`INSERT INTO backends (id, command, pool_size, min_pool_size, max_pool_size, tool_prefix, env, env_mappings, enabled, is_system)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		b.ID, b.Command, b.PoolSize, b.MinPoolSize, b.MaxPoolSize, b.ToolPrefix, b.Env, b.EnvMappings, enabled, isSystem,
+		`INSERT INTO backends (id, command, pool_size, min_pool_size, max_pool_size, tool_prefix, env, env_mappings, tool_hints, backend_instructions, enabled, is_system)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		b.ID, b.Command, b.PoolSize, b.MinPoolSize, b.MaxPoolSize, b.ToolPrefix, b.Env, b.EnvMappings, b.ToolHints, b.BackendInstructions, enabled, isSystem,
 	)
 	return err
 }
@@ -49,8 +51,8 @@ func (s *Store) GetBackend(id string) (*Backend, error) {
 	b := &Backend{}
 	var enabled, isSystem int
 	err := s.db.QueryRow(
-		`SELECT id, command, pool_size, min_pool_size, max_pool_size, tool_prefix, env, env_mappings, enabled, is_system FROM backends WHERE id = ?`, id,
-	).Scan(&b.ID, &b.Command, &b.PoolSize, &b.MinPoolSize, &b.MaxPoolSize, &b.ToolPrefix, &b.Env, &b.EnvMappings, &enabled, &isSystem)
+		`SELECT id, command, pool_size, min_pool_size, max_pool_size, tool_prefix, env, env_mappings, tool_hints, backend_instructions, enabled, is_system FROM backends WHERE id = ?`, id,
+	).Scan(&b.ID, &b.Command, &b.PoolSize, &b.MinPoolSize, &b.MaxPoolSize, &b.ToolPrefix, &b.Env, &b.EnvMappings, &b.ToolHints, &b.BackendInstructions, &enabled, &isSystem)
 	if err != nil {
 		return nil, err
 	}
@@ -62,7 +64,7 @@ func (s *Store) GetBackend(id string) (*Backend, error) {
 // ListBackends returns all backends ordered by ID.
 func (s *Store) ListBackends() ([]*Backend, error) {
 	rows, err := s.db.Query(
-		`SELECT id, command, pool_size, min_pool_size, max_pool_size, tool_prefix, env, env_mappings, enabled, is_system FROM backends ORDER BY id`,
+		`SELECT id, command, pool_size, min_pool_size, max_pool_size, tool_prefix, env, env_mappings, tool_hints, backend_instructions, enabled, is_system FROM backends ORDER BY id`,
 	)
 	if err != nil {
 		return nil, err
@@ -73,7 +75,7 @@ func (s *Store) ListBackends() ([]*Backend, error) {
 	for rows.Next() {
 		b := &Backend{}
 		var enabled, isSystem int
-		if err := rows.Scan(&b.ID, &b.Command, &b.PoolSize, &b.MinPoolSize, &b.MaxPoolSize, &b.ToolPrefix, &b.Env, &b.EnvMappings, &enabled, &isSystem); err != nil {
+		if err := rows.Scan(&b.ID, &b.Command, &b.PoolSize, &b.MinPoolSize, &b.MaxPoolSize, &b.ToolPrefix, &b.Env, &b.EnvMappings, &b.ToolHints, &b.BackendInstructions, &enabled, &isSystem); err != nil {
 			return nil, err
 		}
 		b.Enabled = enabled != 0
@@ -103,8 +105,8 @@ func (s *Store) UpdateBackend(b *Backend) error {
 		b.MinPoolSize = 1
 	}
 	_, err := s.db.Exec(
-		`UPDATE backends SET command=?, pool_size=?, min_pool_size=?, max_pool_size=?, tool_prefix=?, env=?, env_mappings=?, enabled=?, is_system=? WHERE id=?`,
-		b.Command, b.PoolSize, b.MinPoolSize, b.MaxPoolSize, b.ToolPrefix, b.Env, b.EnvMappings, enabled, isSystem, b.ID,
+		`UPDATE backends SET command=?, pool_size=?, min_pool_size=?, max_pool_size=?, tool_prefix=?, env=?, env_mappings=?, tool_hints=?, backend_instructions=?, enabled=?, is_system=? WHERE id=?`,
+		b.Command, b.PoolSize, b.MinPoolSize, b.MaxPoolSize, b.ToolPrefix, b.Env, b.EnvMappings, b.ToolHints, b.BackendInstructions, enabled, isSystem, b.ID,
 	)
 	return err
 }
@@ -226,6 +228,28 @@ func (s *Store) MigrateDefaultBackend() error {
 	// Then migrate default -> mcpbridge and mark as system
 	_, err = s.db.Exec(
 		`UPDATE backends SET id = 'mcpbridge', is_system = 1 WHERE id = 'default'`,
+	)
+	return err
+}
+
+// ---------- Settings ----------
+
+// GetSetting retrieves a setting value by key.
+func (s *Store) GetSetting(key string) (string, error) {
+	var value string
+	err := s.db.QueryRow(`SELECT value FROM settings WHERE key = ?`, key).Scan(&value)
+	if err == sql.ErrNoRows {
+		return "", nil
+	}
+	return value, err
+}
+
+// SetSetting sets a setting value by key.
+func (s *Store) SetSetting(key, value string) error {
+	_, err := s.db.Exec(
+		`INSERT INTO settings (key, value) VALUES (?, ?)
+		 ON CONFLICT(key) DO UPDATE SET value = excluded.value`,
+		key, value,
 	)
 	return err
 }

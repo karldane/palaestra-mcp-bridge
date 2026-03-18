@@ -3,14 +3,13 @@ package muxer
 import (
 	"encoding/json"
 	"fmt"
-	"log"
-	"os"
 	"strings"
 	"sync"
 
 	"github.com/mcp-bridge/mcp-bridge/config"
 	"github.com/mcp-bridge/mcp-bridge/credential"
 	"github.com/mcp-bridge/mcp-bridge/poolmgr"
+	"github.com/mcp-bridge/mcp-bridge/shared"
 	"github.com/mcp-bridge/mcp-bridge/store"
 )
 
@@ -146,44 +145,37 @@ func (tm *ToolMuxer) HandleToolsCall(userID string, body []byte) ([]byte, *PoolR
 
 // BuildEnvForUser constructs a []string of "KEY=VALUE" pairs for the given
 // user and backend. The precedence is (highest to lowest):
-//  1. Bridge process env (base)
-//  2. User tokens (mapped via env_mappings if configured)
-//  3. Systemwide backend env (can override user values)
+//  1. User tokens (mapped via env_mappings if configured)
+//  2. Systemwide backend env (can override user values)
 //
-// This allows system admins to set sensible defaults while users can override
-// them, but the systemwide values take final precedence.
+// Only configured env vars are included - no system environment variables.
 func (tm *ToolMuxer) BuildEnvForUser(userID, backendID string) []string {
-	log.Printf("BuildEnvForUser called for userID: %s, backendID: %s", userID, backendID)
-	// Start with bridge's own environment as a base.
+	shared.Debugf("BuildEnvForUser called for userID: %s, backendID: %s", userID, backendID)
+	// Start with empty environment - only add configured vars
 	envMap := make(map[string]string)
-	for _, e := range os.Environ() {
-		if idx := strings.IndexByte(e, '='); idx >= 0 {
-			envMap[e[:idx]] = e[idx+1:]
-		}
-	}
-	log.Printf("Base environment vars count: %d", len(envMap))
 
 	// Get backend configuration including env mappings.
 	_, _, _, _, systemwideEnv, envMappings, ok := tm.getBackendConfig(backendID)
 	if !ok {
-		log.Printf("No backend config found for %s, using legacy path", backendID)
+		shared.Debugf("No backend config found for %s, using legacy path", backendID)
 		// Fallback: no backend config, just use legacy path.
 		tm.buildLegacyEnv(userID, backendID, envMap)
 		result := mapToSlice(envMap)
-		log.Printf("Legacy env result: %v", result)
+		shared.Debugf("Legacy env result: %d vars", len(result))
 		return result
 	}
-	log.Printf("Backend config for %s: systemwideEnv=%v, envMappings=%v", backendID, systemwideEnv, envMappings)
+	shared.Debugf("Backend config for %s: %d systemwide vars, %d mappings", backendID, len(systemwideEnv), len(envMappings))
 
 	// Step 1: Apply user tokens (lower priority than systemwide).
 	if tm.store != nil {
 		tokens, err := tm.store.GetUserTokens(userID, backendID)
 		if err != nil {
-			log.Printf("Error getting user tokens for %s/%s: %v", userID, backendID, err)
+			shared.Debugf("Error getting user tokens for %s/%s: %v", userID, backendID, err)
 		} else {
-			log.Printf("Found %d user tokens for %s/%s", len(tokens), userID, backendID)
+			shared.Debugf("Found %d user tokens for %s/%s", len(tokens), userID, backendID)
 			for _, tok := range tokens {
-				log.Printf("Setting env from user token: %s=%s", tok.EnvKey, tok.Value)
+				// SECURITY: Never log the actual token value
+				shared.Debugf("Setting env from user token: %s", tok.EnvKey)
 				envMap[tok.EnvKey] = tok.Value
 			}
 		}
@@ -194,46 +186,48 @@ func (tm *ToolMuxer) BuildEnvForUser(userID, backendID string) []string {
 			for _, secretRef := range backendCfg.Secrets {
 				value, err := tm.secrets.Get(userID, secretRef.EnvKey)
 				if err == nil {
-					log.Printf("Setting env from legacy secret: %s=%s", secretRef.EnvKey, value)
+					// SECURITY: Never log the actual secret value
+					shared.Debugf("Setting env from legacy secret: %s", secretRef.EnvKey)
 					envMap[secretRef.EnvKey] = value
 				}
 			}
 		}
 	}
 
-	log.Printf("Env after user tokens: %v", envMap)
+	shared.Debugf("Env after user tokens: %d vars", len(envMap))
 
 	// Step 2: Map user token keys to backend-specific keys (if mappings configured).
 	if len(envMappings) > 0 {
-		log.Printf("Applying env mappings: %v", envMappings)
+		shared.Debugf("Applying env mappings for %d keys", len(envMappings))
 		mappedEnv := make(map[string]string)
 		for userKey, value := range envMap {
 			// Check if this key has a mapping.
 			if backendKey, hasMapping := envMappings[userKey]; hasMapping {
 				// Map to backend-specific key.
-				log.Printf("Mapping user key %s -> backend key %s with value %s", userKey, backendKey, value)
+				// SECURITY: Only log keys, not values
+				shared.Debugf("Mapping user key %s -> backend key %s", userKey, backendKey)
 				mappedEnv[backendKey] = value
 			} else {
 				// No mapping - pass through unchanged.
-				log.Printf("No mapping for user key %s, passing through", userKey)
 				mappedEnv[userKey] = value
 			}
 		}
 		envMap = mappedEnv
-		log.Printf("Env after mapping: %v", envMap)
+		shared.Debugf("Env after mapping: %d vars", len(envMap))
 	}
 
 	// Step 3: Apply systemwide backend env (highest priority - can override user values).
 	for k, v := range systemwideEnv {
-		if existing, wasSet := envMap[k]; wasSet {
-			log.Printf("muxer: env override: user value for %q=%q replaced by systemwide default %q", k, existing, v)
+		if _, wasSet := envMap[k]; wasSet {
+			shared.Debugf("muxer: env override: user value for %q replaced by systemwide default", k)
 		}
-		log.Printf("Setting systemwide env: %s=%s", k, v)
+		// SECURITY: Only log key name, not value (systemwide env may contain sensitive data)
+		shared.Debugf("Setting systemwide env: %s", k)
 		envMap[k] = v
 	}
 
 	result := mapToSlice(envMap)
-	log.Printf("Final env for user %s, backend %s: %v", userID, backendID, result)
+	shared.Debugf("Final env for user %s, backend %s: %d vars", userID, backendID, len(result))
 	return result
 }
 
