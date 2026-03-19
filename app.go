@@ -3,6 +3,7 @@ package main
 import (
 	"github.com/mcp-bridge/mcp-bridge/auth"
 	"github.com/mcp-bridge/mcp-bridge/config"
+	"github.com/mcp-bridge/mcp-bridge/enforcer"
 	"github.com/mcp-bridge/mcp-bridge/muxer"
 	"github.com/mcp-bridge/mcp-bridge/poolmgr"
 	"github.com/mcp-bridge/mcp-bridge/shared"
@@ -16,6 +17,7 @@ type app struct {
 	poolManager *poolmgr.PoolManager
 	toolMuxer   *muxer.ToolMuxer
 	config      *config.InternalConfig
+	enforcer    *enforcer.Enforcer
 }
 
 // getPoolForUser returns a per-user pool for the given backend. It builds an

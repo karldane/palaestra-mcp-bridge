@@ -13,6 +13,7 @@ import (
 
 	"github.com/mcp-bridge/mcp-bridge/auth"
 	"github.com/mcp-bridge/mcp-bridge/config"
+	"github.com/mcp-bridge/mcp-bridge/enforcer"
 	"github.com/mcp-bridge/mcp-bridge/muxer"
 	"github.com/mcp-bridge/mcp-bridge/poolmgr"
 	"github.com/mcp-bridge/mcp-bridge/shared"
@@ -136,6 +137,25 @@ func main() {
 		TokenTTL: cfg.Server.AccessTokenTTLParsed,
 	}
 
+	// ---- Enforcer initialization ----
+	enforcerConfig := enforcer.DefaultEnforcerConfig()
+	enforcerConfig.Enabled = true
+	enforcerConfig.EnableDescriptionDecoration = true
+	enforcerConfig.EnableKillSwitch = true
+
+	var enf *enforcer.Enforcer
+	if enforcerConfig.Enabled {
+		var err error
+		enf, err = enforcer.NewEnforcer(enforcerConfig, store.NewEnforcerStore(st.DB()))
+		if err != nil {
+			shared.Errorf("Failed to initialize enforcer: %v", err)
+			shared.Errorf("Continuing without policy enforcement")
+			enf = nil
+		} else {
+			shared.Infof("Enforcer initialized with policy enforcement")
+		}
+	}
+
 	// ---- Wire up app ----
 	a := &app{
 		store:       st,
@@ -143,6 +163,7 @@ func main() {
 		poolManager: pm,
 		toolMuxer:   toolMuxer,
 		config:      cfg,
+		enforcer:    enf,
 	}
 
 	// ---- HTTP routing ----

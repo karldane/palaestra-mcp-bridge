@@ -81,6 +81,78 @@ func (s *Store) migrate() error {
 		`)
 	}
 
+	// Enforcer tables (policy enforcement system)
+	s.db.Exec(`CREATE TABLE IF NOT EXISTS enforcer_policies (
+		id          TEXT PRIMARY KEY,
+		name        TEXT NOT NULL,
+		description TEXT NOT NULL DEFAULT '',
+		scope       TEXT NOT NULL DEFAULT 'global',
+		expression  TEXT NOT NULL,
+		action      TEXT NOT NULL DEFAULT 'ALLOW',
+		severity    TEXT NOT NULL DEFAULT 'MEDIUM',
+		message     TEXT NOT NULL DEFAULT '',
+		enabled     INTEGER NOT NULL DEFAULT 1,
+		priority    INTEGER NOT NULL DEFAULT 100,
+		created_at  DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+		updated_at  DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+	)`)
+	s.db.Exec(`CREATE TABLE IF NOT EXISTS enforcer_overrides (
+		id          TEXT PRIMARY KEY,
+		tool_name   TEXT NOT NULL,
+		backend_id  TEXT,
+		risk_level  TEXT NOT NULL DEFAULT 'medium',
+		impact_scope TEXT NOT NULL DEFAULT 'read',
+		resource_cost INTEGER NOT NULL DEFAULT 5,
+		requires_hitl INTEGER NOT NULL DEFAULT 0,
+		pii_exposure INTEGER NOT NULL DEFAULT 0,
+		created_at  DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+		updated_at  DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+		UNIQUE(tool_name, backend_id)
+	)`)
+	s.db.Exec(`CREATE TABLE IF NOT EXISTS enforcer_approvals (
+		id              TEXT PRIMARY KEY,
+		user_id         TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+		user_email      TEXT NOT NULL DEFAULT '',
+		user_role       TEXT NOT NULL DEFAULT '',
+		trust_level     INTEGER NOT NULL DEFAULT 50,
+		tool_name       TEXT NOT NULL,
+		tool_args       TEXT NOT NULL DEFAULT '{}',
+		backend_id      TEXT NOT NULL,
+		safety_profile  TEXT NOT NULL DEFAULT '{}',
+		status          TEXT NOT NULL DEFAULT 'PENDING',
+		requested_at    DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+		expires_at      DATETIME NOT NULL,
+		approved_by     TEXT,
+		approved_at     DATETIME,
+		denial_reason   TEXT DEFAULT '',
+		comments        TEXT DEFAULT '',
+		policy_id       TEXT DEFAULT '',
+		violation_msg   TEXT DEFAULT ''
+	)`)
+	s.db.Exec(`CREATE TABLE IF NOT EXISTS enforcer_kill_switches (
+		id          TEXT PRIMARY KEY,
+		name        TEXT NOT NULL,
+		scope       TEXT NOT NULL DEFAULT 'global',
+		enabled     INTEGER NOT NULL DEFAULT 0,
+		enabled_at  DATETIME,
+		enabled_by  TEXT,
+		reason      TEXT DEFAULT '',
+		created_at  DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+		updated_at  DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+		UNIQUE(scope)
+	)`)
+	s.db.Exec(`CREATE TABLE IF NOT EXISTS enforcer_audit_log (
+		id          TEXT PRIMARY KEY,
+		request_id  TEXT NOT NULL,
+		user_id     TEXT NOT NULL,
+		tool_name   TEXT NOT NULL,
+		action      TEXT NOT NULL,
+		policy_id   TEXT,
+		message     TEXT,
+		context     TEXT DEFAULT '{}',
+		created_at  DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+	)`)
+
 	return nil
 }
 

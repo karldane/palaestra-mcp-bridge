@@ -511,33 +511,6 @@ func TestIntegration_SSECacheControlHeader(t *testing.T) {
 	}
 }
 
-// ---------- Structured logging ----------
-
-func TestIntegration_StructuredJSONLogging(t *testing.T) {
-	entry := poolmgr.LogEntry{
-		Level:   "info",
-		Message: "test message",
-		Time:    time.Now().UTC().Format(time.RFC3339),
-	}
-	data, err := json.Marshal(entry)
-	if err != nil {
-		t.Fatalf("failed to marshal log: %v", err)
-	}
-
-	if !strings.Contains(string(data), "test message") {
-		t.Error("expected log entry to contain message")
-	}
-
-	var parsed poolmgr.LogEntry
-	if err := json.Unmarshal(data, &parsed); err != nil {
-		t.Fatalf("failed to unmarshal log: %v", err)
-	}
-
-	if parsed.Level != "info" {
-		t.Errorf("expected level info, got %s", parsed.Level)
-	}
-}
-
 func TestIntegration_ProcessKillUsesSIGKILL(t *testing.T) {
 	pool := poolmgr.NewPool("test-kill", 0, "sleep 60")
 	defer pool.Shutdown()

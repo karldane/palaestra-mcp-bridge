@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"time"
 
+	"github.com/mcp-bridge/mcp-bridge/enforcer"
 	"github.com/mcp-bridge/mcp-bridge/poolmgr"
 	"github.com/mcp-bridge/mcp-bridge/store"
 )
@@ -26,6 +27,7 @@ type Handler struct {
 	Store       *store.Store
 	Templates   *template.Template
 	PoolManager *poolmgr.PoolManager
+	Enforcer    *enforcer.Enforcer
 
 	// OnBackendChange is called after a backend is created, edited, or
 	// deleted. The callback receives the backend ID so the caller can

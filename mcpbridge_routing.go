@@ -175,14 +175,20 @@ func (s *MCPBridgeServer) handleToolsCall(w http.ResponseWriter, r *http.Request
 			switch decision.Action {
 			case enforcer.ActionDeny:
 				shared.Debugf("Enforcer DENIED tool call: %s - %s", toolName, decision.Message)
+				// Return 200 OK with JSON-RPC error in body (standard JSON-RPC pattern)
+				// This ensures clients parse the actual error message instead of showing generic HTTP error
 				w.Header().Set("Content-Type", "application/json")
-				w.WriteHeader(http.StatusForbidden)
+				w.WriteHeader(http.StatusOK)
 				json.NewEncoder(w).Encode(map[string]interface{}{
 					"jsonrpc": "2.0",
 					"id":      id,
 					"error": map[string]interface{}{
 						"code":    -32001,
-						"message": "Policy violation: " + decision.Message,
+						"message": decision.Message,
+						"data": map[string]interface{}{
+							"policy_id": decision.PolicyID,
+							"action":    "denied",
+						},
 					},
 				})
 				return
@@ -197,26 +203,28 @@ func (s *MCPBridgeServer) handleToolsCall(w http.ResponseWriter, r *http.Request
 				if err != nil {
 					shared.Errorf("Failed to create approval request: %v", err)
 					w.Header().Set("Content-Type", "application/json")
-					w.WriteHeader(http.StatusInternalServerError)
+					w.WriteHeader(http.StatusOK)
 					json.NewEncoder(w).Encode(map[string]interface{}{
 						"jsonrpc": "2.0",
 						"id":      id,
 						"error": map[string]interface{}{
 							"code":    -32002,
-							"message": "Failed to create approval request",
+							"message": "Failed to create approval request: " + err.Error(),
 						},
 					})
 					return
 				}
+				// Return 200 OK with pending_approval status in result
 				w.Header().Set("Content-Type", "application/json")
-				w.WriteHeader(http.StatusAccepted)
+				w.WriteHeader(http.StatusOK)
 				json.NewEncoder(w).Encode(map[string]interface{}{
 					"jsonrpc": "2.0",
 					"id":      id,
 					"result": map[string]interface{}{
 						"status":      "pending_approval",
 						"approval_id": approvalID,
-						"message":     "This operation requires human approval. Please wait for an administrator to approve.",
+						"message":     decision.Message,
+						"policy_id":   decision.PolicyID,
 					},
 				})
 				return

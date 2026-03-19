@@ -221,13 +221,15 @@ func (r *MetadataResolver) inferDefaults(toolName string) SafetyProfile {
 		profile.RequiresHITL = true
 	}
 
-	// Cost adjustment based on impact
-	if profile.Impact == ImpactDelete {
-		profile.Cost = 10
-	} else if profile.Impact == ImpactWrite {
+	// Cost adjustment based on impact (lower = less resource intensive)
+	// Note: Cost reflects actual system resource consumption, not safety risk
+	// Safety risk is handled by the impact_scope and risk_level fields
+	if profile.Impact == ImpactWrite {
 		profile.Cost = 8
 	} else if profile.Impact == ImpactAdmin {
 		profile.Cost = 6
+	} else if profile.Impact == ImpactDelete {
+		profile.Cost = 5 // Not resource-intensive, just dangerous - handled by impact_scope policy
 	}
 
 	fmt.Printf("DEBUG: Inferred profile for %s - Risk=%s Impact=%s Cost=%d\n", toolName, profile.Risk, profile.Impact, profile.Cost)
