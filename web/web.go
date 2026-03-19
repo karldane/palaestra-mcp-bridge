@@ -94,12 +94,13 @@ func (h *Handler) Register(mux *http.ServeMux) {
 
 	// Enforcer (admin only)
 	if h.Enforcer != nil {
-		enforcerHandler := NewEnforcerHandler(h.Enforcer)
-		mux.Handle("/web/admin/enforcer/queue", h.requireAdmin(http.HandlerFunc(enforcerHandler.ListPendingApprovals)))
-		mux.Handle("/web/admin/enforcer/approve", h.requireAdmin(http.HandlerFunc(enforcerHandler.ApproveRequest)))
-		mux.Handle("/web/admin/enforcer/deny", h.requireAdmin(http.HandlerFunc(enforcerHandler.DenyRequest)))
-		mux.Handle("/web/admin/enforcer/kill-switch/enable", h.requireAdmin(http.HandlerFunc(enforcerHandler.EnableKillSwitch)))
-		mux.Handle("/web/admin/enforcer/kill-switch/disable", h.requireAdmin(http.HandlerFunc(enforcerHandler.DisableKillSwitch)))
+		enforcerHandler := NewEnforcerHandler(h.Enforcer, h.Templates)
+		mux.Handle("/web/admin/enforcer/queue", h.requireAdmin(http.HandlerFunc(enforcerHandler.QueuePageHandler)))
+		mux.Handle("/web/admin/enforcer/api/approvals", h.requireAdmin(http.HandlerFunc(enforcerHandler.ListPendingApprovals)))
+		mux.Handle("/web/admin/enforcer/api/approve", h.requireAdmin(http.HandlerFunc(enforcerHandler.ApproveRequest)))
+		mux.Handle("/web/admin/enforcer/api/deny", h.requireAdmin(http.HandlerFunc(enforcerHandler.DenyRequest)))
+		mux.Handle("/web/admin/enforcer/api/kill-switch/enable", h.requireAdmin(http.HandlerFunc(enforcerHandler.EnableKillSwitch)))
+		mux.Handle("/web/admin/enforcer/api/kill-switch/disable", h.requireAdmin(http.HandlerFunc(enforcerHandler.DisableKillSwitch)))
 		mux.Handle("/web/admin/enforcer/events", h.requireAdmin(http.HandlerFunc(enforcerHandler.SSEHandler)))
 	}
 }

@@ -3,6 +3,7 @@ package web
 import (
 	"encoding/json"
 	"fmt"
+	"html/template"
 	"net/http"
 	"time"
 
@@ -10,11 +11,12 @@ import (
 )
 
 type EnforcerHandler struct {
-	enforcer *enforcer.Enforcer
+	enforcer  *enforcer.Enforcer
+	templates *template.Template
 }
 
-func NewEnforcerHandler(e *enforcer.Enforcer) *EnforcerHandler {
-	return &EnforcerHandler{enforcer: e}
+func NewEnforcerHandler(e *enforcer.Enforcer, t *template.Template) *EnforcerHandler {
+	return &EnforcerHandler{enforcer: e, templates: t}
 }
 
 func (h *EnforcerHandler) ListPendingApprovals(w http.ResponseWriter, r *http.Request) {
@@ -60,6 +62,44 @@ func (h *EnforcerHandler) ListPendingApprovals(w http.ResponseWriter, r *http.Re
 	json.NewEncoder(w).Encode(map[string]interface{}{
 		"approvals": views,
 	})
+}
+
+func (h *EnforcerHandler) QueuePageHandler(w http.ResponseWriter, r *http.Request) {
+	data := map[string]interface{}{
+		"Title":     "Approval Queue",
+		"Approvals": []map[string]interface{}{},
+		"Count":     0,
+	}
+
+	approvals, err := h.enforcer.ListPendingApprovals()
+	if err == nil {
+		views := make([]map[string]interface{}, len(approvals))
+		for i, a := range approvals {
+			var prettyArgs string
+			if argsJSON, err := json.MarshalIndent(json.RawMessage(a.ToolArgs), "", "  "); err == nil {
+				prettyArgs = string(argsJSON)
+			} else {
+				prettyArgs = a.ToolArgs
+			}
+			views[i] = map[string]interface{}{
+				"ID":          a.ID,
+				"ToolName":    a.ToolName,
+				"UserID":      a.UserID,
+				"UserEmail":   a.UserEmail,
+				"ToolArgs":    prettyArgs,
+				"PolicyID":    a.PolicyID,
+				"Message":     a.ViolationMsg,
+				"RequestedAt": a.RequestedAt,
+				"ExpiresAt":   a.ExpiresAt,
+			}
+		}
+		data["Approvals"] = views
+		data["Count"] = len(approvals)
+	}
+
+	if err := h.templates.ExecuteTemplate(w, "admin_enforcer_queue.html", data); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+	}
 }
 
 func (h *EnforcerHandler) ApproveRequest(w http.ResponseWriter, r *http.Request) {

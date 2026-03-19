@@ -2,69 +2,254 @@
 {{template "head" .}}
 {{template "nav" .}}
 <div class="container">
-  <h1>Approval Queue</h1>
-  
-  <div class="card">
-    <h2>Pending Approvals</h2>
-    <table>
-      <thead>
-        <tr>
-          <th>Tool</th>
-          <th>User</th>
-          <th>Requested</th>
-          <th>Expires</th>
-          <th>Actions</th>
-        </tr>
-      </thead>
-      <tbody>
-        {{range .Data}}
-        <tr>
-          <td>{{.ToolName}}</td>
-          <td>{{.UserEmail}}</td>
-          <td>{{.RequestedAt.Format "2006-01-02 15:04"}}</td>
-          <td>{{.ExpiresAt.Format "2006-01-02 15:04"}}</td>
-          <td>
-            <form method="POST" action="/web/admin/enforcer/approvals/{{.ID}}/approve" style="display:inline;">
-              <button type="submit" class="btn btn-sm btn-secondary">Approve</button>
-            </form>
-            <form method="POST" action="/web/admin/enforcer/approvals/{{.ID}}/deny" style="display:inline;">
-              <button type="submit" class="btn btn-sm btn-danger">Deny</button>
-            </form>
-          </td>
-        </tr>
-        {{else}}
-        <tr>
-          <td colspan="5" class="text-muted">No pending approvals</td>
-        </tr>
-        {{end}}
-      </tbody>
-    </table>
+  <div class="header-row">
+    <h1>Approval Queue</h1>
+    <span class="badge {{if eq .Count 0}}badge-enabled{{else}}badge-admin{{end}}" id="pending-count">{{.Count}} pending</span>
   </div>
 
+  {{if .Approvals}}
+  <div class="card-stack">
+    {{range .Approvals}}
+    <div class="card approval-card" id="approval-{{.ID}}">
+      <div class="approval-header">
+        <div class="approval-info">
+          <span class="tool-name">{{.ToolName}}</span>
+          <span class="badge badge-admin">pending</span>
+        </div>
+        <div class="approval-actions">
+          <button class="btn btn-sm btn-primary" onclick="approveRequest('{{.ID}}')">Approve</button>
+          <button class="btn btn-sm btn-danger" onclick="denyRequest('{{.ID}}')">Deny</button>
+        </div>
+      </div>
+
+      <div class="approval-meta">
+        <div class="meta-item">
+          <span class="meta-label">Requested by</span>
+          <span class="meta-value">{{.UserEmail}}</span>
+        </div>
+        <div class="meta-item">
+          <span class="meta-label">Requested at</span>
+          <span class="meta-value">{{.RequestedAt.Format "2006-01-02 15:04:05"}}</span>
+        </div>
+        <div class="meta-item">
+          <span class="meta-label">Expires</span>
+          <span class="meta-value">{{.ExpiresAt.Format "2006-01-02 15:04:05"}}</span>
+        </div>
+        <div class="meta-item">
+          <span class="meta-label">Policy</span>
+          <span class="meta-value">{{.PolicyID}}</span>
+        </div>
+      </div>
+
+      <div class="approval-message">
+        <strong>Reason:</strong> {{.Message}}
+      </div>
+
+      <details class="args-details">
+        <summary>Arguments</summary>
+        <pre class="args-pre"><code>{{.ToolArgs}}</code></pre>
+      </details>
+    </div>
+    {{end}}
+  </div>
+  {{else}}
   <div class="card">
-    <h2>Kill Switches</h2>
-    <table>
-      <thead>
-        <tr>
-          <th>Scope</th>
-          <th>Status</th>
-          <th>Actions</th>
-        </tr>
-      </thead>
-      <tbody>
-        <tr>
-          <td>Global</td>
-          <td><span class="badge badge-enabled">Inactive</span></td>
-          <td>
-            <form method="POST" action="/web/admin/enforcer/killswitch/enable" style="display:inline;">
-              <input type="hidden" name="scope" value="global">
-              <button type="submit" class="btn btn-sm btn-danger">Enable</button>
-            </form>
-          </td>
-        </tr>
-      </tbody>
-    </table>
+    <p class="text-muted">No pending approval requests.</p>
+  </div>
+  {{end}}
+
+  <div class="card">
+    <h2>Kill Switch</h2>
+    <p class="text-muted">Emergency stop for all MCP operations.</p>
+    <button class="btn btn-danger" onclick="enableKillSwitch()">Enable Global Kill Switch</button>
   </div>
 </div>
+
+<style>
+  .header-row {
+    display: flex;
+    align-items: center;
+    gap: 1rem;
+    margin-bottom: 1.5rem;
+  }
+  .header-row h1 {
+    margin: 0;
+  }
+  .card-stack {
+    display: flex;
+    flex-direction: column;
+    gap: 1rem;
+    margin-bottom: 1.5rem;
+  }
+  .approval-card {
+    padding: 1rem;
+  }
+  .approval-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 0.75rem;
+    padding-bottom: 0.75rem;
+    border-bottom: 1px solid var(--border-color);
+  }
+  .approval-info {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+  }
+  .tool-name {
+    font-family: monospace;
+    font-weight: 600;
+    font-size: 1.1rem;
+  }
+  .approval-actions {
+    display: flex;
+    gap: 0.5rem;
+  }
+  .approval-meta {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+    gap: 0.75rem;
+    margin-bottom: 0.75rem;
+  }
+  .meta-item {
+    display: flex;
+    flex-direction: column;
+    gap: 0.25rem;
+  }
+  .meta-label {
+    font-size: 0.75rem;
+    color: var(--text-muted);
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+  }
+  .meta-value {
+    font-size: 0.9rem;
+  }
+  .approval-message {
+    background: var(--code-bg);
+    padding: 0.75rem;
+    border-radius: 4px;
+    font-size: 0.9rem;
+    margin-bottom: 0.75rem;
+  }
+  .args-details {
+    margin-top: 0.5rem;
+  }
+  .args-details summary {
+    cursor: pointer;
+    color: var(--text-secondary);
+    font-size: 0.85rem;
+  }
+  .args-details summary:hover {
+    color: var(--text-primary);
+  }
+  .args-pre {
+    background: var(--code-bg);
+    padding: 0.75rem;
+    border-radius: 4px;
+    overflow-x: auto;
+    font-size: 0.8rem;
+    margin-top: 0.5rem;
+  }
+  .btn-sm {
+    padding: 0.25rem 0.75rem;
+    font-size: 0.85rem;
+  }
+</style>
+
+<script>
+async function approveRequest(id) {
+  if (!confirm('Approve this request? The original operation will be executed.')) return;
+  
+  const btn = event.target;
+  btn.disabled = true;
+  btn.textContent = 'Approving...';
+  
+  try {
+    const resp = await fetch('/web/admin/enforcer/api/approve', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({approval_id: id})
+    });
+    const data = await resp.json();
+    
+    if (data.success) {
+      alert('Request approved!\n\nRequest body:\n' + data.request_body);
+      document.getElementById('approval-' + id).remove();
+      updateCount();
+    } else {
+      alert('Error: ' + data.message);
+      btn.disabled = false;
+      btn.textContent = 'Approve';
+    }
+  } catch (e) {
+    alert('Error: ' + e);
+    btn.disabled = false;
+    btn.textContent = 'Approve';
+  }
+}
+
+async function denyRequest(id) {
+  const reason = prompt('Reason for denial (optional):') || '';
+  
+  const btn = event.target;
+  btn.disabled = true;
+  btn.textContent = 'Denying...';
+  
+  try {
+    const resp = await fetch('/web/admin/enforcer/api/deny', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({approval_id: id, reason: reason})
+    });
+    const data = await resp.json();
+    
+    if (data.success) {
+      alert('Request denied.');
+      document.getElementById('approval-' + id).remove();
+      updateCount();
+    } else {
+      alert('Error: ' + data.message);
+      btn.disabled = false;
+      btn.textContent = 'Deny';
+    }
+  } catch (e) {
+    alert('Error: ' + e);
+    btn.disabled = false;
+    btn.textContent = 'Deny';
+  }
+}
+
+async function enableKillSwitch() {
+  if (!confirm('Enable global kill switch? This will block all MCP operations.')) return;
+  
+  const reason = prompt('Reason (optional):') || '';
+  
+  try {
+    const resp = await fetch('/web/admin/enforcer/api/kill-switch/enable', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({scope: 'global', reason: reason})
+    });
+    const data = await resp.json();
+    
+    if (data.success) {
+      alert('Kill switch enabled.');
+    } else {
+      alert('Error: ' + data.message);
+    }
+  } catch (e) {
+    alert('Error: ' + e);
+  }
+}
+
+function updateCount() {
+  const count = document.querySelectorAll('.approval-card').length;
+  const badge = document.getElementById('pending-count');
+  badge.textContent = count + ' pending';
+  badge.className = 'badge ' + (count === 0 ? 'badge-enabled' : 'badge-admin');
+}
+</script>
 {{template "foot" .}}
 {{end}}

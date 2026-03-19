@@ -154,6 +154,9 @@ func (s *Store) migrate() error {
 		created_at  DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
 	)`)
 
+	// Migration: add request_body column to enforcer_approvals
+	s.db.Exec(`ALTER TABLE enforcer_approvals ADD COLUMN request_body TEXT DEFAULT ''`)
+
 	return nil
 }
 
