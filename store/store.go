@@ -127,7 +127,8 @@ func (s *Store) migrate() error {
 		denial_reason   TEXT DEFAULT '',
 		comments        TEXT DEFAULT '',
 		policy_id       TEXT DEFAULT '',
-		violation_msg   TEXT DEFAULT ''
+		violation_msg   TEXT DEFAULT '',
+		request_body    TEXT DEFAULT ''
 	)`)
 	s.db.Exec(`CREATE TABLE IF NOT EXISTS enforcer_kill_switches (
 		id          TEXT PRIMARY KEY,

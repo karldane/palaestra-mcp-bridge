@@ -110,6 +110,9 @@ type DecisionContext struct {
 	// Backend context
 	BackendID   string
 	BackendType string
+
+	// Original request for replay after approval
+	RequestBody string
 }
 
 // CELPolicy represents a single policy rule for CEL evaluation

@@ -15,12 +15,18 @@ import (
 
 // EnforcerStore interface for database operations
 type EnforcerStore interface {
+	CreatePolicy(policy PolicyRow) error
+	GetPolicy(id string) (PolicyRow, error)
+	ListPolicies() ([]PolicyRow, error)
+	DeletePolicy(id string) error
 	CreateApprovalRequest(req ApprovalRequestRow) error
 	GetApprovalRequest(id string) (ApprovalRequestRow, error)
+	ListPendingApprovals() ([]ApprovalRequestRow, error)
+	ApproveRequest(id string, approverID string, comments string) error
+	DenyRequest(id string, approverID string, reason string) error
 	IsKillSwitchActive(scope string) (bool, error)
 	EnableKillSwitch(scope string, userID string, reason string) error
 	DisableKillSwitch(scope string) error
-	ListPolicies() ([]PolicyRow, error)
 	CleanupExpiredApprovals() error
 	LogAuditEvent(requestID string, userID string, toolName string, action string, policyID string, message string, context map[string]interface{}) error
 }
@@ -74,6 +80,7 @@ type ApprovalRequestRow struct {
 	Comments      string
 	PolicyID      string
 	ViolationMsg  string
+	RequestBody   string // Original JSON-RPC request body for replay after approval
 }
 
 // Enforcer is the main orchestrator for policy enforcement
@@ -188,6 +195,7 @@ func (e *Enforcer) RequestApproval(ctx context.Context, decisionCtx DecisionCont
 		ExpiresAt:     time.Now().Add(e.config.ApprovalTimeout),
 		PolicyID:      policyID,
 		ViolationMsg:  message,
+		RequestBody:   decisionCtx.RequestBody,
 	}
 
 	if err := e.store.CreateApprovalRequest(req); err != nil {
@@ -195,6 +203,16 @@ func (e *Enforcer) RequestApproval(ctx context.Context, decisionCtx DecisionCont
 	}
 
 	return id, nil
+}
+
+// ListPendingApprovals returns all pending approval requests
+func (e *Enforcer) ListPendingApprovals() ([]ApprovalRequestRow, error) {
+	return e.store.ListPendingApprovals()
+}
+
+// GetApprovalRequest retrieves an approval request by ID
+func (e *Enforcer) GetApprovalRequest(id string) (ApprovalRequestRow, error) {
+	return e.store.GetApprovalRequest(id)
 }
 
 // CheckApproval checks if an approval request has been approved
@@ -271,6 +289,24 @@ func (e *Enforcer) IsKillSwitchActive(scope string) bool {
 
 	// Check global
 	return e.killSwitches["global"]
+}
+
+// ApproveRequest approves an approval request and returns the original request body for replay
+func (e *Enforcer) ApproveRequest(approvalID string, approverID string, comments string) (string, error) {
+	if err := e.store.ApproveRequest(approvalID, approverID, comments); err != nil {
+		return "", err
+	}
+	// Fetch the original request to replay
+	req, err := e.store.GetApprovalRequest(approvalID)
+	if err != nil {
+		return "", err
+	}
+	return req.RequestBody, nil
+}
+
+// DenyRequest denies an approval request
+func (e *Enforcer) DenyRequest(approvalID string, approverID string, reason string) error {
+	return e.store.DenyRequest(approvalID, approverID, reason)
 }
 
 // AddPolicy adds a new policy to the enforcer

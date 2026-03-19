@@ -91,6 +91,17 @@ func (h *Handler) Register(mux *http.ServeMux) {
 	mux.Handle("/web/admin/oauth-clients", h.requireAdmin(http.HandlerFunc(h.AdminOAuthClientsHandler)))
 	mux.Handle("/web/admin/oauth-clients/create", h.requireAdmin(http.HandlerFunc(h.AdminOAuthClientsCreateHandler)))
 	mux.Handle("/web/admin/oauth-clients/delete", h.requireAdmin(http.HandlerFunc(h.AdminOAuthClientsDeleteHandler)))
+
+	// Enforcer (admin only)
+	if h.Enforcer != nil {
+		enforcerHandler := NewEnforcerHandler(h.Enforcer)
+		mux.Handle("/web/admin/enforcer/queue", h.requireAdmin(http.HandlerFunc(enforcerHandler.ListPendingApprovals)))
+		mux.Handle("/web/admin/enforcer/approve", h.requireAdmin(http.HandlerFunc(enforcerHandler.ApproveRequest)))
+		mux.Handle("/web/admin/enforcer/deny", h.requireAdmin(http.HandlerFunc(enforcerHandler.DenyRequest)))
+		mux.Handle("/web/admin/enforcer/kill-switch/enable", h.requireAdmin(http.HandlerFunc(enforcerHandler.EnableKillSwitch)))
+		mux.Handle("/web/admin/enforcer/kill-switch/disable", h.requireAdmin(http.HandlerFunc(enforcerHandler.DisableKillSwitch)))
+		mux.Handle("/web/admin/enforcer/events", h.requireAdmin(http.HandlerFunc(enforcerHandler.SSEHandler)))
+	}
 }
 
 // ---------- Context helpers ----------

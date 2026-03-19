@@ -9,32 +9,59 @@ import (
 	"github.com/mcp-bridge/mcp-bridge/enforcer"
 )
 
-// EnforcerHandler provides HTTP handlers for enforcer management
 type EnforcerHandler struct {
 	enforcer *enforcer.Enforcer
 }
 
-// NewEnforcerHandler creates a new enforcer handler
 func NewEnforcerHandler(e *enforcer.Enforcer) *EnforcerHandler {
 	return &EnforcerHandler{enforcer: e}
 }
 
-// ListPendingApprovals returns all pending approval requests
 func (h *EnforcerHandler) ListPendingApprovals(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
 
-	// Get store from enforcer and list pending
-	// This would require exposing the store or adding a method to the enforcer
+	approvals, err := h.enforcer.ListPendingApprovals()
+	if err != nil {
+		http.Error(w, "Failed to list approvals: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	type ApprovalView struct {
+		ID          string    `json:"id"`
+		ToolName    string    `json:"tool_name"`
+		UserID      string    `json:"user_id"`
+		UserEmail   string    `json:"user_email"`
+		ToolArgs    string    `json:"tool_args"`
+		PolicyID    string    `json:"policy_id"`
+		Message     string    `json:"message"`
+		RequestedAt time.Time `json:"requested_at"`
+		ExpiresAt   time.Time `json:"expires_at"`
+	}
+
+	views := make([]ApprovalView, len(approvals))
+	for i, a := range approvals {
+		views[i] = ApprovalView{
+			ID:          a.ID,
+			ToolName:    a.ToolName,
+			UserID:      a.UserID,
+			UserEmail:   a.UserEmail,
+			ToolArgs:    a.ToolArgs,
+			PolicyID:    a.PolicyID,
+			Message:     a.ViolationMsg,
+			RequestedAt: a.RequestedAt,
+			ExpiresAt:   a.ExpiresAt,
+		}
+	}
+
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]interface{}{
-		"approvals": []map[string]interface{}{},
+		"approvals": views,
 	})
 }
 
-// ApproveRequest handles approval of a pending request
 func (h *EnforcerHandler) ApproveRequest(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
@@ -51,20 +78,26 @@ func (h *EnforcerHandler) ApproveRequest(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	// Get user from session
-	// user := getUserFromSession(r)
+	if req.ApprovalID == "" {
+		http.Error(w, "approval_id is required", http.StatusBadRequest)
+		return
+	}
 
-	// Approve the request
-	// err := h.enforcer.ApproveRequest(req.ApprovalID, user.ID, req.Comments)
+	requestBody, err := h.enforcer.ApproveRequest(req.ApprovalID, "admin", req.Comments)
+	if err != nil {
+		http.Error(w, "Failed to approve: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]interface{}{
-		"success": true,
-		"message": "Request approved",
+		"success":      true,
+		"message":      "Request approved",
+		"request_body": requestBody,
+		"instructions": "The original request body has been approved. Use the 'request_body' field to replay the operation.",
 	})
 }
 
-// DenyRequest handles denial of a pending request
 func (h *EnforcerHandler) DenyRequest(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
@@ -81,11 +114,15 @@ func (h *EnforcerHandler) DenyRequest(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Get user from session
-	// user := getUserFromSession(r)
+	if req.ApprovalID == "" {
+		http.Error(w, "approval_id is required", http.StatusBadRequest)
+		return
+	}
 
-	// Deny the request
-	// err := h.enforcer.DenyRequest(req.ApprovalID, user.ID, req.Reason)
+	if err := h.enforcer.DenyRequest(req.ApprovalID, "admin", req.Reason); err != nil {
+		http.Error(w, "Failed to deny: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]interface{}{
@@ -94,7 +131,6 @@ func (h *EnforcerHandler) DenyRequest(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// EnableKillSwitch activates emergency kill switch
 func (h *EnforcerHandler) EnableKillSwitch(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
@@ -111,11 +147,14 @@ func (h *EnforcerHandler) EnableKillSwitch(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
-	// Get user from session
-	// user := getUserFromSession(r)
+	if req.Scope == "" {
+		req.Scope = "global"
+	}
 
-	// Enable kill switch
-	// err := h.enforcer.EnableKillSwitch(req.Scope, user.ID, req.Reason)
+	if err := h.enforcer.EnableKillSwitch(req.Scope, "admin", req.Reason); err != nil {
+		http.Error(w, "Failed to enable kill switch: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]interface{}{
@@ -125,7 +164,6 @@ func (h *EnforcerHandler) EnableKillSwitch(w http.ResponseWriter, r *http.Reques
 	})
 }
 
-// DisableKillSwitch deactivates emergency kill switch
 func (h *EnforcerHandler) DisableKillSwitch(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
@@ -141,8 +179,14 @@ func (h *EnforcerHandler) DisableKillSwitch(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
-	// Disable kill switch
-	// err := h.enforcer.DisableKillSwitch(req.Scope)
+	if req.Scope == "" {
+		req.Scope = "global"
+	}
+
+	if err := h.enforcer.DisableKillSwitch(req.Scope); err != nil {
+		http.Error(w, "Failed to disable kill switch: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]interface{}{
@@ -152,27 +196,33 @@ func (h *EnforcerHandler) DisableKillSwitch(w http.ResponseWriter, r *http.Reque
 	})
 }
 
-// SSEHandler provides real-time updates for approval queue
 func (h *EnforcerHandler) SSEHandler(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("Connection", "keep-alive")
 
-	// Create ticker for periodic updates
 	ticker := time.NewTicker(2 * time.Second)
 	defer ticker.Stop()
 
-	// Send initial connection message
 	fmt.Fprintf(w, "data: %s\n\n", `{"type": "connected"}`)
 	w.(http.Flusher).Flush()
 
 	for {
 		select {
 		case <-ticker.C:
-			// Check for new pending approvals
-			// Send update if any
-			fmt.Fprintf(w, "data: %s\n\n", `{"type": "ping"}`)
-			w.(http.Flusher).Flush()
+			approvals, err := h.enforcer.ListPendingApprovals()
+			if err == nil && len(approvals) > 0 {
+				data, _ := json.Marshal(map[string]interface{}{
+					"type":        "pending_count",
+					"count":       len(approvals),
+					"approval_id": approvals[0].ID,
+				})
+				fmt.Fprintf(w, "data: %s\n\n", data)
+				w.(http.Flusher).Flush()
+			} else {
+				fmt.Fprintf(w, "data: %s\n\n", `{"type": "ping"}`)
+				w.(http.Flusher).Flush()
+			}
 
 		case <-r.Context().Done():
 			return

@@ -182,6 +182,7 @@ func main() {
 		log.Fatalf("failed to load web templates: %v", err)
 	}
 	webHandler.PoolManager = pm // Wire pool manager for admin pool status
+	webHandler.Enforcer = enf   // Wire enforcer for admin UI
 	// Wire live reload: when an admin creates/edits/deletes a backend via the
 	// web UI, refresh the muxer prefix map and tear down stale pools so that
 	// subsequent requests pick up the new configuration immediately.

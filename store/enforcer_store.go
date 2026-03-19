@@ -13,8 +13,11 @@ type EnforcerStore struct {
 	db *sql.DB
 }
 
+// Ensure EnforcerStore implements enforcer.EnforcerStore
+var _ enforcer.EnforcerStore = (*EnforcerStore)(nil)
+
 // NewEnforcerStore creates a new enforcer store
-func NewEnforcerStore(db *sql.DB) *EnforcerStore {
+func NewEnforcerStore(db *sql.DB) enforcer.EnforcerStore {
 	return &EnforcerStore{db: db}
 }
 
@@ -76,27 +79,27 @@ func (s *EnforcerStore) DeletePolicy(id string) error {
 
 // CreateApprovalRequest inserts a new approval request
 func (s *EnforcerStore) CreateApprovalRequest(req enforcer.ApprovalRequestRow) error {
-	_, err := s.db.Exec(`INSERT INTO enforcer_approvals (id, user_id, user_email, user_role, trust_level, tool_name, tool_args, backend_id, safety_profile, status, requested_at, expires_at, policy_id, violation_msg) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+	_, err := s.db.Exec(`INSERT INTO enforcer_approvals (id, user_id, user_email, user_role, trust_level, tool_name, tool_args, backend_id, safety_profile, status, requested_at, expires_at, policy_id, violation_msg, request_body) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		req.ID, req.UserID, req.UserEmail, req.UserRole, req.TrustLevel, req.ToolName,
 		req.ToolArgs, req.BackendID, req.SafetyProfile, req.Status, req.RequestedAt,
-		req.ExpiresAt, req.PolicyID, req.ViolationMsg)
+		req.ExpiresAt, req.PolicyID, req.ViolationMsg, req.RequestBody)
 	return err
 }
 
 // GetApprovalRequest retrieves an approval request by ID
 func (s *EnforcerStore) GetApprovalRequest(id string) (enforcer.ApprovalRequestRow, error) {
 	var req enforcer.ApprovalRequestRow
-	err := s.db.QueryRow(`SELECT id, user_id, user_email, user_role, trust_level, tool_name, tool_args, backend_id, safety_profile, status, requested_at, expires_at, approved_by, approved_at, denial_reason, comments, policy_id, violation_msg FROM enforcer_approvals WHERE id = ?`, id).Scan(
+	err := s.db.QueryRow(`SELECT id, user_id, user_email, user_role, trust_level, tool_name, tool_args, backend_id, safety_profile, status, requested_at, expires_at, approved_by, approved_at, denial_reason, comments, policy_id, violation_msg, COALESCE(request_body, '') FROM enforcer_approvals WHERE id = ?`, id).Scan(
 		&req.ID, &req.UserID, &req.UserEmail, &req.UserRole, &req.TrustLevel, &req.ToolName,
 		&req.ToolArgs, &req.BackendID, &req.SafetyProfile, &req.Status, &req.RequestedAt,
 		&req.ExpiresAt, &req.ApprovedBy, &req.ApprovedAt, &req.DenialReason, &req.Comments,
-		&req.PolicyID, &req.ViolationMsg)
+		&req.PolicyID, &req.ViolationMsg, &req.RequestBody)
 	return req, err
 }
 
 // ListPendingApprovals retrieves all pending approval requests
 func (s *EnforcerStore) ListPendingApprovals() ([]enforcer.ApprovalRequestRow, error) {
-	rows, err := s.db.Query(`SELECT id, user_id, user_email, user_role, trust_level, tool_name, tool_args, backend_id, safety_profile, status, requested_at, expires_at, approved_by, approved_at, denial_reason, comments, policy_id, violation_msg FROM enforcer_approvals WHERE status = 'PENDING' ORDER BY requested_at ASC`)
+	rows, err := s.db.Query(`SELECT id, user_id, user_email, user_role, trust_level, tool_name, tool_args, backend_id, safety_profile, status, requested_at, expires_at, approved_by, approved_at, denial_reason, comments, policy_id, violation_msg, COALESCE(request_body, '') FROM enforcer_approvals WHERE status = 'PENDING' ORDER BY requested_at ASC`)
 	if err != nil {
 		return nil, err
 	}
@@ -108,7 +111,7 @@ func (s *EnforcerStore) ListPendingApprovals() ([]enforcer.ApprovalRequestRow, e
 		err := rows.Scan(&req.ID, &req.UserID, &req.UserEmail, &req.UserRole, &req.TrustLevel,
 			&req.ToolName, &req.ToolArgs, &req.BackendID, &req.SafetyProfile, &req.Status,
 			&req.RequestedAt, &req.ExpiresAt, &req.ApprovedBy, &req.ApprovedAt,
-			&req.DenialReason, &req.Comments, &req.PolicyID, &req.ViolationMsg)
+			&req.DenialReason, &req.Comments, &req.PolicyID, &req.ViolationMsg, &req.RequestBody)
 		if err != nil {
 			return nil, err
 		}

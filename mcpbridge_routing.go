@@ -196,9 +196,10 @@ func (s *MCPBridgeServer) handleToolsCall(w http.ResponseWriter, r *http.Request
 			case enforcer.ActionPendingApproval:
 				shared.Debugf("Enforcer PENDING_APPROVAL for tool: %s", toolName)
 				approvalID, err := s.app.enforcer.RequestApproval(ctx, enforcer.DecisionContext{
-					UserID: userID,
-					Tool:   toolName,
-					Args:   toolArgs,
+					UserID:      userID,
+					Tool:        toolName,
+					Args:        toolArgs,
+					RequestBody: string(body),
 				}, decision.PolicyID, decision.Message)
 				if err != nil {
 					shared.Errorf("Failed to create approval request: %v", err)
