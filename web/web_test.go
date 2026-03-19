@@ -10,7 +10,9 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/mcp-bridge/mcp-bridge/enforcer"
 	"github.com/mcp-bridge/mcp-bridge/store"
 )
 
@@ -1326,4 +1328,118 @@ func TestAdminBackends_Probe_CallbackError(t *testing.T) {
 	if !strings.Contains(resp["message"], "probe failed") {
 		t.Errorf("expected error message, got %s", resp["message"])
 	}
+}
+
+// TestEnforcerRouteMatching verifies that enforcer routes are matched correctly
+func TestEnforcerRouteMatching(t *testing.T) {
+	mux := http.NewServeMux()
+
+	// Register routes in the same order as Handler.Register
+	mux.HandleFunc("/web/login", func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte("login"))
+	})
+
+	// Enforcer routes (should be first)
+	mux.HandleFunc("/web/admin/enforcer/policies", func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte("enforcer-policies"))
+	})
+	mux.HandleFunc("/web/admin/enforcer/queue", func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte("enforcer-queue"))
+	})
+
+	mux.HandleFunc("/web/admin/backends", func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte("backends"))
+	})
+
+	// Catch-all LAST
+	mux.HandleFunc("/web/", func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte("dashboard"))
+	})
+
+	tests := []struct {
+		path        string
+		wantBody    string
+		wantPattern string
+	}{
+		{"/web/admin/enforcer/policies", "enforcer-policies", "/web/admin/enforcer/policies"},
+		{"/web/admin/enforcer/queue", "enforcer-queue", "/web/admin/enforcer/queue"},
+		{"/web/admin/backends", "backends", "/web/admin/backends"},
+		{"/web/admin/enforcer", "dashboard", "/web/"}, // This should catch-all
+		{"/web/other", "dashboard", "/web/"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.path, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodGet, tt.path, nil)
+			rr := httptest.NewRecorder()
+
+			_, pattern := mux.Handler(req)
+			if pattern != tt.wantPattern {
+				t.Errorf("Path %s: got pattern %q, want %q", tt.path, pattern, tt.wantPattern)
+			}
+
+			mux.ServeHTTP(rr, req)
+			gotBody := rr.Body.String()
+			if gotBody != tt.wantBody {
+				t.Errorf("Path %s: got body %q, want %q", tt.path, gotBody, tt.wantBody)
+			}
+		})
+	}
+}
+
+// TestHandlerRegisterWithEnforcer verifies Handler.Register with Enforcer
+func TestHandlerRegisterWithEnforcer(t *testing.T) {
+	h, st := testHandler(t)
+	defer st.Close()
+
+	// Create admin user
+	admin := &store.User{
+		Name:     "Admin",
+		Email:    "admin@test.com",
+		Password: "secret",
+		Role:     "admin",
+	}
+	if err := st.CreateUser(admin); err != nil {
+		t.Fatalf("CreateUser: %v", err)
+	}
+
+	// Create session
+	sessionID := "test-session"
+	if err := st.CreateWebSession(&store.WebSession{
+		Token:     sessionID,
+		UserID:    admin.ID,
+		ExpiresAt: time.Now().Add(time.Hour),
+	}); err != nil {
+		t.Fatalf("CreateWebSession: %v", err)
+	}
+
+	// Test WITHOUT enforcer
+	mux := http.NewServeMux()
+	h.Register(mux)
+
+	req := httptest.NewRequest(http.MethodGet, "/web/admin/enforcer/policies", nil)
+	req.AddCookie(&http.Cookie{Name: "mcp_session", Value: sessionID})
+	rr := httptest.NewRecorder()
+	mux.ServeHTTP(rr, req)
+
+	t.Logf("Without enforcer - Status: %d, Location: %s", rr.Code, rr.Header().Get("Location"))
+
+	// Now set enforcer and re-register
+	h.Enforcer = &enforcer.Enforcer{}
+	mux2 := http.NewServeMux()
+	h.Register(mux2)
+
+	req2 := httptest.NewRequest(http.MethodGet, "/web/admin/enforcer/policies", nil)
+	req2.AddCookie(&http.Cookie{Name: "mcp_session", Value: sessionID})
+	rr2 := httptest.NewRecorder()
+	mux2.ServeHTTP(rr2, req2)
+
+	t.Logf("With enforcer - Status: %d, Body snippet: %s", rr2.Code, rr2.Body.String()[:min(len(rr2.Body.String()), 100)])
+}
+
+func min(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
 }

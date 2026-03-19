@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 
 	"github.com/mcp-bridge/mcp-bridge/config"
+	"github.com/mcp-bridge/mcp-bridge/enforcer"
 	"github.com/mcp-bridge/mcp-bridge/shared"
 	"github.com/mcp-bridge/mcp-bridge/store"
 )
@@ -75,4 +76,70 @@ func seedBackendsFromConfig(st *store.Store, cfg *config.InternalConfig) {
 	if count > 0 {
 		shared.Infof("seed-backends: imported %d backends from config into DB", count)
 	}
+}
+
+// seedDefaultPolicies creates default safety policies if none exist
+func seedDefaultPolicies(st *store.Store) {
+	enforcerStore := store.NewEnforcerStore(st.DB())
+
+	// Check if policies already exist
+	policies, err := enforcerStore.ListPolicies()
+	if err != nil {
+		shared.Errorf("seed-policies: failed to list policies: %v", err)
+		return
+	}
+	if len(policies) > 0 {
+		shared.Info("seed-policies: policies already exist, skipping")
+		return
+	}
+
+	// Default policies from policies.yaml
+	defaultPolicies := []enforcer.PolicyRow{
+		{
+			ID:          "prevent_resource_exhaustion",
+			Name:        "Prevent Resource Exhaustion",
+			Description: "Block extremely high-cost tools if system load is high",
+			Scope:       "global",
+			Expression:  "safety.resource_cost < 9 || system.load_avg < 0.7",
+			Action:      "DENY",
+			Severity:    "HIGH",
+			Message:     "System load too high for resource-intensive operations",
+			Enabled:     true,
+			Priority:    100,
+		},
+		{
+			ID:          "require_mfa_for_destructive",
+			Name:        "Require HITL for Destructive Operations",
+			Description: "Force human approval for any 'delete' or 'admin' impact",
+			Scope:       "global",
+			Expression:  "safety.impact_scope in ['delete', 'admin']",
+			Action:      "PENDING_APPROVAL",
+			Severity:    "CRITICAL",
+			Message:     "Destructive actions require a human sign-off",
+			Enabled:     true,
+			Priority:    50,
+		},
+		{
+			ID:          "block_dangerous_oracle_ops",
+			Name:        "Block Dangerous Oracle Operations",
+			Description: "Prevent DROP, TRUNCATE operations via AI",
+			Scope:       "backend",
+			Expression:  "tool.matches('(?i).*(drop|truncate).*') && safety.impact_scope == 'delete'",
+			Action:      "DENY",
+			Severity:    "CRITICAL",
+			Message:     "DROP/TRUNCATE operations are prohibited via AI interface",
+			Enabled:     true,
+			Priority:    25,
+		},
+	}
+
+	for _, policy := range defaultPolicies {
+		if err := enforcerStore.CreatePolicy(policy); err != nil {
+			shared.Errorf("seed-policies: failed to create policy %s: %v", policy.ID, err)
+		} else {
+			shared.Infof("seed-policies: created policy %s", policy.ID)
+		}
+	}
+
+	shared.Infof("seed-policies: created %d default policies", len(defaultPolicies))
 }

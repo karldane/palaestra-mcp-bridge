@@ -1,0 +1,70 @@
+{{define "admin_enforcer_queue.html"}}
+{{template "head" .}}
+{{template "nav" .}}
+<div class="container">
+  <h1>Approval Queue</h1>
+  
+  <div class="card">
+    <h2>Pending Approvals</h2>
+    <table>
+      <thead>
+        <tr>
+          <th>Tool</th>
+          <th>User</th>
+          <th>Requested</th>
+          <th>Expires</th>
+          <th>Actions</th>
+        </tr>
+      </thead>
+      <tbody>
+        {{range .Data}}
+        <tr>
+          <td>{{.ToolName}}</td>
+          <td>{{.UserEmail}}</td>
+          <td>{{.RequestedAt.Format "2006-01-02 15:04"}}</td>
+          <td>{{.ExpiresAt.Format "2006-01-02 15:04"}}</td>
+          <td>
+            <form method="POST" action="/web/admin/enforcer/approvals/{{.ID}}/approve" style="display:inline;">
+              <button type="submit" class="btn btn-sm btn-secondary">Approve</button>
+            </form>
+            <form method="POST" action="/web/admin/enforcer/approvals/{{.ID}}/deny" style="display:inline;">
+              <button type="submit" class="btn btn-sm btn-danger">Deny</button>
+            </form>
+          </td>
+        </tr>
+        {{else}}
+        <tr>
+          <td colspan="5" class="text-muted">No pending approvals</td>
+        </tr>
+        {{end}}
+      </tbody>
+    </table>
+  </div>
+
+  <div class="card">
+    <h2>Kill Switches</h2>
+    <table>
+      <thead>
+        <tr>
+          <th>Scope</th>
+          <th>Status</th>
+          <th>Actions</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td>Global</td>
+          <td><span class="badge badge-enabled">Inactive</span></td>
+          <td>
+            <form method="POST" action="/web/admin/enforcer/killswitch/enable" style="display:inline;">
+              <input type="hidden" name="scope" value="global">
+              <button type="submit" class="btn btn-sm btn-danger">Enable</button>
+            </form>
+          </td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+</div>
+{{template "foot" .}}
+{{end}}

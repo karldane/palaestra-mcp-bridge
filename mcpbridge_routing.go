@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/mcp-bridge/mcp-bridge/enforcer"
 	"github.com/mcp-bridge/mcp-bridge/poolmgr"
 	"github.com/mcp-bridge/mcp-bridge/shared"
 )
@@ -151,6 +152,87 @@ func (s *MCPBridgeServer) handleToolsList(w http.ResponseWriter, r *http.Request
 
 // handleToolsCall routes the call to the correct backend based on tool name prefix
 func (s *MCPBridgeServer) handleToolsCall(w http.ResponseWriter, r *http.Request, userID string, body []byte, id interface{}) {
+	// Extract tool name and arguments for enforcer check
+	var toolName string
+	var toolArgs map[string]interface{}
+	var toolReq map[string]interface{}
+	if err := json.Unmarshal(body, &toolReq); err == nil {
+		if params, ok := toolReq["params"].(map[string]interface{}); ok {
+			toolName, _ = params["name"].(string)
+			toolArgs, _ = params["arguments"].(map[string]interface{})
+		}
+	}
+
+	// Enforcer check - policy enforcement
+	if s.app.enforcer != nil && toolName != "" && !strings.HasPrefix(toolName, "mcpbridge_") {
+		ctx := r.Context()
+		shared.Infof("Enforcer: Evaluating tool call - user=%s tool=%s", userID, toolName)
+		decision, err := s.app.enforcer.HandleToolCall(ctx, userID, toolName, toolArgs, "")
+		if err != nil {
+			shared.Errorf("Enforcer error: %v", err)
+		} else {
+			shared.Infof("Enforcer: Decision for %s - Action=%s", toolName, decision.Action)
+			switch decision.Action {
+			case enforcer.ActionDeny:
+				shared.Debugf("Enforcer DENIED tool call: %s - %s", toolName, decision.Message)
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusForbidden)
+				json.NewEncoder(w).Encode(map[string]interface{}{
+					"jsonrpc": "2.0",
+					"id":      id,
+					"error": map[string]interface{}{
+						"code":    -32001,
+						"message": "Policy violation: " + decision.Message,
+					},
+				})
+				return
+
+			case enforcer.ActionPendingApproval:
+				shared.Debugf("Enforcer PENDING_APPROVAL for tool: %s", toolName)
+				approvalID, err := s.app.enforcer.RequestApproval(ctx, enforcer.DecisionContext{
+					UserID: userID,
+					Tool:   toolName,
+					Args:   toolArgs,
+				}, decision.PolicyID, decision.Message)
+				if err != nil {
+					shared.Errorf("Failed to create approval request: %v", err)
+					w.Header().Set("Content-Type", "application/json")
+					w.WriteHeader(http.StatusInternalServerError)
+					json.NewEncoder(w).Encode(map[string]interface{}{
+						"jsonrpc": "2.0",
+						"id":      id,
+						"error": map[string]interface{}{
+							"code":    -32002,
+							"message": "Failed to create approval request",
+						},
+					})
+					return
+				}
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusAccepted)
+				json.NewEncoder(w).Encode(map[string]interface{}{
+					"jsonrpc": "2.0",
+					"id":      id,
+					"result": map[string]interface{}{
+						"status":      "pending_approval",
+						"approval_id": approvalID,
+						"message":     "This operation requires human approval. Please wait for an administrator to approve.",
+					},
+				})
+				return
+
+			case enforcer.ActionWarn:
+				shared.Debugf("Enforcer WARNING for tool: %s - %s", toolName, decision.Message)
+				w.Header().Set("X-Enforcer-Warning", decision.Message)
+				// Continue to execute the tool
+
+			case enforcer.ActionAllow:
+				shared.Debugf("Enforcer ALLOWED tool: %s", toolName)
+				// Continue normally
+			}
+		}
+	}
+
 	modifiedBody, router, err := s.toolMuxer.HandleToolsCall(userID, body)
 	if err != nil {
 		shared.Errorf("tools/call routing error: %v", err)

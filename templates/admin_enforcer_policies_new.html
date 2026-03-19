@@ -1,0 +1,94 @@
+{{define "admin_enforcer_policies_new.html"}}
+{{template "head" .}}
+{{template "nav" .}}
+<div class="container">
+  <h1>Create New Policy</h1>
+  
+  <div class="card">
+    <form method="POST" action="/web/admin/enforcer/policies/create">
+      <div class="form-row">
+        <label for="id">Policy ID</label>
+        <input type="text" id="id" name="id" placeholder="e.g., prevent_dangerous_ops" required>
+        <small class="text-muted">Unique identifier for this policy</small>
+      </div>
+      
+      <div class="form-row">
+        <label for="name">Name</label>
+        <input type="text" id="name" name="name" placeholder="e.g., Prevent Dangerous Operations" required>
+      </div>
+      
+      <div class="form-row">
+        <label for="description">Description</label>
+        <textarea id="description" name="description" rows="2" placeholder="What this policy does..."></textarea>
+      </div>
+      
+      <div class="form-row">
+        <label for="scope">Scope</label>
+        <select id="scope" name="scope">
+          <option value="global">Global (all tools)</option>
+          <option value="backend">Backend-specific</option>
+          <option value="tool">Tool-specific</option>
+        </select>
+      </div>
+      
+      <div class="form-row">
+        <label for="expression">CEL Expression</label>
+        <textarea id="expression" name="expression" rows="4" placeholder="e.g., safety.risk_level == 'high' && user.role != 'admin'" required></textarea>
+        <small class="text-muted">CEL expression that evaluates to true/false. Variables: user.*, tool.*, safety.*, system.*</small>
+      </div>
+      
+      <div class="form-row">
+        <label for="action">Action</label>
+        <select id="action" name="action">
+          <option value="DENY">DENY - Block the operation</option>
+          <option value="WARN">WARN - Require user confirmation</option>
+          <option value="PENDING_APPROVAL">PENDING_APPROVAL - Queue for admin approval</option>
+          <option value="ALLOW">ALLOW - Permit (for override policies)</option>
+        </select>
+      </div>
+      
+      <div class="form-row">
+        <label for="severity">Severity</label>
+        <select id="severity" name="severity">
+          <option value="CRITICAL">CRITICAL</option>
+          <option value="HIGH">HIGH</option>
+          <option value="MEDIUM">MEDIUM</option>
+          <option value="LOW">LOW</option>
+        </select>
+      </div>
+      
+      <div class="form-row">
+        <label for="message">User Message</label>
+        <input type="text" id="message" name="message" placeholder="Message shown to user when policy triggers">
+      </div>
+      
+      <div class="form-row">
+        <label for="priority">Priority (lower = higher priority)</label>
+        <input type="number" id="priority" name="priority" value="100" min="1" max="1000">
+      </div>
+      
+      <div class="form-row">
+        <label>
+          <input type="checkbox" name="enabled" checked> Enabled
+        </label>
+      </div>
+      
+      <div style="display:flex;gap:0.5rem;">
+        <button type="submit" class="btn btn-primary">Create Policy</button>
+        <a href="/web/admin/enforcer/policies" class="btn btn-secondary">Cancel</a>
+      </div>
+    </form>
+  </div>
+  
+  <div class="card">
+    <h3>CEL Expression Examples</h3>
+    <ul class="text-muted" style="font-size:0.9rem;">
+      <li><code>safety.impact_scope in ['delete', 'admin']</code> - Block destructive operations</li>
+      <li><code>safety.resource_cost > 8</code> - Block high-cost operations</li>
+      <li><code>user.role != 'admin' && safety.risk_level == 'high'</code> - Non-admins can't use high-risk tools</li>
+      <li><code>safety.pii_exposure && args.query.contains('ssn')</code> - Block PII queries</li>
+    </ul>
+  </div>
+</div>
+{{template "foot" .}}
+{{end}}

@@ -1,0 +1,88 @@
+{{define "admin_enforcer_policies.html"}}
+{{template "head" .}}
+{{template "nav" .}}
+<div class="container">
+  <h1>Enforcer Policies</h1>
+  
+  <div class="card">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:1rem;">
+      <h2 style="margin:0;">Active Policies</h2>
+      <a href="/web/admin/enforcer/policies/new" class="btn btn-primary">Add Policy</a>
+    </div>
+    <table>
+      <thead>
+        <tr>
+          <th>Name</th>
+          <th>Scope</th>
+          <th>Action</th>
+          <th>Severity</th>
+          <th>Status</th>
+          <th>Actions</th>
+        </tr>
+      </thead>
+      <tbody>
+        {{range .Data}}
+        <tr>
+          <td>{{.Name}}</td>
+          <td><span class="badge badge-user">{{.Scope}}</span></td>
+          <td>
+            {{if eq .Action "DENY"}}
+            <span class="badge badge-disabled">DENY</span>
+            {{else if eq .Action "WARN"}}
+            <span class="badge badge-user">WARN</span>
+            {{else if eq .Action "PENDING_APPROVAL"}}
+            <span class="badge badge-admin">PENDING</span>
+            {{else}}
+            <span class="badge badge-enabled">ALLOW</span>
+            {{end}}
+          </td>
+          <td>
+            {{if eq .Severity "CRITICAL"}}
+            <span class="badge badge-disabled">CRITICAL</span>
+            {{else if eq .Severity "HIGH"}}
+            <span class="badge badge-user">HIGH</span>
+            {{else if eq .Severity "MEDIUM"}}
+            <span class="badge badge-enabled">MEDIUM</span>
+            {{else}}
+            <span class="text-muted">LOW</span>
+            {{end}}
+          </td>
+          <td>
+            {{if .Enabled}}
+            <span class="badge badge-enabled">Enabled</span>
+            {{else}}
+            <span class="badge badge-disabled">Disabled</span>
+            {{end}}
+          </td>
+          <td>
+            <span class="text-muted">Edit | Delete</span>
+          </td>
+        </tr>
+        {{else}}
+        <tr>
+          <td colspan="6" class="text-muted">No policies configured</td>
+        </tr>
+        {{end}}
+      </tbody>
+    </table>
+  </div>
+
+  <div class="card">
+    <h2>Global Settings</h2>
+    <form method="POST" action="/web/admin/enforcer/settings">
+      <div class="form-row">
+        <label>
+          <input type="checkbox" name="enabled" checked> Enable Policy Enforcement
+        </label>
+      </div>
+      <div class="form-row">
+        <label>
+          <input type="checkbox" name="description_decoration" checked> Decorate Tool Descriptions with Safety Metadata
+        </label>
+      </div>
+      <button type="submit" class="btn btn-primary">Save Settings</button>
+    </form>
+  </div>
+</div>
+{{template "foot" .}}
+{{end}}
