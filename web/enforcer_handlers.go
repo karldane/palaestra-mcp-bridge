@@ -19,6 +19,43 @@ func NewEnforcerHandler(e *enforcer.Enforcer, t *template.Template) *EnforcerHan
 	return &EnforcerHandler{enforcer: e, templates: t}
 }
 
+func (h *EnforcerHandler) GetApprovalStatus(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	approvalID := r.URL.Query().Get("id")
+	if approvalID == "" {
+		http.Error(w, "approval_id is required", http.StatusBadRequest)
+		return
+	}
+
+	approval, err := h.enforcer.GetApprovalRequest(approvalID)
+	if err != nil {
+		http.Error(w, "Approval not found", http.StatusNotFound)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"id":            approval.ID,
+		"status":        approval.Status,
+		"tool_name":     approval.ToolName,
+		"user_id":       approval.UserID,
+		"user_email":    approval.UserEmail,
+		"policy_id":     approval.PolicyID,
+		"message":       approval.ViolationMsg,
+		"requested_at":  approval.RequestedAt,
+		"expires_at":    approval.ExpiresAt,
+		"approved_at":   approval.ApprovedAt,
+		"approved_by":   approval.ApprovedBy,
+		"comments":      approval.Comments,
+		"denial_reason": approval.DenialReason,
+		"request_body":  approval.RequestBody,
+	})
+}
+
 func (h *EnforcerHandler) ListPendingApprovals(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)

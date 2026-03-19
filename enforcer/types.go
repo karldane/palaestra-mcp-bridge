@@ -287,7 +287,7 @@ func DefaultEnforcerConfig() EnforcerConfig {
 	return EnforcerConfig{
 		Enabled:                     true,
 		DefaultAction:               ActionAllow,
-		ApprovalTimeout:             10 * time.Minute,
+		ApprovalTimeout:             24 * time.Hour,
 		CleanupInterval:             1 * time.Minute,
 		EnableDescriptionDecoration: true,
 		EnableKillSwitch:            true,

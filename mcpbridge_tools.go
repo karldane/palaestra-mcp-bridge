@@ -83,6 +83,22 @@ func (s *MCPBridgeServer) registerSystemTools(mcpServer *server.MCPServer) {
 			Properties: map[string]interface{}{},
 		},
 	}, s.handlePoolStatusTool)
+
+	// Approval status tool
+	mcpServer.AddTool(mcp.Tool{
+		Name:        "mcpbridge_approval_status",
+		Description: "Check the status of a pending approval request. Use this after receiving an approval_id from a blocked tool call to see if an admin has approved or denied your request.",
+		InputSchema: mcp.ToolInputSchema{
+			Type: "object",
+			Properties: map[string]interface{}{
+				"approval_id": map[string]interface{}{
+					"type":        "string",
+					"description": "The approval request ID returned from the blocked tool call",
+				},
+			},
+			Required: []string{"approval_id"},
+		},
+	}, s.handleApprovalStatusTool)
 }
 
 func (s *MCPBridgeServer) handlePingTool(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
@@ -295,6 +311,67 @@ func (s *MCPBridgeServer) handlePoolStatusTool(ctx context.Context, request mcp.
 
 	result.WriteString(fmt.Sprintf("Total: %d pools, %d warm processes, %d current\n",
 		len(pools), totalWarm, totalCurrent))
+
+	return mcp.NewToolResultText(result.String()), nil
+}
+
+func (s *MCPBridgeServer) handleApprovalStatusTool(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	if s.app.enforcer == nil {
+		return mcp.NewToolResultText("Error: Enforcer not available"), nil
+	}
+
+	args, ok := request.Params.Arguments.(map[string]interface{})
+	if !ok {
+		return mcp.NewToolResultText("Error: Invalid arguments"), nil
+	}
+
+	approvalID, ok := args["approval_id"].(string)
+	if !ok || approvalID == "" {
+		return mcp.NewToolResultText("Error: approval_id is required"), nil
+	}
+
+	approval, err := s.app.enforcer.GetApprovalRequest(approvalID)
+	if err != nil {
+		return mcp.NewToolResultText("Error: Approval request not found or expired"), nil
+	}
+
+	var result strings.Builder
+	result.WriteString("=== Approval Status ===\n\n")
+	result.WriteString(fmt.Sprintf("Approval ID: %s\n", approval.ID))
+	result.WriteString(fmt.Sprintf("Status: %s\n", approval.Status))
+	result.WriteString(fmt.Sprintf("Tool: %s\n", approval.ToolName))
+	result.WriteString(fmt.Sprintf("Requested at: %s\n", approval.RequestedAt.Format("2006-01-02 15:04:05 MST")))
+	result.WriteString(fmt.Sprintf("Expires at: %s\n", approval.ExpiresAt.Format("2006-01-02 15:04:05 MST")))
+
+	switch approval.Status {
+	case "PENDING":
+		result.WriteString("\n⏳ Request is pending administrator review.\n")
+		result.WriteString("Please wait for an administrator to approve or deny.\n")
+
+	case "APPROVED":
+		result.WriteString("\n✅ Request was APPROVED!\n")
+		if approval.ApprovedBy.Valid {
+			result.WriteString(fmt.Sprintf("Approved by: %s\n", approval.ApprovedBy.String))
+		}
+		if approval.Comments != "" {
+			result.WriteString(fmt.Sprintf("Comments: %s\n", approval.Comments))
+		}
+		result.WriteString("\nOriginal request body:\n")
+		result.WriteString(approval.RequestBody)
+
+	case "DENIED":
+		result.WriteString("\n❌ Request was DENIED.\n")
+		if approval.ApprovedBy.Valid {
+			result.WriteString(fmt.Sprintf("Denied by: %s\n", approval.ApprovedBy.String))
+		}
+		if approval.DenialReason != "" {
+			result.WriteString(fmt.Sprintf("Reason: %s\n", approval.DenialReason))
+		}
+
+	case "EXPIRED":
+		result.WriteString("\n⏰ Request has EXPIRED.\n")
+		result.WriteString("Please submit a new request if needed.\n")
+	}
 
 	return mcp.NewToolResultText(result.String()), nil
 }

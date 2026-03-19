@@ -67,6 +67,20 @@ var SystemTools = []SystemToolDefinition{
 			Properties: map[string]interface{}{},
 		},
 	},
+	{
+		Name:        "mcpbridge_approval_status",
+		Description: "Check the status of a pending approval request. Use this after receiving an approval_id from a blocked tool call to see if an admin has approved or denied your request.",
+		InputSchema: mcp.ToolInputSchema{
+			Type: "object",
+			Properties: map[string]interface{}{
+				"approval_id": map[string]interface{}{
+					"type":        "string",
+					"description": "The approval request ID returned from the blocked tool call",
+				},
+			},
+			Required: []string{"approval_id"},
+		},
+	},
 }
 
 // SystemToolNames returns just the names of system tools for quick lookup

@@ -234,7 +234,8 @@ func (s *MCPBridgeServer) handleToolsCall(w http.ResponseWriter, r *http.Request
 						"policy_id":      decision.PolicyID,
 						"tool":           toolName,
 						"requires_human": true,
-						"instructions":   "This operation requires human approval. Contact an administrator to approve request ID: " + approvalID,
+						"status_url":     "/web/admin/enforcer/api/approval-status?id=" + approvalID,
+						"instructions":   "Use mcpbridge_check_approval_status tool with approval_id: " + approvalID + " to check if this request was approved.",
 					},
 				})
 				return

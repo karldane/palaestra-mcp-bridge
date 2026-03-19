@@ -2,8 +2,6 @@ package enforcer
 
 import (
 	"context"
-	"crypto/rand"
-	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -11,6 +9,8 @@ import (
 	"time"
 
 	"database/sql"
+
+	"github.com/google/uuid"
 )
 
 // EnforcerStore interface for database operations
@@ -375,7 +375,5 @@ func (e *Enforcer) isKillSwitchActive(scope string) bool {
 }
 
 func generateID() string {
-	b := make([]byte, 16)
-	rand.Read(b)
-	return hex.EncodeToString(b)
+	return uuid.New().String()
 }

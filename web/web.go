@@ -97,6 +97,7 @@ func (h *Handler) Register(mux *http.ServeMux) {
 		enforcerHandler := NewEnforcerHandler(h.Enforcer, h.Templates)
 		mux.Handle("/web/admin/enforcer/queue", h.requireAdmin(http.HandlerFunc(enforcerHandler.QueuePageHandler)))
 		mux.Handle("/web/admin/enforcer/api/approvals", h.requireAdmin(http.HandlerFunc(enforcerHandler.ListPendingApprovals)))
+		mux.Handle("/web/admin/enforcer/api/approval-status", h.requireAdmin(http.HandlerFunc(enforcerHandler.GetApprovalStatus)))
 		mux.Handle("/web/admin/enforcer/api/approve", h.requireAdmin(http.HandlerFunc(enforcerHandler.ApproveRequest)))
 		mux.Handle("/web/admin/enforcer/api/deny", h.requireAdmin(http.HandlerFunc(enforcerHandler.DenyRequest)))
 		mux.Handle("/web/admin/enforcer/api/kill-switch/enable", h.requireAdmin(http.HandlerFunc(enforcerHandler.EnableKillSwitch)))
