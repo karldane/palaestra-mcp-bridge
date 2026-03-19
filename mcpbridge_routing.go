@@ -214,17 +214,26 @@ func (s *MCPBridgeServer) handleToolsCall(w http.ResponseWriter, r *http.Request
 					})
 					return
 				}
-				// Return 200 OK with pending_approval status in result
+				// Return 200 OK with pending_approval status
+				// Include a clear message so the LLM knows human action is required
+				respID := id
+				if respID == nil {
+					respID = 1
+				}
 				w.Header().Set("Content-Type", "application/json")
+				w.Header().Set("X-Enforcer-Status", "pending_approval")
 				w.WriteHeader(http.StatusOK)
 				json.NewEncoder(w).Encode(map[string]interface{}{
 					"jsonrpc": "2.0",
-					"id":      id,
+					"id":      respID,
 					"result": map[string]interface{}{
-						"status":      "pending_approval",
-						"approval_id": approvalID,
-						"message":     decision.Message,
-						"policy_id":   decision.PolicyID,
+						"status":         "pending_approval",
+						"approval_id":    approvalID,
+						"message":        decision.Message,
+						"policy_id":      decision.PolicyID,
+						"tool":           toolName,
+						"requires_human": true,
+						"instructions":   "This operation requires human approval. Please contact an administrator to approve request ID: " + approvalID,
 					},
 				})
 				return
