@@ -1,10 +1,12 @@
 package web
 
 import (
+	"fmt"
 	"log"
 	"net/http"
 	"strings"
 
+	"github.com/mcp-bridge/mcp-bridge/poolmgr"
 	"github.com/mcp-bridge/mcp-bridge/store"
 )
 
@@ -14,12 +16,18 @@ func (h *Handler) DashboardHandler(w http.ResponseWriter, r *http.Request) {
 	backends, _ := h.Store.ListBackends()
 	tokens, _ := h.Store.GetAllUserTokens(user.ID)
 
-	// Build a map of backendID -> list of configured env keys
 	type backendStatus struct {
 		Backend        *store.Backend
 		ConfiguredKeys []string
+		Pool           *poolmgr.PoolStatus
 	}
 	var statuses []backendStatus
+
+	var userPools []poolmgr.PoolStatus
+	if h.PoolManager != nil {
+		userPools = h.PoolManager.GetPoolsForUser(user.ID)
+	}
+
 	for _, b := range backends {
 		if !b.Enabled {
 			continue
@@ -30,14 +38,52 @@ func (h *Handler) DashboardHandler(w http.ResponseWriter, r *http.Request) {
 				keys = append(keys, t.EnvKey)
 			}
 		}
-		statuses = append(statuses, backendStatus{Backend: b, ConfiguredKeys: keys})
+
+		var pool *poolmgr.PoolStatus
+		for i := range userPools {
+			if userPools[i].BackendID == b.ID {
+				poolCopy := userPools[i]
+				pool = &poolCopy
+				break
+			}
+		}
+
+		statuses = append(statuses, backendStatus{Backend: b, ConfiguredKeys: keys, Pool: pool})
+	}
+
+	var totalPools, totalWarm, totalActive int
+	var totalMemory uint64
+	for _, p := range userPools {
+		totalPools++
+		totalWarm += p.WarmCount
+		totalActive += p.CurrentSize - p.WarmCount
+		totalMemory += p.MemoryBytes
 	}
 
 	h.render(w, "dashboard.html", pageData{
 		User:  user,
 		Title: "Dashboard",
 		Data:  statuses,
+		Extra: map[string]interface{}{
+			"TotalPools":   totalPools,
+			"TotalWarm":    totalWarm,
+			"TotalActive":  totalActive,
+			"TotalMemory":  formatBytes(totalMemory),
+			"TokenCount":   len(tokens),
+			"BackendCount": len(statuses),
+		},
 	})
+}
+
+func formatBytes(bytes uint64) string {
+	if bytes == 0 {
+		return "0 B"
+	}
+	mb := float64(bytes) / 1024 / 1024
+	if mb > 1024 {
+		return fmt.Sprintf("%.1f GB", mb/1024)
+	}
+	return fmt.Sprintf("%.0f MB", mb)
 }
 
 func (h *Handler) TokensHandler(w http.ResponseWriter, r *http.Request) {

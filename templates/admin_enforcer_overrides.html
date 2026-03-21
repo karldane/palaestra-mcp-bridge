@@ -1,0 +1,130 @@
+{{define "admin_enforcer_overrides.html"}}
+{{template "head" .}}
+{{template "nav" .}}
+<div class="container">
+  <h1>Enforcer Overrides</h1>
+
+  <div class="card">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:1rem;">
+      <h2 style="margin:0;">Active Overrides</h2>
+      <a href="/web/admin/enforcer/profiles" class="btn btn-secondary">Back to Profiles</a>
+    </div>
+    <p class="text-muted">Overrides replace self-reported or inferred safety profiles for specific tool+backend combinations.</p>
+
+    <table>
+      <thead>
+        <tr>
+          <th>Tool</th>
+          <th>Backend</th>
+          <th>Risk</th>
+          <th>Impact</th>
+          <th>Cost</th>
+          <th>HITL</th>
+          <th>PII</th>
+          <th>Actions</th>
+        </tr>
+      </thead>
+      <tbody>
+        {{range .Overrides}}
+        <tr>
+          <td><span class="mono">{{.ToolName}}</span></td>
+          <td><span class="badge badge-user">{{.BackendID}}</span></td>
+          <td>
+            {{if eq .RiskLevel "critical"}}
+            <span class="badge badge-disabled">CRITICAL</span>
+            {{else if eq .RiskLevel "high"}}
+            <span class="badge badge-disabled">HIGH</span>
+            {{else if eq .RiskLevel "medium"}}
+            <span class="badge badge-user">MEDIUM</span>
+            {{else}}
+            <span class="badge badge-enabled">LOW</span>
+            {{end}}
+          </td>
+          <td><span class="badge badge-admin">{{.ImpactScope}}</span></td>
+          <td>{{.ResourceCost}}</td>
+          <td>{{if .RequiresHITL}}<span class="badge badge-admin">Yes</span>{{else}}<span class="text-muted">No</span>{{end}}</td>
+          <td>{{if .PIIExposure}}<span class="badge badge-disabled">Yes</span>{{else}}<span class="text-muted">No</span>{{end}}</td>
+          <td>
+            <button class="btn btn-sm btn-danger" onclick="deleteOverride('{{.ToolName}}', '{{.BackendID}}')">Delete</button>
+          </td>
+        </tr>
+        {{else}}
+        <tr>
+          <td colspan="8" class="text-muted">No overrides configured.</td>
+        </tr>
+        {{end}}
+      </tbody>
+    </table>
+  </div>
+
+  <div class="card">
+    <h2>Create New Override</h2>
+      <form method="POST" action="/web/admin/enforcer/profiles/override/create">
+      <div class="grid-2">
+        <div>
+          <label>Tool Name</label>
+          <input type="text" name="tool_name" required placeholder="e.g., aws_create_user" value="{{.Prefill.tool_name}}">
+        </div>
+        <div>
+          <label>Backend ID</label>
+          <input type="text" name="backend_id" required placeholder="e.g., aws" value="{{.Prefill.backend_id}}">
+        </div>
+        <div>
+          <label>Risk Level</label>
+          <select name="risk_level" required>
+            <option value="">Select...</option>
+            <option value="low">Low</option>
+            <option value="medium">Medium</option>
+            <option value="high">High</option>
+            <option value="critical">Critical</option>
+          </select>
+        </div>
+        <div>
+          <label>Impact Scope</label>
+          <select name="impact_scope" required>
+            <option value="">Select...</option>
+            <option value="read">Read</option>
+            <option value="write">Write</option>
+            <option value="delete">Delete</option>
+            <option value="admin">Admin</option>
+          </select>
+        </div>
+        <div>
+          <label>Resource Cost (1-10)</label>
+          <input type="number" name="resource_cost" value="5" min="1" max="10">
+        </div>
+      </div>
+      <div class="form-row" style="margin-top:0.5rem;">
+        <label class="checkbox-label">
+          <input type="checkbox" name="requires_hitl"> Requires Human-in-the-Loop (HITL)
+        </label>
+      </div>
+      <div class="form-row">
+        <label class="checkbox-label">
+          <input type="checkbox" name="pii_exposure"> PII Exposure
+        </label>
+      </div>
+      <button type="submit" class="btn btn-primary">Create Override</button>
+    </form>
+  </div>
+</div>
+<script>
+async function deleteOverride(toolName, backendID) {
+  if (!confirm('Delete this override? The tool will fall back to self-reported or inferred profiles.')) return;
+
+  try {
+    const resp = await fetch('/web/admin/enforcer/profiles/override/delete?tool_name=' + encodeURIComponent(toolName) + '&backend_id=' + encodeURIComponent(backendID), {
+      method: 'POST'
+    });
+    if (resp.ok) {
+      window.location.reload();
+    } else {
+      alert('Failed to delete override');
+    }
+  } catch (e) {
+    alert('Error: ' + e);
+  }
+}
+</script>
+{{template "foot" .}}
+{{end}}

@@ -11,6 +11,7 @@ import (
 	"github.com/mcp-bridge/mcp-bridge/enforcer"
 	"github.com/mcp-bridge/mcp-bridge/poolmgr"
 	"github.com/mcp-bridge/mcp-bridge/shared"
+	"github.com/mcp-bridge/mcp-bridge/store"
 )
 
 // handleToolsList aggregates tools from all enabled backends
@@ -33,7 +34,16 @@ func (s *MCPBridgeServer) handleToolsList(w http.ResponseWriter, r *http.Request
 	}
 
 	var allTools []map[string]interface{}
-	var firstError error
+
+	// Load cached capabilities for all backends
+	cachedCaps, _ := s.app.store.GetAllBackendCapabilities()
+
+	// Load backend statuses for unavailable backends
+	statusMap := make(map[string]string) // backendID -> status
+	statuses, _ := s.app.store.ListBackendStatuses()
+	for _, st := range statuses {
+		statusMap[st.BackendID] = st.Status
+	}
 
 	for _, backend := range backends {
 		if !backend.Enabled {
@@ -45,15 +55,83 @@ func (s *MCPBridgeServer) handleToolsList(w http.ResponseWriter, r *http.Request
 		pool := s.app.getPoolForUser(userID, backend.ID)
 		pool.TouchLastUsed()
 
+		// Check if backend is marked unavailable in DB
+		backendStatus := statusMap[backend.ID]
+		if backendStatus == "unavailable" {
+			shared.Debugf("handleToolsList: backend %s is unavailable (DB status), attempting reconnect", backend.ID)
+			// Try to reconnect immediately for user-initiated request
+			pool.ForceReconnect()
+		}
+
+		// Check circuit breaker state
+		if pool.IsUnavailable() {
+			shared.Debugf("handleToolsList: backend %s circuit breaker open, using cached tools", backend.ID)
+			if caps, ok := cachedCaps[backend.ID]; ok {
+				prefix := s.toolMuxer.GetPrefixForBackend(backend.ID)
+				for _, tool := range caps.Tools {
+					if name, ok := tool["name"].(string); ok && prefix != "" {
+						tool["name"] = prefix + "_" + name
+					}
+					// Mark as unavailable with annotation
+					if backend.ToolHints != "" {
+						annotations, hasAnnotations := tool["annotations"].(map[string]interface{})
+						if !hasAnnotations {
+							annotations = make(map[string]interface{})
+							tool["annotations"] = annotations
+						}
+						annotations["hints"] = backend.ToolHints
+					}
+					annotations, hasAnnotations := tool["annotations"].(map[string]interface{})
+					if !hasAnnotations {
+						annotations = make(map[string]interface{})
+						tool["annotations"] = annotations
+					}
+					annotations["unavailable"] = true
+					annotations["unavailable_reason"] = "Backend temporarily unavailable - will retry automatically"
+					allTools = append(allTools, tool)
+				}
+			}
+			continue
+		}
+
+		// Try to use cached tools first (fast path)
+		if caps, ok := cachedCaps[backend.ID]; ok && len(caps.Tools) > 0 {
+			shared.Debugf("handleToolsList: using cached tools for backend %s (%d tools)", backend.ID, len(caps.Tools))
+			prefix := s.toolMuxer.GetPrefixForBackend(backend.ID)
+			for _, tool := range caps.Tools {
+				if name, ok := tool["name"].(string); ok && prefix != "" {
+					tool["name"] = prefix + "_" + name
+				}
+				if backend.ToolHints != "" {
+					annotations, hasAnnotations := tool["annotations"].(map[string]interface{})
+					if !hasAnnotations {
+						annotations = make(map[string]interface{})
+						tool["annotations"] = annotations
+					}
+					annotations["hints"] = backend.ToolHints
+				}
+				allTools = append(allTools, tool)
+			}
+			// Background refresh: try to update cache asynchronously
+			go s.refreshBackendTools(userID, backend)
+			continue
+		}
+
+		// No cache - need to spawn process
+		shared.Debugf("handleToolsList: no cached tools for backend %s, spawning process", backend.ID)
+
 		proc, err := pool.WaitForWarmWithMax(15 * time.Second)
 		if err != nil {
 			if strings.Contains(err.Error(), "max_pool_size reached") {
 				shared.Debugf("handleToolsList: max pool size reached for backend %s: %v", backend.ID, err)
+			} else if strings.Contains(err.Error(), "backend unavailable") {
+				shared.Debugf("handleToolsList: backend %s is unavailable (circuit breaker open)", backend.ID)
 			} else {
 				shared.Debugf("handleToolsList: timeout waiting for warm process for backend %s", backend.ID)
 			}
+			// Add placeholder for unavailable backend
 			allTools = append(allTools, map[string]interface{}{
-				"name":        backend.ID + "_error",
+				"name":        backend.ID + "_unavailable",
 				"description": "Backend temporarily unavailable: " + err.Error(),
 			})
 			continue
@@ -87,9 +165,8 @@ func (s *MCPBridgeServer) handleToolsList(w http.ResponseWriter, r *http.Request
 				if err := json.Unmarshal(response, &result); err == nil {
 					if result.Error != nil {
 						shared.Debugf("handleToolsList: tools/list error from backend %s: %v", backend.ID, result.Error)
-						if firstError == nil {
-							firstError = fmt.Errorf("backend %s error: %v", backend.ID, result.Error)
-						}
+						// Mark backend as unavailable
+						s.app.store.SetBackendUnavailable(backend.ID, fmt.Sprintf("%v", result.Error))
 					} else {
 						shared.Debugf("handleToolsList: backend %s returned %d tools", backend.ID, len(result.Result.Tools))
 						if err := s.app.store.SetBackendCapabilities(backend.ID, result.Result.Tools); err != nil {
@@ -97,13 +174,14 @@ func (s *MCPBridgeServer) handleToolsList(w http.ResponseWriter, r *http.Request
 						} else {
 							shared.Debugf("handleToolsList: cached %d tools for backend %s", len(result.Result.Tools), backend.ID)
 						}
+						// Mark backend as available
+						s.app.store.SetBackendAvailable(backend.ID)
 						prefix := s.toolMuxer.GetPrefixForBackend(backend.ID)
 						shared.Debugf("handleToolsList: prefix for backend %s: %q", backend.ID, prefix)
 						for _, tool := range result.Result.Tools {
 							if name, ok := tool["name"].(string); ok && prefix != "" {
 								tool["name"] = prefix + "_" + name
 							}
-							// Merge backend tool hints into annotations
 							if backend.ToolHints != "" {
 								annotations, hasAnnotations := tool["annotations"].(map[string]interface{})
 								if !hasAnnotations {
@@ -122,8 +200,9 @@ func (s *MCPBridgeServer) handleToolsList(w http.ResponseWriter, r *http.Request
 		case <-time.After(10 * time.Second):
 			pool.UnregisterRequest(reqID)
 			shared.Debugf("handleToolsList: TIMEOUT waiting for tools/list from backend %s, killing stuck process", backend.ID)
-			// Don't return stuck process to pool - kill it and let pool refill
 			proc.Kill()
+			// Mark backend as unavailable
+			s.app.store.SetBackendUnavailable(backend.ID, "timeout waiting for tools/list")
 			continue
 		}
 
@@ -163,11 +242,19 @@ func (s *MCPBridgeServer) handleToolsCall(w http.ResponseWriter, r *http.Request
 		}
 	}
 
+	// Get backend ID from tool name (needed for enforcer)
+	backendID := ""
+	if toolName != "" && !strings.HasPrefix(toolName, "mcpbridge_") {
+		if bid, _, err := s.toolMuxer.FindBackendForTool(toolName); err == nil {
+			backendID = bid
+		}
+	}
+
 	// Enforcer check - policy enforcement
 	if s.app.enforcer != nil && toolName != "" && !strings.HasPrefix(toolName, "mcpbridge_") {
 		ctx := r.Context()
-		shared.Infof("Enforcer: Evaluating tool call - user=%s tool=%s", userID, toolName)
-		decision, err := s.app.enforcer.HandleToolCall(ctx, userID, toolName, toolArgs, "")
+		shared.Infof("Enforcer: Evaluating tool call - user=%s tool=%s backend=%s", userID, toolName, backendID)
+		decision, err := s.app.enforcer.HandleToolCall(ctx, userID, toolName, toolArgs, backendID)
 		if err != nil {
 			shared.Errorf("Enforcer error: %v", err)
 		} else {
@@ -199,6 +286,7 @@ func (s *MCPBridgeServer) handleToolsCall(w http.ResponseWriter, r *http.Request
 					UserID:      userID,
 					Tool:        toolName,
 					Args:        toolArgs,
+					BackendID:   backendID,
 					RequestBody: string(body),
 				}, decision.PolicyID, decision.Message)
 				if err != nil {
@@ -316,6 +404,64 @@ func (s *MCPBridgeServer) handleToolsCall(w http.ResponseWriter, r *http.Request
 		w.WriteHeader(http.StatusServiceUnavailable)
 		w.Write([]byte("No warm processes"))
 	}
+}
+
+// refreshBackendTools asynchronously refreshes cached tools for a backend
+func (s *MCPBridgeServer) refreshBackendTools(userID string, backend *store.Backend) {
+	go func() {
+		shared.Debugf("refreshBackendTools: refreshing tools for backend %s", backend.ID)
+		pool := s.app.getPoolForUser(userID, backend.ID)
+
+		proc, err := pool.WaitForWarmWithMax(15 * time.Second)
+		if err != nil {
+			shared.Debugf("refreshBackendTools: failed to get warm process for %s: %v", backend.ID, err)
+			return
+		}
+
+		reqID := fmt.Sprintf("refresh-%s-%d", backend.ID, time.Now().UnixNano())
+		req := map[string]interface{}{
+			"jsonrpc": "2.0",
+			"method":  "tools/list",
+			"id":      reqID,
+		}
+		reqBody, _ := json.Marshal(req)
+		reqBody = append(reqBody, '\n')
+
+		respCh := pool.RegisterRequest(reqID)
+		proc.Stdin.Write(reqBody)
+
+		select {
+		case response, ok := <-respCh:
+			pool.UnregisterRequest(reqID)
+			if ok && len(response) > 0 {
+				var result struct {
+					Result struct {
+						Tools []map[string]interface{} `json:"tools"`
+					} `json:"result"`
+					Error map[string]interface{} `json:"error"`
+				}
+				if err := json.Unmarshal(response, &result); err == nil {
+					if result.Error == nil && len(result.Result.Tools) > 0 {
+						if err := s.app.store.SetBackendCapabilities(backend.ID, result.Result.Tools); err != nil {
+							shared.Debugf("refreshBackendTools: failed to cache capabilities for %s: %v", backend.ID, err)
+						} else {
+							shared.Debugf("refreshBackendTools: refreshed %d tools for backend %s", len(result.Result.Tools), backend.ID)
+						}
+						s.app.store.SetBackendAvailable(backend.ID)
+					} else if result.Error != nil {
+						s.app.store.SetBackendUnavailable(backend.ID, fmt.Sprintf("%v", result.Error))
+					}
+				}
+			}
+		case <-time.After(10 * time.Second):
+			pool.UnregisterRequest(reqID)
+			shared.Debugf("refreshBackendTools: timeout for backend %s", backend.ID)
+			proc.Kill()
+			s.app.store.SetBackendUnavailable(backend.ID, "timeout during background refresh")
+		}
+
+		pool.Warm <- proc
+	}()
 }
 
 // handleDefaultBackend routes to the default backend (legacy behavior)

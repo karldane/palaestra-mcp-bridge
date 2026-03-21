@@ -56,9 +56,43 @@ func (s *Store) migrate() error {
 	s.db.Exec(`ALTER TABLE backends ADD COLUMN max_pool_size INTEGER NOT NULL DEFAULT 0`)
 	s.db.Exec(`ALTER TABLE backends ADD COLUMN tool_hints TEXT NOT NULL DEFAULT ''`)
 	s.db.Exec(`ALTER TABLE backends ADD COLUMN backend_instructions TEXT NOT NULL DEFAULT ''`)
+	s.db.Exec(`ALTER TABLE backends ADD COLUMN self_reporting INTEGER NOT NULL DEFAULT 0`)
 	s.db.Exec(`CREATE TABLE IF NOT EXISTS settings (
 		key TEXT PRIMARY KEY,
 		value TEXT NOT NULL
+	)`)
+
+	// Rate limiting tables
+	s.db.Exec(`CREATE TABLE IF NOT EXISTS rate_limit_buckets (
+		id          TEXT PRIMARY KEY,
+		backend_id  TEXT NOT NULL REFERENCES backends(id) ON DELETE CASCADE,
+		bucket_type TEXT NOT NULL CHECK (bucket_type IN ('risk', 'resource')),
+		capacity    INTEGER NOT NULL DEFAULT 100,
+		refill_rate INTEGER NOT NULL DEFAULT 20,
+		created_at  DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+		updated_at  DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+		UNIQUE(backend_id, bucket_type)
+	)`)
+
+	s.db.Exec(`CREATE TABLE IF NOT EXISTS rate_limit_states (
+		id            TEXT PRIMARY KEY,
+		user_id       TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+		backend_id    TEXT NOT NULL REFERENCES backends(id) ON DELETE CASCADE,
+		bucket_type   TEXT NOT NULL CHECK (bucket_type IN ('risk', 'resource')),
+		current_level INTEGER NOT NULL DEFAULT 0,
+		last_refill_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+		created_at    DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+		UNIQUE(user_id, backend_id, bucket_type)
+	)`)
+
+	s.db.Exec(`CREATE TABLE IF NOT EXISTS rate_limit_overrides (
+		id                TEXT PRIMARY KEY,
+		user_id           TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+		backend_id        TEXT NOT NULL REFERENCES backends(id) ON DELETE CASCADE,
+		bucket_type       TEXT NOT NULL CHECK (bucket_type IN ('risk', 'resource')),
+		capacity_multiplier REAL NOT NULL DEFAULT 1.0,
+		created_at        DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+		UNIQUE(user_id, backend_id, bucket_type)
 	)`)
 
 	// Migration: rename token to session_id in web_sessions
@@ -128,7 +162,11 @@ func (s *Store) migrate() error {
 		comments        TEXT DEFAULT '',
 		policy_id       TEXT DEFAULT '',
 		violation_msg   TEXT DEFAULT '',
-		request_body    TEXT DEFAULT ''
+		request_body    TEXT DEFAULT '',
+		response_status INTEGER DEFAULT 0,
+		response_body   TEXT DEFAULT '',
+		executed_at     DATETIME,
+		error_msg       TEXT DEFAULT ''
 	)`)
 	s.db.Exec(`CREATE TABLE IF NOT EXISTS enforcer_kill_switches (
 		id          TEXT PRIMARY KEY,
@@ -151,11 +189,35 @@ func (s *Store) migrate() error {
 		policy_id   TEXT,
 		message     TEXT,
 		context     TEXT DEFAULT '{}',
-		created_at  DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+		created_at  DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+		updated_at  DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+	)`)
+	s.db.Exec(`CREATE TABLE IF NOT EXISTS enforcer_tool_profiles (
+		id              TEXT PRIMARY KEY,
+		backend_id      TEXT NOT NULL,
+		tool_name       TEXT NOT NULL,
+		risk_level      TEXT NOT NULL DEFAULT 'medium',
+		impact_scope    TEXT NOT NULL DEFAULT 'read',
+		resource_cost   INTEGER NOT NULL DEFAULT 5,
+		requires_hitl   INTEGER NOT NULL DEFAULT 0,
+		pii_exposure    INTEGER NOT NULL DEFAULT 0,
+		idempotent      INTEGER NOT NULL DEFAULT 0,
+		raw_profile     TEXT DEFAULT '{}',
+		scanned_at      DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+		UNIQUE(backend_id, tool_name)
 	)`)
 
-	// Migration: add request_body column to enforcer_approvals
-	s.db.Exec(`ALTER TABLE enforcer_approvals ADD COLUMN request_body TEXT DEFAULT ''`)
+	// Backend availability status table
+	s.db.Exec(`CREATE TABLE IF NOT EXISTS backend_status (
+		backend_id      TEXT PRIMARY KEY REFERENCES backends(id) ON DELETE CASCADE,
+		status          TEXT NOT NULL DEFAULT 'unknown',
+		last_attempt    DATETIME,
+		last_success    DATETIME,
+		retry_count     INTEGER NOT NULL DEFAULT 0,
+		next_retry      DATETIME,
+		error_message   TEXT DEFAULT '',
+		updated_at      DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+	)`)
 
 	return nil
 }

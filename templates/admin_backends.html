@@ -1,54 +1,130 @@
 {{define "admin_backends.html"}}
 {{template "head" .}}
 {{template "nav" .}}
+<style>
+.backend-card {
+  border: 1px solid #e5e7eb;
+  border-radius: 8px;
+  padding: 1rem;
+  margin-bottom: 0.75rem;
+  display: grid;
+  grid-template-columns: 2fr 1fr auto;
+  gap: 1rem;
+  align-items: start;
+  min-height: 80px;
+}
+.backend-info {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+}
+.backend-title {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-weight: 600;
+  font-size: 1.1rem;
+}
+.backend-command {
+  font-family: monospace;
+  font-size: 0.85rem;
+  color: #666;
+  word-break: break-all;
+  max-width: 500px;
+}
+.backend-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  margin-top: 0.25rem;
+}
+.backend-stats {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  justify-content: flex-start;
+}
+.backend-stat {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-size: 0.9rem;
+}
+.backend-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  align-items: stretch;
+  min-width: 120px;
+}
+.backend-actions .btn-group {
+  display: flex;
+  gap: 0.25rem;
+}
+.backend-actions .btn-group button,
+.backend-actions .btn-group form button {
+  flex: 1;
+}
+</style>
 <div class="container">
   <h1>Manage Backends</h1>
   {{template "alerts" .}}
 
+  {{if .Extra.UncachedBackends}}
+  <div class="alert alert-warning" style="background:#fff3cd;border-color:#ffc107;color:#856404;padding:1rem;border-radius:4px;margin-bottom:1rem;">
+    <strong>⚠ Uncached Tooling Detected</strong>
+    <p style="margin:0.5rem 0 0 0;">
+      The following backends do not have cached tools: <strong>{{.Extra.UncachedBackends | join ", "}}</strong>
+    </p>
+    <p style="margin:0.5rem 0 0 0;">
+      Run <code>./mcp-bridge --precache-tooling=USER_EMAIL</code> to cache tools for these backends.
+    </p>
+    <p style="margin:0.5rem 0 0 0;">
+      Without cached tools, the bridge will spawn processes on startup which may cause delays or errors for unavailable backends.
+    </p>
+  </div>
+  {{end}}
+
   <div class="card">
     <h2>Backends</h2>
     {{if .Data}}
-    <table>
-      <thead>
-        <tr>
-          <th>ID</th>
-          <th>Command</th>
-          <th>Min Pool</th>
-          <th>Max Pool</th>
-          <th>Prefix</th>
-          <th>Type</th>
-          <th>Enabled</th>
-          <th>Status</th>
-          <th></th>
-        </tr>
-      </thead>
-      <tbody>
-        {{range .Data}}
-        <tr data-env='{{.Env | json}}' data-env-mappings='{{.EnvMappings | json}}' data-tool-hints='{{.ToolHints | json}}' data-is-system="{{.IsSystem}}" data-min-pool="{{.MinPoolSize}}" data-max-pool="{{.MaxPoolSize}}">
-          <td><strong>{{.ID}}</strong>{{if .IsSystem}} <span class="badge badge-disabled">system</span>{{end}}</td>
-          <td class="mono" style="max-width:300px;overflow:hidden;text-overflow:ellipsis;">{{.Command}}</td>
-          <td>{{.MinPoolSize}}</td>
-          <td>{{.MaxPoolSize}}</td>
-          <td>{{if .ToolPrefix}}<span class="mono">{{.ToolPrefix}}</span>{{else}}<span class="text-muted">none</span>{{end}}</td>
-          <td>{{if .IsSystem}}<span class="text-muted">system</span>{{else}}<span class="text-muted">user</span>{{end}}</td>
-          <td>{{if .Enabled}}<span class="badge badge-enabled">enabled</span>{{else}}<span class="badge badge-disabled">disabled</span>{{end}}</td>
-          <td id="probe-status-{{.ID}}"><span class="text-muted">--</span></td>
-          <td style="white-space:nowrap;">
-            {{if not .IsSystem}}
-            <button type="button" class="btn btn-sm btn-secondary" onclick="probeBackend('{{.ID | js}}')" id="probe-btn-{{.ID}}">Test</button>
-            <button type="button" class="btn btn-sm btn-secondary" onclick="editBackend('{{.ID | js}}')">Edit</button>
-            <form method="post" action="/web/admin/backends/delete" style="display:inline;">
-              <input type="hidden" name="id" value="{{.ID}}">
-              <button type="submit" class="btn btn-sm btn-danger" onclick="return confirm('Delete backend {{.ID | js}}? This also deletes associated user tokens.')">Delete</button>
-            </form>
-            {{else}}
-            <span class="text-muted" style="font-size:0.85em;">system</span>
-            {{end}}
-          </td>
-        </tr>
+    {{range .Data}}
+    <div class="backend-card" data-env='{{.Env | json}}' data-env-mappings='{{.EnvMappings | json}}' data-tool-hints='{{.ToolHints | json}}' data-is-system="{{.IsSystem}}" data-min-pool="{{.MinPoolSize}}" data-max-pool="{{.MaxPoolSize}}" data-self-reporting="{{.SelfReporting}}" data-id="{{.ID}}" data-command="{{.Command | js}}">
+      <div class="backend-info">
+        <div class="backend-title">
+          {{.ID}}
+          {{if .IsSystem}}<span class="badge badge-disabled">system</span>{{end}}
+        </div>
+        <div class="backend-command">{{.Command}}</div>
+        <div class="backend-meta">
+          {{if .Enabled}}<span class="badge badge-enabled">enabled</span>{{else}}<span class="badge badge-disabled">disabled</span>{{end}}
+          {{if .SelfReporting}}<span class="badge badge-enabled">self-reporting</span>{{end}}
+          {{if .ToolPrefix}}<span class="badge badge-user">{{.ToolPrefix}}</span>{{end}}
+          <span class="text-muted">Pool: {{.MinPoolSize}}-{{.MaxPoolSize}}</span>
+        </div>
+      </div>
+      <div class="backend-stats">
+        <div class="backend-stat">
+          <strong>Status:</strong>
+          <span id="probe-status-{{.ID}}"><span class="text-muted">--</span></span>
+        </div>
+      </div>
+      <div class="backend-actions">
+        {{if not .IsSystem}}
+        <div class="btn-group">
+          <button type="button" class="btn btn-sm btn-secondary" onclick="probeBackend('{{.ID | js}}')" id="probe-btn-{{.ID}}">Test</button>
+          <button type="button" class="btn btn-sm btn-secondary" onclick="editBackend('{{.ID | js}}')">Edit</button>
+        </div>
+        <form method="post" action="/web/admin/backends/delete">
+          <input type="hidden" name="id" value="{{.ID}}">
+          <button type="submit" class="btn btn-sm btn-danger" style="width:100%;" onclick="return confirm('Delete backend {{.ID | js}}? This also deletes associated user tokens.')">Delete</button>
+        </form>
+        {{else}}
+        <span class="text-muted">system</span>
         {{end}}
-      </tbody>
-    </table>
+      </div>
+    </div>
+    {{end}}
     {{else}}
     <p class="text-muted">No backends configured.</p>
     {{end}}
@@ -157,6 +233,11 @@
           <input type="checkbox" id="enabled" name="enabled" checked>
           <label for="enabled" class="checkbox-label">Enabled</label>
         </div>
+        <div class="form-row" style="display:flex;align-items:center;gap:0.5rem;">
+          <input type="checkbox" id="self_reporting" name="self_reporting">
+          <label for="self_reporting" class="checkbox-label">Self-Reporting</label>
+          <small class="text-muted" style="margin-left:0.25rem;">— backend self-reports safety profiles via <code>_meta.enforcer_profile</code></small>
+        </div>
       </div>
       <div class="form-row">
         <label for="env">Environment Template (JSON)</label>
@@ -186,19 +267,11 @@
 // Simple inline edit: populate the create form with existing values and switch
 // the action to the edit endpoint. No separate edit page needed.
 function editBackend(id) {
-  // Find the row for this backend
-  var rows = document.querySelectorAll('table tbody tr');
-  var row = null;
-  for (var i = 0; i < rows.length; i++) {
-    if (rows[i].querySelector('td strong') && rows[i].querySelector('td strong').textContent === id) {
-      row = rows[i];
-      break;
-    }
-  }
-  if (!row) return;
+  // Find the card for this backend
+  var card = document.querySelector('.backend-card[data-id="' + id + '"]');
+  if (!card) return;
 
-  var isSystem = row.getAttribute('data-is-system') === 'true';
-  var cells = row.querySelectorAll('td');
+  var isSystem = card.getAttribute('data-is-system') === 'true';
   document.getElementById('form-title').textContent = 'Edit Backend: ' + id + (isSystem ? ' (system)' : '');
   document.getElementById('backend-form-el').action = '/web/admin/backends/edit';
 
@@ -208,20 +281,34 @@ function editBackend(id) {
   idField.readOnly = true;
   idField.style.background = '#f3f4f6';
 
-  document.getElementById('command').value = cells[1].textContent.trim();
-  // Column 2 is MinPoolSize, Column 3 is MaxPoolSize
-  var minPool = row.getAttribute('data-min-pool');
-  var maxPool = row.getAttribute('data-max-pool');
+  // Get command from data attribute
+  var command = card.getAttribute('data-command');
+  if (command) {
+    try { command = JSON.parse(command); } catch(e) {}
+  }
+  document.getElementById('command').value = command || '';
+
+  var minPool = card.getAttribute('data-min-pool');
+  var maxPool = card.getAttribute('data-max-pool');
   document.getElementById('min_pool_size').value = minPool ? minPool : '1';
   document.getElementById('max_pool_size').value = maxPool ? maxPool : '1';
-  // Column 4 is ToolPrefix, column 5 is Type (system/user), column 6 is Enabled
-  document.getElementById('tool_prefix').value = (cells[4].textContent.trim() === 'none') ? '' : cells[4].textContent.trim();
-  document.getElementById('enabled').checked = cells[6].textContent.trim() === 'enabled';
+
+  // Find the prefix badge
+  var prefixEl = card.querySelector('.badge-user');
+  document.getElementById('tool_prefix').value = prefixEl ? prefixEl.textContent : '';
+
+  // Find enabled badge
+  var enabledBadge = card.querySelector('.badge-enabled');
+  var enabledChecked = enabledBadge && enabledBadge.textContent === 'enabled';
+  document.getElementById('enabled').checked = enabledChecked;
+
+  var selfReporting = card.getAttribute('data-self-reporting') === 'true';
+  document.getElementById('self_reporting').checked = selfReporting;
 
   // Get env, env_mappings, and tool_hints from data attributes
-  var env = row.getAttribute('data-env');
-  var envMappings = row.getAttribute('data-env-mappings');
-  var toolHints = row.getAttribute('data-tool-hints');
+  var env = card.getAttribute('data-env');
+  var envMappings = card.getAttribute('data-env-mappings');
+  var toolHints = card.getAttribute('data-tool-hints');
   document.getElementById('env').value = env ? env : '{}';
   document.getElementById('env_mappings').value = envMappings ? envMappings : '{}';
   document.getElementById('tool_hints').value = toolHints ? toolHints : '';
@@ -262,6 +349,7 @@ function cancelEdit() {
   document.getElementById('tool_prefix').value = '';
   document.getElementById('enabled').checked = true;
   document.getElementById('enabled').disabled = false;
+  document.getElementById('self_reporting').checked = false;
   document.getElementById('env').value = '{}';
   document.getElementById('env_mappings').value = '{}';
   document.getElementById('tool_hints').value = '';

@@ -136,6 +136,9 @@ func (h *Handler) AdminBackendsHandler(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// Get uncached backends (backends without cached tools)
+	uncachedBackends, _ := h.Store.GetUncachedBackends()
+
 	// Get global hints
 	globalHints, _ := h.Store.GetSetting("global_hints")
 
@@ -146,8 +149,9 @@ func (h *Handler) AdminBackendsHandler(w http.ResponseWriter, r *http.Request) {
 		Error:   r.URL.Query().Get("error"),
 		Success: r.URL.Query().Get("success"),
 		Extra: map[string]interface{}{
-			"PoolStatuses": poolStatuses,
-			"GlobalHints":  globalHints,
+			"PoolStatuses":     poolStatuses,
+			"GlobalHints":      globalHints,
+			"UncachedBackends": uncachedBackends,
 		},
 	})
 }
@@ -167,6 +171,7 @@ func (h *Handler) AdminBackendsCreateHandler(w http.ResponseWriter, r *http.Requ
 	envMappings := strings.TrimSpace(r.FormValue("env_mappings"))
 	toolHints := strings.TrimSpace(r.FormValue("tool_hints"))
 	enabled := r.FormValue("enabled") == "on"
+	selfReporting := r.FormValue("self_reporting") == "on"
 
 	// Validate backend ID: alphanumeric, dashes, underscores, max 50 chars
 	if id == "" || command == "" {
@@ -194,16 +199,17 @@ func (h *Handler) AdminBackendsCreateHandler(w http.ResponseWriter, r *http.Requ
 	}
 
 	b := &store.Backend{
-		ID:          id,
-		Command:     command,
-		PoolSize:    minPoolSize,
-		MinPoolSize: minPoolSize,
-		MaxPoolSize: maxPoolSize,
-		ToolPrefix:  toolPrefix,
-		Env:         env,
-		EnvMappings: envMappings,
-		ToolHints:   toolHints,
-		Enabled:     enabled,
+		ID:            id,
+		Command:       command,
+		PoolSize:      minPoolSize,
+		MinPoolSize:   minPoolSize,
+		MaxPoolSize:   maxPoolSize,
+		ToolPrefix:    toolPrefix,
+		Env:           env,
+		EnvMappings:   envMappings,
+		ToolHints:     toolHints,
+		Enabled:       enabled,
+		SelfReporting: selfReporting,
 	}
 	if err := h.Store.CreateBackend(b); err != nil {
 		log.Printf("web: create backend: %v", err)
@@ -229,6 +235,7 @@ func (h *Handler) AdminBackendsEditHandler(w http.ResponseWriter, r *http.Reques
 	envMappings := strings.TrimSpace(r.FormValue("env_mappings"))
 	toolHints := strings.TrimSpace(r.FormValue("tool_hints"))
 	enabled := r.FormValue("enabled") == "on"
+	selfReporting := r.FormValue("self_reporting") == "on"
 
 	// Validate inputs
 	if id == "" || command == "" {
@@ -263,17 +270,18 @@ func (h *Handler) AdminBackendsEditHandler(w http.ResponseWriter, r *http.Reques
 	}
 
 	b := &store.Backend{
-		ID:          id,
-		Command:     command,
-		PoolSize:    minPoolSize,
-		MinPoolSize: minPoolSize,
-		MaxPoolSize: maxPoolSize,
-		ToolPrefix:  toolPrefix,
-		Env:         env,
-		EnvMappings: envMappings,
-		ToolHints:   toolHints,
-		Enabled:     enabled,
-		IsSystem:    isSystem,
+		ID:            id,
+		Command:       command,
+		PoolSize:      minPoolSize,
+		MinPoolSize:   minPoolSize,
+		MaxPoolSize:   maxPoolSize,
+		ToolPrefix:    toolPrefix,
+		Env:           env,
+		EnvMappings:   envMappings,
+		ToolHints:     toolHints,
+		Enabled:       enabled,
+		IsSystem:      isSystem,
+		SelfReporting: selfReporting,
 	}
 	if err := h.Store.UpdateBackend(b); err != nil {
 		log.Printf("web: update backend: %v", err)

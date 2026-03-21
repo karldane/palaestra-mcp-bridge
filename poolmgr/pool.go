@@ -4,37 +4,47 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 
 	"github.com/mcp-bridge/mcp-bridge/shared"
 )
 
+const (
+	protocolVersion         = "2024-11-05"
+	handshakeTimeout        = 10 * time.Second // Timeout for MCP handshake during process initialization
+	defaultSpawnChannel     = 10               // Default spawning concurrency per pool
+	defaultMaxSpawnAttempts = 2                // Max failed spawn attempts before marking backend unavailable (0 = unlimited)
+)
+
 type Pool struct {
-	Warm            chan *ManagedProcess
-	mu              sync.Mutex
-	Spawning        chan struct{}
-	Command         string
-	Env             []string
-	EnvHash         string // Hash of env for comparison
-	backoffDelay    time.Duration
-	wg              sync.WaitGroup
-	pendingRequests map[string]*PendingRequest
-	pendingMu       sync.Mutex
-	broadcastCh     chan []byte
-	broadcastMu     sync.Mutex
-	closed          bool
-	BackendID       string
-	MinPoolSize     int // Minimum warm processes to maintain
-	MaxPoolSize     int // Maximum warm processes (0 = unlimited)
-	CurrentSize     int // Current number of warm + spawning processes
-	activeCount     int // Number of processes currently in use
-	activeMu        sync.Mutex
-	dedicatedUser   string
-	lastUsed        time.Time
-	lastUsedMu      sync.Mutex
-	Instructions    string // Instructions from backend's initialize response
-	instructionsMu  sync.Mutex
+	Warm             chan *ManagedProcess
+	mu               sync.Mutex
+	Spawning         chan struct{}
+	Command          string
+	Env              []string
+	EnvHash          string // Hash of env for comparison
+	backoffDelay     time.Duration
+	wg               sync.WaitGroup
+	pendingRequests  map[string]*PendingRequest
+	pendingMu        sync.Mutex
+	broadcastCh      chan []byte
+	broadcastMu      sync.Mutex
+	closed           bool
+	BackendID        string
+	MinPoolSize      int // Minimum warm processes to maintain
+	MaxPoolSize      int // Maximum warm processes (0 = unlimited)
+	CurrentSize      int // Current number of warm + spawning processes
+	activeCount      int // Number of processes currently in use
+	activeMu         sync.Mutex
+	dedicatedUser    string
+	lastUsed         time.Time
+	lastUsedMu       sync.Mutex
+	Instructions     string // Instructions from backend's initialize response
+	instructionsMu   sync.Mutex
+	spawnAttempts    int // Number of consecutive failed spawn attempts
+	maxSpawnAttempts int // Max attempts before giving up (0 = unlimited)
 }
 
 func NewPool(backendID string, size int, command string) *Pool {
@@ -70,25 +80,29 @@ func NewPoolWithEnv(backendID string, minPoolSize, maxPoolSize int, command stri
 	if maxPoolSize == 0 {
 		maxPoolSize = minPoolSize
 	}
-	// Ensure channel capacity is at least maxPoolSize
-	channelSize := maxPoolSize
-	if channelSize < 1 {
-		channelSize = 1
+	// Ensure channel capacity is at least maxPoolSize for warm pool
+	warmChannelSize := maxPoolSize
+	if warmChannelSize < 1 {
+		warmChannelSize = 1
 	}
+	// Spawning channel controls concurrent spawn attempts (default 10)
+	spawnChannelSize := defaultSpawnChannel
 	pool := &Pool{
-		Warm:            make(chan *ManagedProcess, channelSize),
-		Spawning:        make(chan struct{}, 1),
-		Command:         command,
-		Env:             env,
-		EnvHash:         hashEnv(env),
-		backoffDelay:    100 * time.Millisecond,
-		pendingRequests: make(map[string]*PendingRequest),
-		broadcastCh:     make(chan []byte, 100),
-		BackendID:       backendID,
-		lastUsed:        time.Now(),
-		MinPoolSize:     minPoolSize,
-		MaxPoolSize:     maxPoolSize,
-		CurrentSize:     0,
+		Warm:             make(chan *ManagedProcess, warmChannelSize),
+		Spawning:         make(chan struct{}, spawnChannelSize),
+		Command:          command,
+		Env:              env,
+		EnvHash:          hashEnv(env),
+		backoffDelay:     100 * time.Millisecond,
+		pendingRequests:  make(map[string]*PendingRequest),
+		broadcastCh:      make(chan []byte, 100),
+		BackendID:        backendID,
+		lastUsed:         time.Now(),
+		MinPoolSize:      minPoolSize,
+		MaxPoolSize:      maxPoolSize,
+		CurrentSize:      0,
+		spawnAttempts:    0,
+		maxSpawnAttempts: defaultMaxSpawnAttempts,
 	}
 
 	// Spawn initial processes up to minPoolSize
@@ -126,6 +140,37 @@ func (pool *Pool) DedicatedUser() string {
 	return pool.dedicatedUser
 }
 
+// IsUnavailable returns true if the pool has exhausted its spawn attempts
+func (pool *Pool) IsUnavailable() bool {
+	pool.mu.Lock()
+	defer pool.mu.Unlock()
+	if pool.maxSpawnAttempts == 0 {
+		return false // Unlimited retries means never unavailable
+	}
+	return pool.spawnAttempts >= pool.maxSpawnAttempts
+}
+
+// ResetSpawnAttempts resets the spawn attempt counter and triggers a new spawn attempt
+// Use this to retry an unavailable backend
+func (pool *Pool) ResetSpawnAttempts() {
+	pool.mu.Lock()
+	reset := pool.spawnAttempts >= pool.maxSpawnAttempts
+	pool.spawnAttempts = 0
+	pool.mu.Unlock()
+
+	if reset {
+		shared.Infof("Pool %s: reset spawn attempts, triggering retry", pool.BackendID)
+		pool.wg.Add(1)
+		go pool.spawnAndHandshake()
+	}
+}
+
+// ForceReconnect resets spawn attempts and triggers a new spawn attempt.
+// Use this when user tries to use an unavailable backend to attempt immediate reconnect.
+func (pool *Pool) ForceReconnect() {
+	pool.ResetSpawnAttempts()
+}
+
 // EnvMatches checks if the given env matches the pool's current env
 func (pool *Pool) EnvMatches(env []string) bool {
 	pool.mu.Lock()
@@ -135,11 +180,17 @@ func (pool *Pool) EnvMatches(env []string) bool {
 
 func (pool *Pool) responseDispatcher() {
 	for data := range pool.broadcastCh {
-		shared.Debugf("responseDispatcher received data: %s", string(data))
+		// Log truncated version to avoid flooding logs with large responses
+		const maxLogLen = 200
+		logData := string(data)
+		if len(logData) > maxLogLen {
+			logData = logData[:maxLogLen] + "...[truncated]"
+		}
+		shared.Debugf("responseDispatcher received data: %s", logData)
 		pool.pendingMu.Lock()
 		var resp JSONRPCResponse
 		if err := json.Unmarshal(data, &resp); err != nil {
-			shared.Debugf("responseDispatcher failed to unmarshal: %v, data: %s", err, string(data))
+			shared.Debugf("responseDispatcher failed to unmarshal: %v", err)
 		} else if resp.ID != nil {
 			id := fmt.Sprintf("%v", resp.ID)
 			shared.Debugf("responseDispatcher looking for request id=%s, pending=%d", id, len(pool.pendingRequests))
@@ -155,7 +206,7 @@ func (pool *Pool) responseDispatcher() {
 				shared.Debugf("responseDispatcher no pending request for id=%s", id)
 			}
 		} else {
-			shared.Debugf("responseDispatcher received notification (no id): %s", string(data))
+			shared.Debugf("responseDispatcher received notification (no id)")
 		}
 		pool.pendingMu.Unlock()
 	}
@@ -198,8 +249,14 @@ func (pool *Pool) spawnAndHandshake() {
 		shared.Errorf("failed to spawn process: %v", err)
 		if !pool.IsClosed() {
 			pool.mu.Lock()
+			pool.spawnAttempts++
 			delay := pool.backoffDelay
 			pool.backoffDelay = min(pool.backoffDelay*2, 5*time.Second)
+			if pool.maxSpawnAttempts > 0 && pool.spawnAttempts >= pool.maxSpawnAttempts {
+				shared.Errorf("Pool %s: spawn failed %d times - marking backend unavailable", pool.BackendID, pool.spawnAttempts)
+				pool.mu.Unlock()
+				return
+			}
 			pool.mu.Unlock()
 			time.AfterFunc(delay, func() {
 				pool.wg.Add(1)
@@ -236,15 +293,45 @@ func (pool *Pool) spawnAndHandshake() {
 		pool.mu.Unlock()
 		pool.Warm <- proc
 	} else {
-		// Handshake failed - don't add to warm pool, process will be cleaned up
-		shared.Errorf("MCP handshake failed for backend %s, killing process and retrying", pool.BackendID)
-		proc.Kill()
-		// Retry spawning after a delay
-		if !pool.IsClosed() {
+		// Handshake failed - capture stderr and don't add to warm pool
+		proc.mu.Lock()
+		stderrOutput := proc.StderrBuf.String()
+		proc.mu.Unlock()
+
+		// Check if process exited immediately (likely config error)
+		if proc.Cmd.ProcessState != nil && proc.Cmd.ProcessState.Exited() {
+			if stderrOutput != "" {
+				shared.Errorf("MCP handshake failed for backend %s - process exited immediately with error: %s", pool.BackendID, strings.TrimSpace(stderrOutput))
+			} else {
+				shared.Errorf("MCP handshake failed for backend %s - process exited immediately (no stderr output)", pool.BackendID)
+			}
+			proc.Kill()
+			// Don't retry indefinitely for immediate exit errors
+			// Reset backoff for next successful startup
 			pool.mu.Lock()
-			delay := pool.backoffDelay
-			pool.backoffDelay = min(pool.backoffDelay*2, 5*time.Second)
+			pool.backoffDelay = 100 * time.Millisecond
 			pool.mu.Unlock()
+			return
+		}
+
+		// Process didn't exit immediately - handshake timeout (process hanging)
+		proc.Kill()
+
+		// Track failed attempts
+		pool.mu.Lock()
+		pool.spawnAttempts++
+		if pool.maxSpawnAttempts > 0 && pool.spawnAttempts >= pool.maxSpawnAttempts {
+			shared.Errorf("MCP handshake failed for backend %s after %d attempts - stopping retry (backend unavailable)", pool.BackendID, pool.spawnAttempts)
+			pool.mu.Unlock()
+			return
+		}
+
+		shared.Errorf("MCP handshake failed for backend %s (attempt %d), retrying...", pool.BackendID, pool.spawnAttempts)
+		delay := pool.backoffDelay
+		pool.backoffDelay = min(pool.backoffDelay*2, 5*time.Second)
+		pool.mu.Unlock()
+
+		if !pool.IsClosed() {
 			time.AfterFunc(delay, func() {
 				pool.wg.Add(1)
 				go pool.spawnAndHandshake()
@@ -252,6 +339,14 @@ func (pool *Pool) spawnAndHandshake() {
 		}
 		return
 	}
+
+	pool.mu.Lock()
+	// Reset counters on successful spawn
+	pool.spawnAttempts = 0
+	pool.backoffDelay = 100 * time.Millisecond
+	pool.mu.Unlock()
+	// Small delay to allow server to fully initialize after handshake
+	time.Sleep(100 * time.Millisecond)
 
 	pool.mu.Lock()
 	pool.backoffDelay = 100 * time.Millisecond
@@ -313,9 +408,9 @@ func (pool *Pool) performMCPHandshake(proc *ManagedProcess) bool {
 				}
 			}
 		}
-	case <-time.After(5 * time.Second):
+	case <-time.After(handshakeTimeout):
 		pool.UnregisterRequest(initID)
-		shared.Errorf("MCP handshake timeout for backend %s after 5 seconds", pool.BackendID)
+		shared.Errorf("MCP handshake timeout for backend %s after %v", pool.BackendID, handshakeTimeout)
 		return false
 	}
 
@@ -373,8 +468,14 @@ func (pool *Pool) WaitForWarm(timeout time.Duration) bool {
 // WaitForWarmWithMax tries to acquire a warm process. If MaxPoolSize is set and all
 // processes are currently in use (CurrentSize >= MaxPoolSize), it returns immediately
 // with an error indicating max is reached. Otherwise it waits up to the timeout for
-// a process to become available.
+// a process to become available. If the pool is unavailable (circuit breaker open),
+// it returns immediately with a "backend unavailable" error.
 func (pool *Pool) WaitForWarmWithMax(timeout time.Duration) (*ManagedProcess, error) {
+	// Fast path: if backend is unavailable, return immediately
+	if pool.IsUnavailable() {
+		return nil, fmt.Errorf("backend unavailable: %s", pool.BackendID)
+	}
+
 	maxPoolSize := pool.MaxPoolSize
 
 	// If we have a max and we're at or above it, check if there's a process available
@@ -402,12 +503,20 @@ func (pool *Pool) WaitForWarmWithMax(timeout time.Duration) (*ManagedProcess, er
 	// Wait for a process to become available
 	deadline := time.Now().Add(timeout)
 	for time.Now().Before(deadline) {
+		// Check circuit breaker status during wait
+		if pool.IsUnavailable() {
+			return nil, fmt.Errorf("backend unavailable: %s", pool.BackendID)
+		}
 		select {
 		case proc := <-pool.Warm:
 			return proc, nil
 		default:
 		}
 		time.Sleep(50 * time.Millisecond)
+	}
+	// Final check: if backend became unavailable during the wait, return unavailable error
+	if pool.IsUnavailable() {
+		return nil, fmt.Errorf("backend unavailable: %s", pool.BackendID)
 	}
 	return nil, fmt.Errorf("timeout waiting for warm process")
 }

@@ -1,0 +1,223 @@
+{{define "admin_ratelimits.html"}}
+{{template "head" .}}
+{{template "nav" .}}
+<div class="container">
+  <h1>Rate Limits</h1>
+  
+  {{template "alerts" .}}
+
+  <div class="card">
+    <h2>Backend Configurations</h2>
+    <p class="text-muted">Default rate limit settings per backend. Users inherit these unless they have overrides.</p>
+    <table>
+      <thead>
+        <tr>
+          <th>Backend</th>
+          <th>Risk Capacity</th>
+          <th>Risk Refill</th>
+          <th>Resource Capacity</th>
+          <th>Resource Refill</th>
+          <th>Actions</th>
+        </tr>
+      </thead>
+      <tbody>
+        {{range .Extra.Configs}}
+        <tr>
+          <td><span class="mono">{{.BackendID}}</span></td>
+          <td>{{.RiskCapacity}} tokens</td>
+          <td>{{.RiskRefill}}/min</td>
+          <td>{{.ResCapacity}} tokens</td>
+          <td>{{.ResRefill}}/min</td>
+          <td>
+            <button class="btn btn-sm btn-secondary" onclick="showEditConfig('{{.BackendID}}', {{.RiskCapacity}}, {{.RiskRefill}}, {{.ResCapacity}}, {{.ResRefill}})">Edit</button>
+          </td>
+        </tr>
+        {{else}}
+        <tr>
+          <td colspan="6" class="text-muted">No backend configurations found</td>
+        </tr>
+        {{end}}
+      </tbody>
+    </table>
+  </div>
+
+  <div class="card">
+    <h2>Active User Buckets</h2>
+    <p class="text-muted">Current state of all rate limit buckets. Buckets refill over time based on their configured rates.</p>
+    
+    <div style="margin-bottom: 1rem;">
+      <form method="GET" style="display: flex; gap: 0.5rem; align-items: center;">
+        <label style="margin: 0;">Filter:</label>
+        <input type="text" name="user_id" placeholder="User ID" value="{{.Extra.FilterUser}}" style="width: 200px; margin: 0;">
+        <input type="text" name="backend_id" placeholder="Backend ID" value="{{.Extra.FilterBackend}}" style="width: 150px; margin: 0;">
+        <button type="submit" class="btn btn-sm btn-secondary">Filter</button>
+        <a href="/web/admin/ratelimits" class="btn btn-sm btn-secondary">Clear</a>
+      </form>
+    </div>
+
+    <table>
+      <thead>
+        <tr>
+          <th>User</th>
+          <th>Backend</th>
+          <th>Bucket Type</th>
+          <th>Current / Capacity</th>
+          <th>Usage</th>
+          <th>Refill Rate</th>
+          <th>Actions</th>
+        </tr>
+      </thead>
+      <tbody>
+        {{range .Data}}
+        <tr>
+          <td><span class="mono">{{.UserID}}</span></td>
+          <td><span class="mono">{{.BackendID}}</span></td>
+          <td>
+            {{if eq .BucketType "risk"}}
+            <span class="badge badge-user">Risk</span>
+            {{else}}
+            <span class="badge badge-admin">Resource</span>
+            {{end}}
+          </td>
+          <td>{{.CurrentLevel}} / {{.Capacity}}</td>
+          <td>
+            <div style="display: flex; align-items: center; gap: 0.5rem;">
+              <div style="width: 100px; height: 8px; background: var(--border-color); border-radius: 4px; overflow: hidden;">
+                <div style="width: {{.PercentageUsed}}%; height: 100%; background: {{if gt .PercentageUsed 80}}var(--btn-danger){{else if gt .PercentageUsed 50}}#f59e0b{{else}}var(--btn-primary){{end}};"></div>
+              </div>
+              <span>{{.PercentageUsed}}%</span>
+            </div>
+          </td>
+          <td>{{.RefillRate}}/min</td>
+          <td>
+            <button class="btn btn-sm btn-danger" onclick="resetUserBucket('{{.UserID}}', '{{.BackendID}}', '{{.BucketType}}')">Reset</button>
+          </td>
+        </tr>
+        {{else}}
+        <tr>
+          <td colspan="7" class="text-muted">No active buckets. Buckets are created when users make tool calls.</td>
+        </tr>
+        {{end}}
+      </tbody>
+    </table>
+  </div>
+
+  <div class="card">
+    <h2>Add New Backend Configuration</h2>
+    <form method="POST" action="/web/admin/ratelimits/config">
+      <div class="grid-2">
+        <div class="form-row">
+          <label>Backend ID</label>
+          <input type="text" name="backend_id" placeholder="e.g., slack, github" required>
+        </div>
+      </div>
+      <div class="grid-2">
+        <div class="form-row">
+          <label>Risk Capacity (tokens)</label>
+          <input type="number" name="risk_capacity" value="100" min="1">
+          <small class="text-muted">Max risk tokens per user/backend</small>
+        </div>
+        <div class="form-row">
+          <label>Risk Refill Rate (per min)</label>
+          <input type="number" name="risk_refill" value="20" min="1">
+          <small class="text-muted">How fast risk tokens refill</small>
+        </div>
+      </div>
+      <div class="grid-2">
+        <div class="form-row">
+          <label>Resource Capacity (tokens)</label>
+          <input type="number" name="resource_capacity" value="200" min="1">
+          <small class="text-muted">Max resource tokens per user/backend</small>
+        </div>
+        <div class="form-row">
+          <label>Resource Refill Rate (per min)</label>
+          <input type="number" name="resource_refill" value="40" min="1">
+          <small class="text-muted">How fast resource tokens refill</small>
+        </div>
+      </div>
+      <button type="submit" class="btn btn-primary">Create Configuration</button>
+    </form>
+  </div>
+</div>
+
+<div id="editModal" style="display: none; position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: rgba(0,0,0,0.5); z-index: 1000; align-items: center; justify-content: center;">
+  <div style="background: var(--bg-secondary); padding: 2rem; border-radius: 8px; max-width: 500px; width: 90%;">
+    <h2 style="margin-top: 0;">Edit Rate Limit Configuration</h2>
+    <form method="POST" action="/web/admin/ratelimits/config">
+      <input type="hidden" name="backend_id" id="edit_backend_id">
+      <div class="grid-2">
+        <div class="form-row">
+          <label>Risk Capacity</label>
+          <input type="number" name="risk_capacity" id="edit_risk_capacity" min="1">
+        </div>
+        <div class="form-row">
+          <label>Risk Refill Rate (per min)</label>
+          <input type="number" name="risk_refill" id="edit_risk_refill" min="1">
+        </div>
+      </div>
+      <div class="grid-2">
+        <div class="form-row">
+          <label>Resource Capacity</label>
+          <input type="number" name="resource_capacity" id="edit_resource_capacity" min="1">
+        </div>
+        <div class="form-row">
+          <label>Resource Refill Rate (per min)</label>
+          <input type="number" name="resource_refill" id="edit_resource_refill" min="1">
+        </div>
+      </div>
+      <div style="display: flex; gap: 0.5rem; margin-top: 1rem;">
+        <button type="submit" class="btn btn-primary">Save</button>
+        <button type="button" class="btn btn-secondary" onclick="closeEditModal()">Cancel</button>
+      </div>
+    </form>
+  </div>
+</div>
+
+<script>
+function showEditConfig(backendId, riskCap, riskRefill, resCap, resRefill) {
+  document.getElementById('edit_backend_id').value = backendId;
+  document.getElementById('edit_risk_capacity').value = riskCap;
+  document.getElementById('edit_risk_refill').value = riskRefill;
+  document.getElementById('edit_resource_capacity').value = resCap;
+  document.getElementById('edit_resource_refill').value = resRefill;
+  document.getElementById('editModal').style.display = 'flex';
+}
+
+function closeEditModal() {
+  document.getElementById('editModal').style.display = 'none';
+}
+
+function resetUserBucket(userId, backendId, bucketType) {
+  if (!confirm('Reset ' + bucketType + ' bucket for user ' + userId + ' on ' + backendId + '? This will restore it to full capacity.')) {
+    return;
+  }
+  
+  const form = document.createElement('form');
+  form.method = 'POST';
+  form.action = '/web/admin/ratelimits/reset';
+  
+  const userInput = document.createElement('input');
+  userInput.type = 'hidden';
+  userInput.name = 'user_id';
+  userInput.value = userId;
+  form.appendChild(userInput);
+  
+  const backendInput = document.createElement('input');
+  backendInput.type = 'hidden';
+  backendInput.name = 'backend_id';
+  backendInput.value = backendId;
+  form.appendChild(backendInput);
+  
+  document.body.appendChild(form);
+  form.submit();
+}
+
+// Close modal on outside click
+document.getElementById('editModal').addEventListener('click', function(e) {
+  if (e.target === this) {
+    closeEditModal();
+  }
+});
+</script>
+{{template "foot" .}}
+{{end}}

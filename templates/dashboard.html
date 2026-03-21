@@ -1,45 +1,161 @@
 {{define "dashboard.html"}}
 {{template "head" .}}
 {{template "nav" .}}
+<style>
+.stat-card {
+  background: white;
+  border: 1px solid #e5e7eb;
+  border-radius: 8px;
+  padding: 1.25rem;
+  text-align: center;
+}
+.stat-card .stat-value {
+  font-size: 2rem;
+  font-weight: 700;
+  color: #1f2937;
+}
+.stat-card .stat-label {
+  font-size: 0.875rem;
+  color: #6b7280;
+  margin-top: 0.25rem;
+}
+.backend-card {
+  border: 1px solid #e5e7eb;
+  border-radius: 8px;
+  padding: 1rem;
+  margin-bottom: 0.75rem;
+  display: grid;
+  grid-template-columns: 2fr 1fr auto;
+  gap: 1rem;
+  align-items: start;
+  min-height: 80px;
+}
+.backend-info {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+}
+.backend-title {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-weight: 600;
+  font-size: 1.1rem;
+}
+.backend-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  font-size: 0.85rem;
+}
+.backend-stats {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  justify-content: flex-start;
+}
+.backend-stat {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-size: 0.9rem;
+}
+.backend-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  min-width: 120px;
+}
+</style>
 <div class="container">
   <h1>Dashboard</h1>
   {{template "alerts" .}}
 
-  {{if .Data}}
-  <div class="card">
-    <h2>Available Backends</h2>
-    <table>
-      <thead>
-        <tr>
-          <th>Backend</th>
-          <th>Command</th>
-          <th>Your Configured Tokens</th>
-          <th></th>
-        </tr>
-      </thead>
-      <tbody>
-        {{range .Data}}
-        <tr>
-          <td><strong>{{.Backend.ID}}</strong></td>
-          <td class="mono">{{.Backend.Command}}</td>
-          <td>
-            {{if .ConfiguredKeys}}
-              {{range .ConfiguredKeys}}<span class="badge badge-enabled">{{.}}</span> {{end}}
-            {{else}}
-              <span class="text-muted">None configured</span>
-            {{end}}
-          </td>
-          <td><a href="/web/tokens?backend={{.Backend.ID}}" class="btn btn-sm btn-secondary">Manage Tokens</a></td>
-        </tr>
-        {{end}}
-      </tbody>
-    </table>
-  </div>
-  {{else}}
-  <div class="card">
-    <p class="text-muted">No enabled backends configured. Contact an administrator.</p>
+  {{if .Extra}}
+  <div style="display:grid;grid-template-columns:repeat(auto-fit, minmax(150px, 1fr));gap:1rem;margin-bottom:1.5rem;">
+    <div class="stat-card">
+      <div class="stat-value">{{.Extra.BackendCount}}</div>
+      <div class="stat-label">Backends</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-value">{{.Extra.TotalPools}}</div>
+      <div class="stat-label">Active Pools</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-value">{{.Extra.TotalWarm}}</div>
+      <div class="stat-label">Warm Processes</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-value">{{.Extra.TotalActive}}</div>
+      <div class="stat-label">In Use</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-value">{{.Extra.TotalMemory}}</div>
+      <div class="stat-label">Memory</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-value">{{.Extra.TokenCount}}</div>
+      <div class="stat-label">Tokens</div>
+    </div>
   </div>
   {{end}}
+
+  <div class="card">
+    <h2>Your Backends</h2>
+    {{if .Data}}
+    {{range .Data}}
+    <div class="backend-card">
+      <div class="backend-info">
+        <div class="backend-title">
+          {{.Backend.ID}}
+          {{if .Backend.ToolPrefix}}<span class="badge badge-user">{{.Backend.ToolPrefix}}</span>{{end}}
+        </div>
+        <div class="backend-meta">
+          {{if .ConfiguredKeys}}
+            {{range .ConfiguredKeys}}<span class="badge badge-enabled">{{.}}</span> {{end}}
+          {{else}}
+            <span class="text-muted">No tokens configured</span>
+          {{end}}
+        </div>
+      </div>
+      <div class="backend-stats">
+        {{if .Pool}}
+          <div class="backend-stat">
+            <strong>Warm:</strong>
+            <span>{{.Pool.WarmCount}}</span>
+          </div>
+          <div class="backend-stat">
+            <strong>Active:</strong>
+            <span>{{.Pool.CurrentSize}}</span>
+          </div>
+          <div class="backend-stat">
+            <strong>Memory:</strong>
+            <span>{{formatBytes .Pool.MemoryBytes}}</span>
+          </div>
+          {{if .Pool.Unavailable}}
+          <div class="backend-stat">
+            <span class="badge badge-disabled">Unavailable</span>
+          </div>
+          {{end}}
+        {{else}}
+          <div class="backend-stat">
+            <span class="text-muted">Pool not started</span>
+          </div>
+        {{end}}
+      </div>
+      <div class="backend-actions">
+        {{if .ConfiguredKeys}}
+        <a href="/web/tokens?backend={{.Backend.ID}}" class="btn btn-sm btn-secondary" style="width:100%;">Manage Tokens</a>
+        {{else}}
+        <a href="/web/tokens?backend={{.Backend.ID}}" class="btn btn-sm btn-primary" style="width:100%;">Add Tokens</a>
+        {{end}}
+      </div>
+    </div>
+    {{end}}
+    {{else}}
+    <p class="text-muted">No enabled backends configured. Contact an administrator.</p>
+    {{end}}
+  </div>
 </div>
 {{template "foot" .}}
 {{end}}

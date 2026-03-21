@@ -1,0 +1,80 @@
+{{define "admin_enforcer_policies_edit.html"}}
+{{template "head" .}}
+{{template "nav" .}}
+<div class="container">
+  <h1>Edit Policy</h1>
+  
+  <div class="card">
+    <form method="POST" action="/web/admin/enforcer/policies/update">
+      <input type="hidden" name="id" value="{{.Policy.ID}}">
+      
+      <div class="form-row">
+        <label for="name">Name</label>
+        <input type="text" id="name" name="name" value="{{.Policy.Name}}" required>
+      </div>
+      
+      <div class="form-row">
+        <label for="description">Description</label>
+        <textarea id="description" name="description" rows="2">{{.Policy.Description}}</textarea>
+      </div>
+      
+      <div class="form-row">
+        <label for="scope">Scope</label>
+        <select id="scope" name="scope">
+          <option value="global" {{if eq .Policy.Scope "global"}}selected{{end}}>Global (all tools)</option>
+          <option value="backend" {{if eq .Policy.Scope "backend"}}selected{{end}}>Backend-specific</option>
+          <option value="tool" {{if eq .Policy.Scope "tool"}}selected{{end}}>Tool-specific</option>
+        </select>
+      </div>
+      
+      <div class="form-row">
+        <label for="expression">CEL Expression</label>
+        <textarea id="expression" name="expression" rows="4" required>{{.Policy.Expression}}</textarea>
+        <small class="text-muted">CEL expression that evaluates to true/false. Variables: user.*, tool.*, safety.*, system.*</small>
+      </div>
+      
+      <div class="form-row">
+        <label for="action">Action</label>
+        <select id="action" name="action">
+          <option value="DENY" {{if eq .Policy.Action "DENY"}}selected{{end}}>DENY - Block the operation</option>
+          <option value="WARN" {{if eq .Policy.Action "WARN"}}selected{{end}}>WARN - Require user confirmation</option>
+          <option value="PENDING_APPROVAL" {{if eq .Policy.Action "PENDING_APPROVAL"}}selected{{end}}>PENDING_APPROVAL - Queue for admin approval</option>
+          <option value="ALLOW" {{if eq .Policy.Action "ALLOW"}}selected{{end}}>ALLOW - Permit (for override policies)</option>
+        </select>
+      </div>
+      
+      <div class="form-row">
+        <label for="severity">Severity</label>
+        <select id="severity" name="severity">
+          <option value="CRITICAL" {{if eq .Policy.Severity "CRITICAL"}}selected{{end}}>CRITICAL</option>
+          <option value="HIGH" {{if eq .Policy.Severity "HIGH"}}selected{{end}}>HIGH</option>
+          <option value="MEDIUM" {{if eq .Policy.Severity "MEDIUM"}}selected{{end}}>MEDIUM</option>
+          <option value="LOW" {{if eq .Policy.Severity "LOW"}}selected{{end}}>LOW</option>
+        </select>
+      </div>
+      
+      <div class="form-row">
+        <label for="message">User Message</label>
+        <input type="text" id="message" name="message" value="{{.Policy.Message}}">
+      </div>
+      
+      <div class="form-row">
+        <label for="priority">Priority (lower = higher priority)</label>
+        <input type="number" id="priority" name="priority" value="{{.Policy.Priority}}" min="1" max="1000">
+      </div>
+      
+      <div class="form-row">
+        <label>
+          <input type="checkbox" name="enabled" {{if .Policy.Enabled}}checked{{end}}> Enabled
+        </label>
+      </div>
+      
+      <div style="display:flex;gap:0.5rem;">
+        <button type="submit" class="btn btn-primary">Save Changes</button>
+        <a href="/web/admin/enforcer/policies" class="btn btn-secondary">Cancel</a>
+      </div>
+    </form>
+  </div>
+</div>
+{{template "foot" .}}
+{{end}}

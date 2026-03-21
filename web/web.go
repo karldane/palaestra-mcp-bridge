@@ -10,6 +10,7 @@ import (
 	"html/template"
 	"net/http"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/mcp-bridge/mcp-bridge/enforcer"
@@ -52,6 +53,19 @@ func NewHandler(st *store.Store, templateDir string) (*Handler, error) {
 			b, _ := json.Marshal(v)
 			return template.JS(b)
 		},
+		"join": func(elems []string, sep string) string {
+			return strings.Join(elems, sep)
+		},
+		"formatBytes": func(bytes uint64) string {
+			if bytes == 0 {
+				return "0 B"
+			}
+			mb := float64(bytes) / 1024 / 1024
+			if mb > 1024 {
+				return fmt.Sprintf("%.1f GB", mb/1024)
+			}
+			return fmt.Sprintf("%.0f MB", mb)
+		},
 	})
 
 	pattern := filepath.Join(templateDir, "*.html")
@@ -92,18 +106,34 @@ func (h *Handler) Register(mux *http.ServeMux) {
 	mux.Handle("/web/admin/oauth-clients/create", h.requireAdmin(http.HandlerFunc(h.AdminOAuthClientsCreateHandler)))
 	mux.Handle("/web/admin/oauth-clients/delete", h.requireAdmin(http.HandlerFunc(h.AdminOAuthClientsDeleteHandler)))
 
-	// Enforcer (admin only)
-	if h.Enforcer != nil {
-		enforcerHandler := NewEnforcerHandler(h.Enforcer, h.Templates)
-		mux.Handle("/web/admin/enforcer/queue", h.requireAdmin(http.HandlerFunc(enforcerHandler.QueuePageHandler)))
-		mux.Handle("/web/admin/enforcer/api/approvals", h.requireAdmin(http.HandlerFunc(enforcerHandler.ListPendingApprovals)))
-		mux.Handle("/web/admin/enforcer/api/approval-status", h.requireAdmin(http.HandlerFunc(enforcerHandler.GetApprovalStatus)))
-		mux.Handle("/web/admin/enforcer/api/approve", h.requireAdmin(http.HandlerFunc(enforcerHandler.ApproveRequest)))
-		mux.Handle("/web/admin/enforcer/api/deny", h.requireAdmin(http.HandlerFunc(enforcerHandler.DenyRequest)))
-		mux.Handle("/web/admin/enforcer/api/kill-switch/enable", h.requireAdmin(http.HandlerFunc(enforcerHandler.EnableKillSwitch)))
-		mux.Handle("/web/admin/enforcer/api/kill-switch/disable", h.requireAdmin(http.HandlerFunc(enforcerHandler.DisableKillSwitch)))
-		mux.Handle("/web/admin/enforcer/events", h.requireAdmin(http.HandlerFunc(enforcerHandler.SSEHandler)))
-	}
+	// Enforcer admin routes (always registered; handlers guard against nil enforcer)
+	enforcerHandler := NewEnforcerHandler(h.Enforcer, h.Templates, h.Store)
+	mux.Handle("/web/admin/enforcer/queue", h.requireAdmin(http.HandlerFunc(enforcerHandler.QueuePageHandler)))
+	mux.Handle("/web/admin/enforcer/policies", h.requireAdmin(http.HandlerFunc(enforcerHandler.PoliciesPageHandler)))
+	mux.Handle("/web/admin/enforcer/policies/new", h.requireAdmin(http.HandlerFunc(enforcerHandler.PoliciesNewPageHandler)))
+	mux.Handle("/web/admin/enforcer/policies/create", h.requireAdmin(http.HandlerFunc(enforcerHandler.PoliciesCreateHandler)))
+	mux.Handle("/web/admin/enforcer/policies/edit", h.requireAdmin(http.HandlerFunc(enforcerHandler.PoliciesEditPageHandler)))
+	mux.Handle("/web/admin/enforcer/policies/update", h.requireAdmin(http.HandlerFunc(enforcerHandler.PoliciesUpdateHandler)))
+	mux.Handle("/web/admin/enforcer/policies/delete", h.requireAdmin(http.HandlerFunc(enforcerHandler.PoliciesDeleteHandler)))
+	mux.Handle("/web/admin/enforcer/api/policies", h.requireAdmin(http.HandlerFunc(enforcerHandler.ListPolicies)))
+	mux.Handle("/web/admin/enforcer/api/approvals", h.requireAdmin(http.HandlerFunc(enforcerHandler.ListPendingApprovals)))
+	mux.Handle("/web/admin/enforcer/api/approval-status", h.requireAdmin(http.HandlerFunc(enforcerHandler.GetApprovalStatus)))
+	mux.Handle("/web/admin/enforcer/api/approve", h.requireAdmin(http.HandlerFunc(enforcerHandler.ApproveRequest)))
+	mux.Handle("/web/admin/enforcer/api/deny", h.requireAdmin(http.HandlerFunc(enforcerHandler.DenyRequest)))
+	mux.Handle("/web/admin/enforcer/kill-switch/enable", h.requireAdmin(http.HandlerFunc(enforcerHandler.EnableKillSwitch)))
+	mux.Handle("/web/admin/enforcer/kill-switch/disable", h.requireAdmin(http.HandlerFunc(enforcerHandler.DisableKillSwitch)))
+	mux.Handle("/web/admin/enforcer/events", h.requireAdmin(http.HandlerFunc(enforcerHandler.SSEHandler)))
+	mux.Handle("/web/admin/enforcer/profiles", h.requireAdmin(http.HandlerFunc(enforcerHandler.ToolProfilesPageHandler)))
+	mux.Handle("/web/admin/enforcer/profiles/backend", h.requireAdmin(http.HandlerFunc(enforcerHandler.BackendToolProfilesHandler)))
+	mux.Handle("/web/admin/enforcer/profiles/overrides", h.requireAdmin(http.HandlerFunc(enforcerHandler.OverridesPageHandler)))
+	mux.Handle("/web/admin/enforcer/profiles/override/create", h.requireAdmin(http.HandlerFunc(enforcerHandler.OverrideCreateHandler)))
+	mux.Handle("/web/admin/enforcer/profiles/override/delete", h.requireAdmin(http.HandlerFunc(enforcerHandler.OverrideDeleteHandler)))
+
+	// Rate limit admin routes
+	rateLimitHandler := NewRateLimitHandler(h.Enforcer, h.Templates, h.Store)
+	mux.Handle("/web/admin/ratelimits", h.requireAdmin(http.HandlerFunc(rateLimitHandler.ListRateLimits)))
+	mux.Handle("/web/admin/ratelimits/config", h.requireAdmin(http.HandlerFunc(rateLimitHandler.UpdateRateLimitConfig)))
+	mux.Handle("/web/admin/ratelimits/reset", h.requireAdmin(http.HandlerFunc(rateLimitHandler.ResetUserBuckets)))
 }
 
 // ---------- Context helpers ----------

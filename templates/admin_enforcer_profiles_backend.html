@@ -1,0 +1,85 @@
+{{define "admin_enforcer_profiles_backend.html"}}
+{{template "head" .}}
+{{template "nav" .}}
+<div class="container">
+  <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:1rem;">
+    <h1>Tool Profiles: {{.BackendID}}</h1>
+    <a href="/web/admin/enforcer/profiles" class="btn btn-secondary">← Back to Backends</a>
+  </div>
+
+  <div class="card">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:1rem;">
+      <h2 style="margin:0;">Tools ({{.ProfileCount}})</h2>
+      <div>
+        <a href="/web/admin/enforcer/profiles/overrides?backend_id={{.BackendID | js}}" class="btn btn-sm btn-secondary">View Overrides for {{.BackendID}}</a>
+        <a href="/web/admin/enforcer/profiles/overrides" class="btn btn-sm btn-secondary">All Overrides</a>
+      </div>
+    </div>
+
+    {{if .Profiles}}
+    <table>
+      <thead>
+        <tr>
+          <th>Tool</th>
+          <th>Risk</th>
+          <th>Effective</th>
+          <th>Impact</th>
+          <th>Cost</th>
+          <th>HITL</th>
+          <th>PII</th>
+          <th>Idemp</th>
+          <th>Actions</th>
+        </tr>
+      </thead>
+      <tbody>
+        {{range .Profiles}}
+        <tr>
+          <td><span class="mono">{{.ToolName}}</span></td>
+          <td>
+            {{if eq .RiskLevel "critical"}}
+            <span class="badge badge-disabled">CRITICAL</span>
+            {{else if eq .RiskLevel "high"}}
+            <span class="badge badge-disabled">HIGH</span>
+            {{else if eq .RiskLevel "medium"}}
+            <span class="badge badge-user">MEDIUM</span>
+            {{else}}
+            <span class="badge badge-enabled">LOW</span>
+            {{end}}
+          </td>
+          <td>
+            {{if .HasOverride}}
+            <span class="badge badge-admin">OVERRIDE</span>
+            {{else if ne .EffectiveRisk .RiskLevel}}
+            <span class="badge badge-enabled">{{.EffectiveRisk}}</span>
+            {{else}}
+            <span class="text-muted">-</span>
+            {{end}}
+          </td>
+          <td><span class="badge badge-admin">{{.ImpactScope}}</span></td>
+          <td>{{.ResourceCost}}</td>
+          <td>{{if .RequiresHITL}}<span class="badge badge-admin">Yes</span>{{else}}<span class="text-muted">No</span>{{end}}</td>
+          <td>{{if .PIIExposure}}<span class="badge badge-disabled">Yes</span>{{else}}<span class="text-muted">No</span>{{end}}</td>
+          <td>{{if .Idempotent}}<span class="badge badge-enabled">Yes</span>{{else}}<span class="text-muted">No</span>{{end}}</td>
+          <td>
+            {{if .Override}}
+            <form method="POST" action="/web/admin/enforcer/profiles/override/delete" style="display:inline;">
+              <input type="hidden" name="tool_name" value="{{.ToolName}}">
+              <input type="hidden" name="backend_id" value="{{$.BackendID}}">
+              <button type="submit" class="btn btn-sm btn-danger" onclick="return confirm('Delete override for {{.ToolName}}?')">Remove Override</button>
+            </form>
+            {{end}}
+            <a href="/web/admin/enforcer/profiles/overrides?tool_name={{.ToolName | js}}&backend_id={{$.BackendID | js}}" class="btn btn-sm btn-primary">
+              {{if .Override}}Edit Override{{else}}Add Override{{end}}
+            </a>
+          </td>
+        </tr>
+        {{end}}
+      </tbody>
+    </table>
+    {{else}}
+    <p class="text-muted">No tool profiles found for this backend. The backend may not be self-reporting or hasn't been scanned yet.</p>
+    {{end}}
+  </div>
+</div>
+{{template "foot" .}}
+{{end}}
