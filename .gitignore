@@ -36,3 +36,5 @@ docker_logs
 AGENTS.md
 dev
 TODO.md
+.env
+.env~
