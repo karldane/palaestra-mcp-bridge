@@ -33,3 +33,5 @@ docker_logs
 .env
 /tags
 *.tdy.bak
+AGENTS.md
+dev

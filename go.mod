@@ -4,6 +4,7 @@ go 1.25
 
 require (
 	github.com/google/cel-go v0.21.0
+	github.com/google/uuid v1.6.0
 	github.com/mark3labs/mcp-go v0.45.0
 	github.com/mattn/go-sqlite3 v1.14.34
 	github.com/shirou/gopsutil/v3 v3.24.5
@@ -16,7 +17,6 @@ require (
 	github.com/bahlo/generic-list-go v0.2.0 // indirect
 	github.com/buger/jsonparser v1.1.1 // indirect
 	github.com/go-ole/go-ole v1.2.6 // indirect
-	github.com/google/uuid v1.6.0 // indirect
 	github.com/invopop/jsonschema v0.13.0 // indirect
 	github.com/lufia/plan9stats v0.0.0-20211012122336-39d0f177ccd0 // indirect
 	github.com/mailru/easyjson v0.7.7 // indirect
