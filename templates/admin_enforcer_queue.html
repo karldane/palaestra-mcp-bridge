@@ -3,58 +3,182 @@
 {{template "nav" .}}
 <div class="container">
   <div class="header-row">
-    <h1>Approval Queue</h1>
-    <span class="badge {{if eq .Count 0}}badge-enabled{{else}}badge-admin{{end}}" id="pending-count">{{.Count}} pending</span>
+    <h1>Approval Requests</h1>
+    <div class="header-badges">
+      <span class="badge badge-pending" id="pending-count">{{.PendingCount}} pending</span>
+      <span class="badge badge-completed" id="completed-count">{{.CompletedCount}} completed</span>
+      <span class="badge badge-denied" id="denied-count">{{.DeniedCount}} denied</span>
+    </div>
+  </div>
+
+  <div class="tabs">
+    <button class="tab-btn active" onclick="showTab('pending')">Pending ({{.PendingCount}})</button>
+    <button class="tab-btn" onclick="showTab('all')">All Requests</button>
   </div>
 
   {{if .Approvals}}
-  <div class="card-stack">
-    {{range .Approvals}}
-    <div class="card approval-card" id="approval-{{.ID}}">
-      <div class="approval-header">
-        <div class="approval-info">
-          <span class="tool-name">{{.ToolName}}</span>
-          <span class="badge badge-admin">pending</span>
+  <div id="pending-tab" class="tab-content active">
+    <div class="card-stack">
+      {{range .Approvals}}
+      {{if or (eq .Status "PENDING") (eq .Status "EXECUTING") (eq .Status "COMPLETED") (eq .Status "FAILED")}}
+      <div class="card approval-card status-{{.Status}}" id="approval-{{.ID}}">
+        <div class="approval-header">
+          <div class="approval-info">
+            <span class="tool-name">{{.ToolName}}</span>
+            <span class="badge badge-{{.StatusClass}}">{{.Status}}</span>
+          </div>
+          <div class="approval-actions">
+            {{if eq .Status "PENDING"}}
+            <button class="btn btn-sm btn-primary" onclick="approveRequest('{{.ID}}')">Approve</button>
+            <button class="btn btn-sm btn-danger" onclick="denyRequest('{{.ID}}')">Deny</button>
+            {{else if eq .Status "FAILED"}}
+            <button class="btn btn-sm btn-warning" onclick="retryRequest('{{.ID}}')">Retry</button>
+            {{end}}
+          </div>
         </div>
-        <div class="approval-actions">
-          <button class="btn btn-sm btn-primary" onclick="approveRequest('{{.ID}}')">Approve</button>
-          <button class="btn btn-sm btn-danger" onclick="denyRequest('{{.ID}}')">Deny</button>
-        </div>
-      </div>
 
-      <div class="approval-meta">
-        <div class="meta-item">
-          <span class="meta-label">Requested by</span>
-          <span class="meta-value">{{.UserEmail}}</span>
+        <div class="approval-meta">
+          <div class="meta-item">
+            <span class="meta-label">Requested by</span>
+            <span class="meta-value">{{.UserEmail}}</span>
+          </div>
+          <div class="meta-item">
+            <span class="meta-label">Requested at</span>
+            <span class="meta-value">{{.RequestedAt.Format "2006-01-02 15:04:05"}}</span>
+          </div>
+          {{if eq .Status "PENDING"}}
+          <div class="meta-item">
+            <span class="meta-label">Expires</span>
+            <span class="meta-value">{{.ExpiresAt.Format "2006-01-02 15:04:05"}}</span>
+          </div>
+          {{end}}
+          <div class="meta-item">
+            <span class="meta-label">Policy</span>
+            <span class="meta-value">{{.PolicyID}}</span>
+          </div>
+          {{if .ApprovedBy}}
+          <div class="meta-item">
+            <span class="meta-label">{{if eq .Status "DENIED"}}Denied{{else}}Approved{{end}} by</span>
+            <span class="meta-value">{{.ApprovedBy}}</span>
+          </div>
+          {{end}}
         </div>
-        <div class="meta-item">
-          <span class="meta-label">Requested at</span>
-          <span class="meta-value">{{.RequestedAt.Format "2006-01-02 15:04:05"}}</span>
-        </div>
-        <div class="meta-item">
-          <span class="meta-label">Expires</span>
-          <span class="meta-value">{{.ExpiresAt.Format "2006-01-02 15:04:05"}}</span>
-        </div>
-        <div class="meta-item">
-          <span class="meta-label">Policy</span>
-          <span class="meta-value">{{.PolicyID}}</span>
-        </div>
-      </div>
 
-      <div class="approval-message">
-        <strong>Reason:</strong> {{.Message}}
-      </div>
+        <div class="approval-message">
+          <strong>Reason:</strong> {{.Message}}
+        </div>
 
-      <details class="args-details">
-        <summary>Arguments</summary>
-        <pre class="args-pre"><code>{{.ToolArgs}}</code></pre>
-      </details>
+        {{if or .ResponseStatus .ErrorMsg}}
+        <div class="execution-result">
+          {{if .ResponseStatus}}
+          <strong>HTTP Status:</strong>
+          <span class="status-code {{if gt .ResponseStatus 399}}status-error{{else}}status-success{{end}}">{{.ResponseStatus}}</span>
+          {{end}}
+          {{if .ErrorMsg}}
+          <div class="execution-error">
+            <strong>Error:</strong> {{.ErrorMsg}}
+          </div>
+          {{end}}
+          {{if .ResponseBody}}
+          <details class="args-details" open>
+            <summary>Response Body</summary>
+            <pre class="args-pre"><code>{{.ResponseBody}}</code></pre>
+          </details>
+          {{end}}
+        </div>
+        {{end}}
+
+        <details class="args-details">
+          <summary>Arguments</summary>
+          <pre class="args-pre"><code>{{.ToolArgs}}</code></pre>
+        </details>
+      </div>
+      {{end}}
+      {{end}}
     </div>
-    {{end}}
+  </div>
+
+  <div id="all-tab" class="tab-content">
+    <div class="card-stack">
+      {{range .Approvals}}
+      <div class="card approval-card status-{{.Status}}" id="approval-{{.ID}}">
+        <div class="approval-header">
+          <div class="approval-info">
+            <span class="tool-name">{{.ToolName}}</span>
+            <span class="badge badge-{{.StatusClass}}">{{.Status}}</span>
+          </div>
+          <div class="approval-actions">
+            {{if eq .Status "PENDING"}}
+            <button class="btn btn-sm btn-primary" onclick="approveRequest('{{.ID}}')">Approve</button>
+            <button class="btn btn-sm btn-danger" onclick="denyRequest('{{.ID}}')">Deny</button>
+            {{else if eq .Status "FAILED"}}
+            <button class="btn btn-sm btn-warning" onclick="retryRequest('{{.ID}}')">Retry</button>
+            {{end}}
+          </div>
+        </div>
+
+        <div class="approval-meta">
+          <div class="meta-item">
+            <span class="meta-label">Requested by</span>
+            <span class="meta-value">{{.UserEmail}}</span>
+          </div>
+          <div class="meta-item">
+            <span class="meta-label">Requested at</span>
+            <span class="meta-value">{{.RequestedAt.Format "2006-01-02 15:04:05"}}</span>
+          </div>
+          <div class="meta-item">
+            <span class="meta-label">Policy</span>
+            <span class="meta-value">{{.PolicyID}}</span>
+          </div>
+          {{if .ApprovedBy}}
+          <div class="meta-item">
+            <span class="meta-label">{{if eq .Status "DENIED"}}Denied{{else}}Approved{{end}} by</span>
+            <span class="meta-value">{{.ApprovedBy}}</span>
+          </div>
+          {{end}}
+        </div>
+
+        <div class="approval-message">
+          <strong>Reason:</strong> {{.Message}}
+        </div>
+
+        {{if or .ResponseStatus .ErrorMsg}}
+        <div class="execution-result">
+          {{if .ResponseStatus}}
+          <strong>HTTP Status:</strong>
+          <span class="status-code {{if gt .ResponseStatus 399}}status-error{{else}}status-success{{end}}">{{.ResponseStatus}}</span>
+          {{end}}
+          {{if .ErrorMsg}}
+          <div class="execution-error">
+            <strong>Error:</strong> {{.ErrorMsg}}
+          </div>
+          {{end}}
+          {{if .ResponseBody}}
+          <details class="args-details" open>
+            <summary>Response Body</summary>
+            <pre class="args-pre"><code>{{.ResponseBody}}</code></pre>
+          </details>
+          {{end}}
+        </div>
+        {{end}}
+
+        {{if .DenialReason}}
+        <div class="denial-reason">
+          <strong>Denial Reason:</strong> {{.DenialReason}}
+        </div>
+        {{end}}
+
+        <details class="args-details">
+          <summary>Arguments</summary>
+          <pre class="args-pre"><code>{{.ToolArgs}}</code></pre>
+        </details>
+      </div>
+      {{end}}
+    </div>
   </div>
   {{else}}
   <div class="card">
-    <p class="text-muted">No pending approval requests.</p>
+    <p class="text-muted">No approval requests.</p>
   </div>
   {{end}}
 
@@ -68,12 +192,39 @@
 <style>
   .header-row {
     display: flex;
+    justify-content: space-between;
     align-items: center;
-    gap: 1rem;
     margin-bottom: 1.5rem;
   }
   .header-row h1 {
     margin: 0;
+  }
+  .header-badges {
+    display: flex;
+    gap: 0.5rem;
+  }
+  .tabs {
+    display: flex;
+    gap: 0.5rem;
+    margin-bottom: 1.5rem;
+  }
+  .tab-btn {
+    padding: 0.5rem 1rem;
+    border: 1px solid var(--border-color);
+    background: var(--bg-secondary);
+    border-radius: 4px;
+    cursor: pointer;
+    font-size: 0.9rem;
+  }
+  .tab-btn.active {
+    background: var(--bg-primary);
+    border-color: var(--text-secondary);
+  }
+  .tab-content {
+    display: none;
+  }
+  .tab-content.active {
+    display: block;
   }
   .card-stack {
     display: flex;
@@ -83,6 +234,21 @@
   }
   .approval-card {
     padding: 1rem;
+  }
+  .approval-card.status-EXECUTING {
+    border-left: 3px solid var(--color-info, #3498db);
+  }
+  .approval-card.status-COMPLETED {
+    border-left: 3px solid var(--color-success, #2ecc71);
+  }
+  .approval-card.status-FAILED {
+    border-left: 3px solid var(--color-error, #e74c3c);
+  }
+  .approval-card.status-DENIED {
+    border-left: 3px solid var(--color-warning, #f39c12);
+  }
+  .approval-card.status-EXPIRED {
+    border-left: 3px solid var(--text-muted);
   }
   .approval-header {
     display: flex;
@@ -133,6 +299,47 @@
     font-size: 0.9rem;
     margin-bottom: 0.75rem;
   }
+  .execution-result {
+    background: var(--code-bg);
+    padding: 0.75rem;
+    border-radius: 4px;
+    margin-bottom: 0.75rem;
+  }
+  .execution-result strong {
+    display: block;
+    margin-bottom: 0.5rem;
+  }
+  .status-code {
+    display: inline-block;
+    padding: 0.25rem 0.5rem;
+    border-radius: 4px;
+    font-size: 0.85rem;
+    font-weight: 600;
+    margin-bottom: 0.5rem;
+  }
+  .status-code.status-success {
+    background: rgba(46, 204, 113, 0.2);
+    color: #2ecc71;
+  }
+  .status-code.status-error {
+    background: rgba(231, 76, 60, 0.2);
+    color: #e74c3c;
+  }
+  .execution-error {
+    background: rgba(231, 76, 60, 0.1);
+    color: #e74c3c;
+    padding: 0.75rem;
+    border-radius: 4px;
+    margin-bottom: 0.75rem;
+    font-size: 0.9rem;
+  }
+  .denial-reason {
+    background: rgba(243, 156, 18, 0.1);
+    padding: 0.75rem;
+    border-radius: 4px;
+    margin-bottom: 0.75rem;
+    font-size: 0.9rem;
+  }
   .args-details {
     margin-top: 0.5rem;
   }
@@ -156,9 +363,53 @@
     padding: 0.25rem 0.75rem;
     font-size: 0.85rem;
   }
+  .btn-warning {
+    background: #f39c12;
+    color: white;
+    border: none;
+    padding: 0.25rem 0.75rem;
+    border-radius: 4px;
+    cursor: pointer;
+    font-size: 0.85rem;
+  }
+  .btn-warning:hover {
+    background: #e67e22;
+  }
+  .badge-pending {
+    background: #3498db;
+    color: white;
+  }
+  .badge-completed {
+    background: #2ecc71;
+    color: white;
+  }
+  .badge-denied {
+    background: #e74c3c;
+    color: white;
+  }
+  .badge-executing {
+    background: #9b59b6;
+    color: white;
+  }
+  .badge-failed {
+    background: #e74c3c;
+    color: white;
+  }
+  .badge-expired {
+    background: #95a5a6;
+    color: white;
+  }
 </style>
 
 <script>
+function showTab(tab) {
+  document.querySelectorAll('.tab-btn').forEach(btn => btn.classList.remove('active'));
+  document.querySelectorAll('.tab-content').forEach(content => content.classList.remove('active'));
+  
+  event.target.classList.add('active');
+  document.getElementById(tab + '-tab').classList.add('active');
+}
+
 async function approveRequest(id) {
   if (!confirm('Approve this request? The original operation will be executed.')) return;
   
@@ -175,9 +426,8 @@ async function approveRequest(id) {
     const data = await resp.json();
     
     if (data.success) {
-      alert('Request approved!\n\nRequest body:\n' + data.request_body);
-      document.getElementById('approval-' + id).remove();
-      updateCount();
+      alert('Request approved and executed!\n\nStatus: ' + data.status + '\nHTTP Status: ' + data.response_status);
+      location.reload();
     } else {
       alert('Error: ' + data.message);
       btn.disabled = false;
@@ -207,8 +457,7 @@ async function denyRequest(id) {
     
     if (data.success) {
       alert('Request denied.');
-      document.getElementById('approval-' + id).remove();
-      updateCount();
+      location.reload();
     } else {
       alert('Error: ' + data.message);
       btn.disabled = false;
@@ -218,6 +467,36 @@ async function denyRequest(id) {
     alert('Error: ' + e);
     btn.disabled = false;
     btn.textContent = 'Deny';
+  }
+}
+
+async function retryRequest(id) {
+  if (!confirm('Retry this request? The operation will be executed again.')) return;
+  
+  const btn = event.target;
+  btn.disabled = true;
+  btn.textContent = 'Retrying...';
+  
+  try {
+    const resp = await fetch('/web/admin/enforcer/api/retry', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({approval_id: id})
+    });
+    const data = await resp.json();
+    
+    if (data.success) {
+      alert('Request retry initiated!\n\nStatus: ' + data.status);
+      location.reload();
+    } else {
+      alert('Error: ' + data.message);
+      btn.disabled = false;
+      btn.textContent = 'Retry';
+    }
+  } catch (e) {
+    alert('Error: ' + e);
+    btn.disabled = false;
+    btn.textContent = 'Retry';
   }
 }
 
@@ -242,13 +521,6 @@ async function enableKillSwitch() {
   } catch (e) {
     alert('Error: ' + e);
   }
-}
-
-function updateCount() {
-  const count = document.querySelectorAll('.approval-card').length;
-  const badge = document.getElementById('pending-count');
-  badge.textContent = count + ' pending';
-  badge.className = 'badge ' + (count === 0 ? 'badge-enabled' : 'badge-admin');
 }
 </script>
 {{template "foot" .}}

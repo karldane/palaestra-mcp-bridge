@@ -11,6 +11,8 @@ import (
 	"database/sql"
 
 	"github.com/google/uuid"
+
+	rl "github.com/mcp-bridge/mcp-bridge/ratelimit"
 )
 
 // EnforcerStore interface for database operations
@@ -19,16 +21,71 @@ type EnforcerStore interface {
 	GetPolicy(id string) (PolicyRow, error)
 	ListPolicies() ([]PolicyRow, error)
 	DeletePolicy(id string) error
+	UpdatePolicy(policy PolicyRow) error
 	CreateApprovalRequest(req ApprovalRequestRow) error
 	GetApprovalRequest(id string) (ApprovalRequestRow, error)
 	ListPendingApprovals() ([]ApprovalRequestRow, error)
+	ListAllApprovals() ([]ApprovalRequestRow, error)
 	ApproveRequest(id string, approverID string, comments string) error
 	DenyRequest(id string, approverID string, reason string) error
+	MarkExecuting(id string) error
+	MarkCompleted(id string, responseStatus int, responseBody string) error
+	MarkFailed(id string, errorMsg string) error
 	IsKillSwitchActive(scope string) (bool, error)
 	EnableKillSwitch(scope string, userID string, reason string) error
 	DisableKillSwitch(scope string) error
 	CleanupExpiredApprovals() error
+	CleanupOldApprovals(olderThan time.Duration) error
 	LogAuditEvent(requestID string, userID string, toolName string, action string, policyID string, message string, context map[string]interface{}) error
+	GetToolProfile(backendID, toolName string) (ToolProfileRow, error)
+	ListOverrides() ([]EnforcerOverrideRow, error)
+	UpsertOverride(override EnforcerOverrideRow) error
+	DeleteOverride(toolName, backendID string) error
+	ListRateLimitBucketConfigs() ([]RateLimitBucketConfigRow, error)
+	UpsertRateLimitBucketConfig(config RateLimitBucketConfigRow) error
+	ListRateLimitStates() ([]RateLimitStateRow, error)
+	UpsertRateLimitState(state RateLimitStateRow) error
+}
+
+// EnforcerOverrideRow represents a manual override for a tool's safety profile.
+type EnforcerOverrideRow struct {
+	ID           string
+	ToolName     string
+	BackendID    string
+	RiskLevel    string
+	ImpactScope  string
+	ResourceCost int
+	RequiresHITL bool
+	PIIExposure  bool
+	CreatedAt    time.Time
+	UpdatedAt    time.Time
+}
+
+// RateLimitBucketConfigRow represents a bucket configuration in the database
+type RateLimitBucketConfigRow struct {
+	ID         string
+	BackendID  string
+	BucketType string // "risk" or "resource"
+	Capacity   int
+	RefillRate int
+	CreatedAt  time.Time
+	UpdatedAt  time.Time
+}
+
+// RateLimitStateRow represents a user's bucket state in the database
+type RateLimitStateRow struct {
+	ID           string
+	UserID       string
+	BackendID    string
+	BucketType   string // "risk" or "resource"
+	CurrentLevel int
+	LastRefillAt time.Time
+	CreatedAt    time.Time
+}
+
+// ApprovalExecutor executes approved requests
+type ApprovalExecutor interface {
+	ExecuteRequest(userID string, backendID string, requestBody string) (int, string, error)
 }
 
 // PolicyRow represents a policy in the database
@@ -62,25 +119,29 @@ func (row PolicyRow) ToCELPolicy() CELPolicy {
 
 // ApprovalRequestRow represents an approval request in the database
 type ApprovalRequestRow struct {
-	ID            string
-	UserID        string
-	UserEmail     string
-	UserRole      string
-	TrustLevel    int
-	ToolName      string
-	ToolArgs      string
-	BackendID     string
-	SafetyProfile string
-	Status        string
-	RequestedAt   time.Time
-	ExpiresAt     time.Time
-	ApprovedBy    sql.NullString
-	ApprovedAt    sql.NullTime
-	DenialReason  string
-	Comments      string
-	PolicyID      string
-	ViolationMsg  string
-	RequestBody   string // Original JSON-RPC request body for replay after approval
+	ID             string
+	UserID         string
+	UserEmail      string
+	UserRole       string
+	TrustLevel     int
+	ToolName       string
+	ToolArgs       string
+	BackendID      string
+	SafetyProfile  string
+	Status         string
+	RequestedAt    time.Time
+	ExpiresAt      time.Time
+	ApprovedBy     sql.NullString
+	ApprovedAt     sql.NullTime
+	DenialReason   string
+	Comments       string
+	PolicyID       string
+	ViolationMsg   string
+	RequestBody    string       // Original JSON-RPC request body for replay after approval
+	ResponseStatus int          // HTTP status code from execution
+	ResponseBody   string       // Full response JSON from execution
+	ExecutedAt     sql.NullTime // When execution completed
+	ErrorMsg       string       // Error message if failed
 }
 
 // Enforcer is the main orchestrator for policy enforcement
@@ -90,7 +151,9 @@ type Enforcer struct {
 	engine       *CELEngine
 	store        EnforcerStore
 	decorator    DescriptionDecorator
+	executor     ApprovalExecutor
 	killSwitches map[string]bool
+	rateLimit    *rl.RateLimitManager
 	mu           sync.RWMutex
 }
 
@@ -103,11 +166,12 @@ func NewEnforcer(config EnforcerConfig, store EnforcerStore) (*Enforcer, error) 
 
 	e := &Enforcer{
 		config:       config,
-		resolver:     NewMetadataResolver(),
+		resolver:     NewMetadataResolver(store),
 		engine:       engine,
 		store:        store,
 		decorator:    &DefaultDescriptionDecorator{},
 		killSwitches: make(map[string]bool),
+		rateLimit:    rl.NewRateLimitManager(),
 	}
 
 	// Load policies from database
@@ -120,7 +184,181 @@ func NewEnforcer(config EnforcerConfig, store EnforcerStore) (*Enforcer, error) 
 		go e.cleanupLoop()
 	}
 
+	// Set default rate limits for common backends
+	e.SetDefaultRateLimits()
+
+	// Load persisted rate limit states from database
+	if err := e.LoadRateLimitStates(); err != nil {
+		log.Printf("Warning: failed to load rate limit states: %v", err)
+	}
+
 	return e, nil
+}
+
+// SetDefaultRateLimits sets the default rate limit configuration for common backends
+func (e *Enforcer) SetDefaultRateLimits() {
+	// Slack: moderate usage
+	e.rateLimit.SetDefaultConfig("slack", 100, 20, 200, 40)
+
+	// New Relic: read-heavy
+	e.rateLimit.SetDefaultConfig("newrelic", 150, 30, 300, 60)
+
+	// Oracle: conservative
+	e.rateLimit.SetDefaultConfig("oracle", 50, 10, 100, 20)
+
+	// GitHub: moderate
+	e.rateLimit.SetDefaultConfig("github", 100, 20, 200, 40)
+
+	// CircleCI: conservative
+	e.rateLimit.SetDefaultConfig("circleci", 50, 10, 100, 20)
+
+	// K8s: moderate
+	e.rateLimit.SetDefaultConfig("k8s", 100, 20, 200, 40)
+
+	// AWS: moderate
+	e.rateLimit.SetDefaultConfig("aws", 100, 20, 200, 40)
+
+	// Atlassian: moderate
+	e.rateLimit.SetDefaultConfig("atlassian", 100, 20, 200, 40)
+
+	// MCP Bridge built-in: generous
+	e.rateLimit.SetDefaultConfig("mcpbridge", 200, 40, 400, 80)
+}
+
+// SetRateLimitConfig sets the rate limit configuration for a specific backend
+func (e *Enforcer) SetRateLimitConfig(backendID string, riskCapacity, riskRefill, resourceCapacity, resourceRefill int) {
+	e.rateLimit.SetDefaultConfig(backendID, riskCapacity, riskRefill, resourceCapacity, resourceRefill)
+}
+
+// GetRateLimitStatus returns the current rate limit status for a user/backend
+func (e *Enforcer) GetRateLimitStatus(userID, backendID string) map[string]interface{} {
+	return e.rateLimit.GetStatusMap(userID, backendID)
+}
+
+// LoadRateLimitStates loads rate limit states from the database into the in-memory manager
+func (e *Enforcer) LoadRateLimitStates() error {
+	states, err := e.store.ListRateLimitStates()
+	if err != nil {
+		return err
+	}
+
+	dbStates := make([]rl.BucketStateForDB, 0, len(states))
+	for _, s := range states {
+		dbStates = append(dbStates, rl.BucketStateForDB{
+			UserID:       s.UserID,
+			BackendID:    s.BackendID,
+			BucketType:   s.BucketType,
+			CurrentLevel: s.CurrentLevel,
+			LastRefillAt: s.LastRefillAt,
+		})
+	}
+	e.rateLimit.LoadStates(dbStates)
+	return nil
+}
+
+// SaveRateLimitStates persists current in-memory rate limit states to the database
+func (e *Enforcer) SaveRateLimitStates() error {
+	states := e.rateLimit.GetAllStates()
+	for _, s := range states {
+		row := RateLimitStateRow{
+			ID:           generateID(),
+			UserID:       s.UserID,
+			BackendID:    s.BackendID,
+			BucketType:   s.BucketType,
+			CurrentLevel: s.CurrentLevel,
+			LastRefillAt: s.LastRefillAt,
+			CreatedAt:    time.Now(),
+		}
+		if err := e.store.UpsertRateLimitState(row); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// StartRateLimitRefill starts background goroutines that refill and persist rate limit buckets.
+// Call StopRateLimitRefill to terminate.
+func (e *Enforcer) StartRateLimitRefill(ctx context.Context, interval time.Duration) {
+	e.rateLimit.StartRefillTicker(ctx, interval)
+	e.rateLimit.SetPersistFunc(func() error {
+		return e.SaveRateLimitStates()
+	})
+	e.rateLimit.StartPersistTicker(ctx, 30*time.Second)
+}
+
+// StopRateLimitRefill terminates the rate limit refill and persistence goroutines
+func (e *Enforcer) StopRateLimitRefill() {
+	e.rateLimit.Stop()
+	e.rateLimit.StopPersist()
+	e.SaveRateLimitStates()
+}
+
+// RateLimitStateDisplay represents a user's bucket state for display
+type RateLimitStateDisplay struct {
+	UserID       string
+	BackendID    string
+	BucketType   string
+	Capacity     int
+	CurrentLevel int
+	RefillRate   int
+}
+
+// RateLimitConfigDisplay represents a backend's rate limit configuration
+type RateLimitConfigDisplay struct {
+	BackendID    string
+	RiskCapacity int
+	RiskRefill   int
+	ResCapacity  int
+	ResRefill    int
+}
+
+// GetAllRateLimitStates returns all bucket states with capacity info
+func (e *Enforcer) GetAllRateLimitStates() []RateLimitStateDisplay {
+	states := e.rateLimit.GetAllStates()
+	result := make([]RateLimitStateDisplay, 0, len(states))
+	for _, s := range states {
+		result = append(result, RateLimitStateDisplay{
+			UserID:       s.UserID,
+			BackendID:    s.BackendID,
+			BucketType:   s.BucketType,
+			Capacity:     s.Capacity,
+			CurrentLevel: s.CurrentLevel,
+			RefillRate:   s.RefillRate,
+		})
+	}
+	return result
+}
+
+// GetRateLimitConfigs returns configured backend rate limits
+func (e *Enforcer) GetRateLimitConfigs() []RateLimitConfigDisplay {
+	configs := e.rateLimit.GetAllConfigs()
+	result := make([]RateLimitConfigDisplay, 0, len(configs))
+	for _, c := range configs {
+		result = append(result, RateLimitConfigDisplay{
+			BackendID:    c.BackendID,
+			RiskCapacity: c.RiskCapacity,
+			RiskRefill:   c.RiskRefill,
+			ResCapacity:  c.ResCapacity,
+			ResRefill:    c.ResRefill,
+		})
+	}
+	return result
+}
+
+// ResetUserRateLimit resets a user's rate limit buckets for a specific backend
+func (e *Enforcer) ResetUserRateLimit(userID, backendID string) error {
+	e.rateLimit.ResetUserBuckets(userID, backendID)
+	return nil
+}
+
+// RegisterOverride registers a manual override for a tool's safety profile.
+func (e *Enforcer) RegisterOverride(toolName, backendID string, profile SafetyProfile) error {
+	return e.resolver.RegisterOverride(toolName, backendID, profile)
+}
+
+// RemoveOverride removes a manual override.
+func (e *Enforcer) RemoveOverride(toolName, backendID string) error {
+	return e.resolver.RemoveOverride(toolName, backendID)
 }
 
 // Evaluate checks if a tool call should be allowed
@@ -157,12 +395,38 @@ func (e *Enforcer) HandleToolCall(ctx context.Context, userID string, toolName s
 	}
 
 	// Resolve safety profile
-	profile, err := e.resolver.Resolve(toolName, backendID, nil)
+	profile, err := e.resolver.Resolve(toolName, backendID)
 	if err != nil {
 		return EnforcerDecision{}, fmt.Errorf("failed to resolve safety profile: %w", err)
 	}
 	decisionCtx.Safety = profile
 	fmt.Printf("DEBUG: HandleToolCall resolved profile - Risk=%s Impact=%s Cost=%d\n", profile.Risk, profile.Impact, profile.Cost)
+
+	// Calculate cost
+	riskCost, resourceCost := rl.CalculateCost(profile.Cost, string(profile.Risk), string(profile.Impact))
+
+	// Get bucket status for CEL context
+	riskAvail, riskCap, riskRefill, resAvail, resCap, resRefill := e.rateLimit.GetBucketStatus(userID, backendID)
+	decisionCtx.RateLimit = NewRateLimitInfo(riskAvail, riskCap, riskRefill, resAvail, resCap, resRefill)
+
+	// Check rate limits before evaluating policies
+	riskAllowed, resourceAllowed := e.rateLimit.CheckAndConsume(userID, backendID, riskCost, resourceCost)
+
+	// If either bucket is exhausted, deny the call
+	if !riskAllowed || !resourceAllowed {
+		bucketType := "risk"
+		available := riskAvail
+		if !resourceAllowed {
+			bucketType = "resource"
+			available = resAvail
+		}
+		return EnforcerDecision{
+			Action:   ActionDeny,
+			Severity: SeverityMedium,
+			Message:  fmt.Sprintf("Rate limit exceeded: %s bucket exhausted (%d available)", bucketType, available),
+			PolicyID: "rate_limit",
+		}, ErrRateLimitExceeded
+	}
 
 	// Evaluate
 	decision, err := e.Evaluate(ctx, decisionCtx)
@@ -237,13 +501,18 @@ func (e *Enforcer) CheckApproval(ctx context.Context, approvalID string) (bool, 
 	return false, nil // Still pending
 }
 
+// ListAllApprovals returns all approval requests (not just pending)
+func (e *Enforcer) ListAllApprovals() ([]ApprovalRequestRow, error) {
+	return e.store.ListAllApprovals()
+}
+
 // DecorateDescription adds safety metadata to tool descriptions
 func (e *Enforcer) DecorateDescription(description string, toolName string, backendID string) string {
 	if !e.config.EnableDescriptionDecoration {
 		return description
 	}
 
-	profile, err := e.resolver.Resolve(toolName, backendID, nil)
+	profile, err := e.resolver.Resolve(toolName, backendID)
 	if err != nil {
 		return description
 	}
@@ -309,9 +578,99 @@ func (e *Enforcer) DenyRequest(approvalID string, approverID string, reason stri
 	return e.store.DenyRequest(approvalID, approverID, reason)
 }
 
-// AddPolicy adds a new policy to the enforcer
-func (e *Enforcer) AddPolicy(policy CELPolicy) error {
-	return e.engine.AddPolicy(policy)
+// SetExecutor sets the approval executor for executing approved requests
+func (e *Enforcer) SetExecutor(executor ApprovalExecutor) {
+	e.executor = executor
+}
+
+// ExecuteApprovedRequest executes an approved request and captures the result
+func (e *Enforcer) ExecuteApprovedRequest(approvalID string, approverID string, comments string) (*ApprovalRequestRow, error) {
+	log.Printf("ExecuteApprovedRequest: approvalID=%s approver=%s", approvalID, approverID)
+
+	// Mark as approved
+	if err := e.store.ApproveRequest(approvalID, approverID, comments); err != nil {
+		return nil, fmt.Errorf("failed to approve request: %w", err)
+	}
+
+	// Get the request details
+	req, err := e.store.GetApprovalRequest(approvalID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get request: %w", err)
+	}
+	log.Printf("ExecuteApprovedRequest: got request, userID=%s backendID=%s status=%s", req.UserID, req.BackendID, req.Status)
+
+	// If no executor, just return the approved request
+	if e.executor == nil {
+		log.Printf("ExecuteApprovedRequest: no executor configured, returning approved request")
+		return &req, nil
+	}
+
+	// Mark as executing
+	if err := e.store.MarkExecuting(approvalID); err != nil {
+		return nil, fmt.Errorf("failed to mark executing: %w", err)
+	}
+
+	// Execute the request
+	statusCode, responseBody, execErr := e.executor.ExecuteRequest(req.UserID, req.BackendID, req.RequestBody)
+	log.Printf("ExecuteApprovedRequest: execution complete statusCode=%d bodyLen=%d err=%v", statusCode, len(responseBody), execErr)
+
+	// Mark as completed or failed
+	if execErr != nil {
+		errMsg := execErr.Error()
+		log.Printf("ExecuteApprovedRequest: marking as FAILED: %s", errMsg)
+		if markErr := e.store.MarkFailed(approvalID, errMsg); markErr != nil {
+			return nil, fmt.Errorf("failed to mark failed: %w", markErr)
+		}
+	} else {
+		log.Printf("ExecuteApprovedRequest: marking as COMPLETED")
+		if markErr := e.store.MarkCompleted(approvalID, statusCode, responseBody); markErr != nil {
+			return nil, fmt.Errorf("failed to mark completed: %w", markErr)
+		}
+	}
+
+	// Return updated request
+	updatedReq, err := e.store.GetApprovalRequest(approvalID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get updated request: %w", err)
+	}
+
+	return &updatedReq, nil
+}
+
+// AddPolicy adds a new policy to the enforcer (saves to DB and adds to engine)
+func (e *Enforcer) AddPolicy(policy PolicyRow) error {
+	if err := e.store.CreatePolicy(policy); err != nil {
+		return err
+	}
+	celPolicy := policy.ToCELPolicy()
+	return e.engine.AddPolicy(celPolicy)
+}
+
+// ListPolicies returns all policies from the store
+func (e *Enforcer) ListPolicies() ([]PolicyRow, error) {
+	return e.store.ListPolicies()
+}
+
+// GetPolicy returns a single policy by ID
+func (e *Enforcer) GetPolicy(id string) (PolicyRow, error) {
+	return e.store.GetPolicy(id)
+}
+
+// UpdatePolicy updates a policy in the store and reloads the engine
+func (e *Enforcer) UpdatePolicy(policy PolicyRow) error {
+	if err := e.store.UpdatePolicy(policy); err != nil {
+		return err
+	}
+	return e.loadPolicies()
+}
+
+// DeletePolicy removes a policy from the store and engine
+func (e *Enforcer) DeletePolicy(id string) error {
+	if err := e.store.DeletePolicy(id); err != nil {
+		return err
+	}
+	// Reload policies to update engine
+	return e.loadPolicies()
 }
 
 // loadPolicies loads policies from database into CEL engine
@@ -352,14 +711,21 @@ func (e *Enforcer) logDecision(ctx DecisionContext, decision EnforcerDecision) {
 	)
 }
 
-// cleanupLoop periodically cleans up expired approvals
+// cleanupLoop periodically cleans up expired approvals and old completed requests
 func (e *Enforcer) cleanupLoop() {
 	ticker := time.NewTicker(e.config.CleanupInterval)
 	defer ticker.Stop()
 
 	for range ticker.C {
+		// Mark expired pending requests
 		if err := e.store.CleanupExpiredApprovals(); err != nil {
 			log.Printf("Failed to cleanup expired approvals: %v", err)
+		}
+		// Delete old completed/denied requests
+		if e.config.RetentionPeriod > 0 {
+			if err := e.store.CleanupOldApprovals(e.config.RetentionPeriod); err != nil {
+				log.Printf("Failed to cleanup old approvals: %v", err)
+			}
 		}
 	}
 }

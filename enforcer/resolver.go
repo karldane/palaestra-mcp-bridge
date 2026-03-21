@@ -5,47 +5,75 @@ import (
 	"regexp"
 	"strings"
 	"sync"
+	"time"
 )
+
+// ToolProfileStore defines the interface for looking up stored safety profiles.
+type ToolProfileStore interface {
+	GetToolProfile(backendID, toolName string) (ToolProfileRow, error)
+}
+
+// ToolProfileRow represents a stored safety profile for a tool.
+type ToolProfileRow struct {
+	ID           string
+	BackendID    string
+	ToolName     string
+	RiskLevel    string
+	ImpactScope  string
+	ResourceCost int
+	RequiresHITL bool
+	PIIExposure  bool
+	Idempotent   bool
+	RawProfile   string
+	ScannedAt    time.Time
+}
 
 // MetadataResolver implements the tiered resolution logic from ENFORCER_SPEC.md
 // Priority order:
-//  1. Explicit Override (config.yaml) - Highest
-//  2. Self-Reported (annotations from framework)
+//  1. Explicit Override (config) - Highest
+//  2. Self-Reported (stored profiles from startup scan)
 //  3. Inferred (pattern matching) - Default
 type MetadataResolver struct {
 	mu        sync.RWMutex
+	store     ToolProfileStore
 	overrides map[string]SafetyProfile // Tier 1: Config overrides
 }
 
 // NewMetadataResolver creates a new resolver with empty overrides
-func NewMetadataResolver() *MetadataResolver {
+func NewMetadataResolver(store ToolProfileStore) *MetadataResolver {
 	return &MetadataResolver{
+		store:     store,
 		overrides: make(map[string]SafetyProfile),
 	}
 }
 
 // Resolve determines the final SafetyProfile using tiered priority
-func (r *MetadataResolver) Resolve(toolName string, backendID string, annotations map[string]interface{}) (SafetyProfile, error) {
+func (r *MetadataResolver) Resolve(toolName string, backendID string) (SafetyProfile, error) {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 
-	// Tier 1: Check explicit overrides (config.yaml)
-	if override, ok := r.overrides[toolName]; ok {
+	// Tier 1: Check explicit overrides (config) - keyed by toolName|backendID
+	if override, ok := r.overrides[toolName+"|"+backendID]; ok {
 		override.ToolName = toolName
 		override.BackendID = backendID
-		override.Source = "config"
+		override.Source = "override"
 		return override, nil
 	}
 
-	// Log resolution attempt
-	fmt.Printf("DEBUG: Resolving safety profile for tool=%s, backend=%s\n", toolName, backendID)
-
-	// Tier 2: Parse self-reported annotations from framework
-	if annotations != nil && len(annotations) > 0 {
-		profile := r.parseAnnotations(toolName, backendID, annotations)
-		if profile.Risk != "" || profile.Impact != "" {
-			profile.Source = "self_reported"
-			return profile, nil
+	// Tier 2: Check stored self-reported profiles (from startup scan)
+	if r.store != nil {
+		profile, err := r.store.GetToolProfile(backendID, toolName)
+		if err == nil {
+			return SafetyProfile{
+				ToolName:     toolName,
+				BackendID:    backendID,
+				Risk:         RiskLevel(profile.RiskLevel),
+				Impact:       ImpactScope(profile.ImpactScope),
+				Cost:         profile.ResourceCost,
+				RequiresHITL: profile.RequiresHITL,
+				PIIExposure:  profile.PIIExposure,
+				Source:       "self_reported",
+			}, nil
 		}
 	}
 
@@ -57,78 +85,6 @@ func (r *MetadataResolver) Resolve(toolName string, backendID string, annotation
 	return profile, nil
 }
 
-// parseAnnotations extracts safety metadata from framework annotations
-func (r *MetadataResolver) parseAnnotations(toolName, backendID string, annotations map[string]interface{}) SafetyProfile {
-	profile := SafetyProfile{
-		ToolName:  toolName,
-		BackendID: backendID,
-	}
-
-	// Handle nested "enforcer" key if present
-	enforcerData := annotations
-	if enforcer, ok := annotations["enforcer"].(map[string]interface{}); ok {
-		enforcerData = enforcer
-	}
-
-	// Extract risk level
-	if risk, ok := enforcerData["risk"].(string); ok && risk != "" {
-		profile.Risk = RiskLevel(strings.ToLower(risk))
-	}
-	if risk, ok := enforcerData["risk_level"].(string); ok && risk != "" {
-		profile.Risk = RiskLevel(strings.ToLower(risk))
-	}
-
-	// Extract impact scope
-	if impact, ok := enforcerData["impact"].(string); ok && impact != "" {
-		profile.Impact = ImpactScope(strings.ToLower(impact))
-	}
-	if impact, ok := enforcerData["impact_scope"].(string); ok && impact != "" {
-		profile.Impact = ImpactScope(strings.ToLower(impact))
-	}
-
-	// Extract cost
-	if cost, ok := enforcerData["cost"].(int); ok {
-		profile.Cost = cost
-	}
-	if cost, ok := enforcerData["resource_cost"].(int); ok {
-		profile.Cost = cost
-	}
-	if cost, ok := enforcerData["cost"].(float64); ok {
-		profile.Cost = int(cost)
-	}
-
-	// Extract HITL requirement
-	if hitl, ok := enforcerData["hitl"].(bool); ok {
-		profile.RequiresHITL = hitl
-	}
-	if hitl, ok := enforcerData["requires_hitl"].(bool); ok {
-		profile.RequiresHITL = hitl
-	}
-	if hitl, ok := enforcerData["approval_req"].(bool); ok {
-		profile.RequiresHITL = hitl
-	}
-
-	// Extract PII exposure
-	if pii, ok := enforcerData["pii_exposure"].(bool); ok {
-		profile.PIIExposure = pii
-	}
-	if pii, ok := enforcerData["pii"].(bool); ok {
-		profile.PIIExposure = pii
-	}
-
-	// Extract metadata
-	profile.Metadata = make(map[string]interface{})
-	for k, v := range enforcerData {
-		if k != "risk" && k != "risk_level" && k != "impact" && k != "impact_scope" &&
-			k != "cost" && k != "resource_cost" && k != "hitl" && k != "requires_hitl" &&
-			k != "approval_req" && k != "pii_exposure" && k != "pii" {
-			profile.Metadata[k] = v
-		}
-	}
-
-	return profile
-}
-
 // inferDefaults uses pattern matching to determine safety for 3rd-party tools
 func (r *MetadataResolver) inferDefaults(toolName string) SafetyProfile {
 	profile := SafetyProfile{
@@ -137,7 +93,6 @@ func (r *MetadataResolver) inferDefaults(toolName string) SafetyProfile {
 	}
 
 	toolLower := strings.ToLower(toolName)
-	fmt.Printf("DEBUG: inferDefaults for tool=%s\n", toolName)
 
 	// Risk inference based on naming patterns
 	riskPatterns := map[RiskLevel][]string{
@@ -172,7 +127,6 @@ func (r *MetadataResolver) inferDefaults(toolName string) SafetyProfile {
 		}
 	}
 
-	// If no risk matched, default to medium
 	if profile.Risk == "" {
 		profile.Risk = RiskMedium
 	}
@@ -211,7 +165,6 @@ func (r *MetadataResolver) inferDefaults(toolName string) SafetyProfile {
 		}
 	}
 
-	// If no impact matched, default to read
 	if profile.Impact == "" {
 		profile.Impact = ImpactRead
 	}
@@ -221,27 +174,23 @@ func (r *MetadataResolver) inferDefaults(toolName string) SafetyProfile {
 		profile.RequiresHITL = true
 	}
 
-	// Cost adjustment based on impact (lower = less resource intensive)
-	// Note: Cost reflects actual system resource consumption, not safety risk
-	// Safety risk is handled by the impact_scope and risk_level fields
+	// Cost adjustment based on impact
 	if profile.Impact == ImpactWrite {
 		profile.Cost = 8
 	} else if profile.Impact == ImpactAdmin {
 		profile.Cost = 6
 	} else if profile.Impact == ImpactDelete {
-		profile.Cost = 5 // Not resource-intensive, just dangerous - handled by impact_scope policy
+		profile.Cost = 5
 	}
 
-	fmt.Printf("DEBUG: Inferred profile for %s - Risk=%s Impact=%s Cost=%d\n", toolName, profile.Risk, profile.Impact, profile.Cost)
 	return profile
 }
 
 // RegisterOverride adds a manual config override for a tool
-func (r *MetadataResolver) RegisterOverride(toolName string, profile SafetyProfile) error {
+func (r *MetadataResolver) RegisterOverride(toolName, backendID string, profile SafetyProfile) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
-	// Validate the profile
 	if profile.Risk == "" {
 		return fmt.Errorf("risk level is required")
 	}
@@ -249,29 +198,31 @@ func (r *MetadataResolver) RegisterOverride(toolName string, profile SafetyProfi
 		return fmt.Errorf("impact scope is required")
 	}
 
-	r.overrides[toolName] = profile
+	key := toolName + "|" + backendID
+	r.overrides[key] = profile
 	return nil
 }
 
 // RemoveOverride removes a manual override
-func (r *MetadataResolver) RemoveOverride(toolName string) error {
+func (r *MetadataResolver) RemoveOverride(toolName, backendID string) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
-	if _, ok := r.overrides[toolName]; !ok {
+	key := toolName + "|" + backendID
+	if _, ok := r.overrides[key]; !ok {
 		return fmt.Errorf("no override found for tool: %s", toolName)
 	}
 
-	delete(r.overrides, toolName)
+	delete(r.overrides, key)
 	return nil
 }
 
-// GetOverride retrieves an existing override (for testing/management)
-func (r *MetadataResolver) GetOverride(toolName string) (SafetyProfile, bool) {
+// GetOverride retrieves an existing override
+func (r *MetadataResolver) GetOverride(toolName, backendID string) (SafetyProfile, bool) {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 
-	profile, ok := r.overrides[toolName]
+	profile, ok := r.overrides[toolName+"|"+backendID]
 	return profile, ok
 }
 
@@ -280,7 +231,6 @@ func (r *MetadataResolver) ListOverrides() map[string]SafetyProfile {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 
-	// Return a copy to avoid external mutation
 	result := make(map[string]SafetyProfile, len(r.overrides))
 	for k, v := range r.overrides {
 		result[k] = v
@@ -296,11 +246,11 @@ func (r *MetadataResolver) ClearOverrides() {
 	r.overrides = make(map[string]SafetyProfile)
 }
 
-// Ensure MetadataResolver implements the Resolver interface
+// Ensure MetadataResolver implements the Registry interface
 var _ Registry = (*MetadataResolver)(nil)
 
 // GetProfile implements the Registry interface by delegating to Resolve
 func (r *MetadataResolver) GetProfile(toolName string) (SafetyProfile, bool) {
-	profile, err := r.Resolve(toolName, "", nil)
+	profile, err := r.Resolve(toolName, "")
 	return profile, err == nil
 }

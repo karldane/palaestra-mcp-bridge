@@ -51,6 +51,16 @@ func NewCELEngine() (*CELEngine, error) {
 			// Backend context
 			decls.NewVar("backend_id", decls.String),
 			decls.NewVar("backend_type", decls.String),
+
+			// Rate limiting context
+			decls.NewVar("risk_bucket", decls.NewMapType(decls.String, decls.Dyn)),
+			decls.NewVar("risk_available", decls.Int),
+			decls.NewVar("risk_capacity", decls.Int),
+			decls.NewVar("risk_refill_rate", decls.Int),
+			decls.NewVar("resource_bucket", decls.NewMapType(decls.String, decls.Dyn)),
+			decls.NewVar("resource_available", decls.Int),
+			decls.NewVar("resource_capacity", decls.Int),
+			decls.NewVar("resource_refill_rate", decls.Int),
 		),
 
 		// Add custom functions
@@ -187,6 +197,18 @@ func (e *CELEngine) buildActivation(ctx DecisionContext) (interpreter.Activation
 		"load_avg": ctx.SystemLoad,
 	}
 
+	riskBucketMap := map[string]interface{}{
+		"available":   ctx.RateLimit.RiskBucket.Available,
+		"capacity":    ctx.RateLimit.RiskBucket.Capacity,
+		"refill_rate": ctx.RateLimit.RiskBucket.RefillRate,
+	}
+
+	resourceBucketMap := map[string]interface{}{
+		"available":   ctx.RateLimit.ResourceBucket.Available,
+		"capacity":    ctx.RateLimit.ResourceBucket.Capacity,
+		"refill_rate": ctx.RateLimit.ResourceBucket.RefillRate,
+	}
+
 	// Create activation with all variables
 	return interpreter.NewActivation(map[string]interface{}{
 		"user":        userMap,
@@ -212,6 +234,15 @@ func (e *CELEngine) buildActivation(ctx DecisionContext) (interpreter.Activation
 
 		"backend_id":   ctx.BackendID,
 		"backend_type": ctx.BackendType,
+
+		"risk_bucket":          riskBucketMap,
+		"risk_available":       ctx.RateLimit.RiskBucket.Available,
+		"risk_capacity":        ctx.RateLimit.RiskBucket.Capacity,
+		"risk_refill_rate":     ctx.RateLimit.RiskBucket.RefillRate,
+		"resource_bucket":      resourceBucketMap,
+		"resource_available":   ctx.RateLimit.ResourceBucket.Available,
+		"resource_capacity":    ctx.RateLimit.ResourceBucket.Capacity,
+		"resource_refill_rate": ctx.RateLimit.ResourceBucket.RefillRate,
 	})
 }
 

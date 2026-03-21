@@ -54,6 +54,7 @@ func (h *Handler) requireAdmin(next http.Handler) http.Handler {
 			http.Error(w, "Forbidden", http.StatusForbidden)
 			return
 		}
+		// Context with user is already set by requireAuth
 		next.ServeHTTP(w, r)
 	}))
 }

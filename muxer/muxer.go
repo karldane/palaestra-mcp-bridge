@@ -274,6 +274,16 @@ func mapToSlice(m map[string]string) []string {
 }
 
 func (tm *ToolMuxer) findBackendForTool(toolName string) (string, string, error) {
+	backendID, prefix, err := tm.FindBackendForTool(toolName)
+	if err != nil {
+		return "", "", err
+	}
+	return backendID, prefix, nil
+}
+
+// FindBackendForTool returns the backend ID and prefix for a given tool name.
+// This is exported so other packages can use it without calling HandleToolsCall.
+func (tm *ToolMuxer) FindBackendForTool(toolName string) (string, string, error) {
 	tm.mu.RLock()
 	defer tm.mu.RUnlock()
 

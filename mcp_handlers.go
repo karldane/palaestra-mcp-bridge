@@ -82,6 +82,16 @@ func handleToolsList(a *app, w http.ResponseWriter, r *http.Request, userID stri
 		pool := a.getPoolForUser(userID, backend.ID)
 		pool.TouchLastUsed()
 
+		// Skip backends that are known to be unavailable (circuit breaker open)
+		if pool.IsUnavailable() {
+			shared.Debugf("Backend %s is unavailable (circuit breaker open), skipping", backend.ID)
+			allTools = append(allTools, map[string]interface{}{
+				"name":        backend.ID + "_unavailable",
+				"description": "Backend unavailable - check configuration",
+			})
+			continue
+		}
+
 		select {
 		case proc := <-pool.Warm:
 			// Build tools/list request
@@ -145,6 +155,10 @@ func handleToolsList(a *app, w http.ResponseWriter, r *http.Request, userID stri
 			pool.Warm <- proc
 		default:
 			shared.Errorf("No warm process for backend %s", backend.ID)
+			allTools = append(allTools, map[string]interface{}{
+				"name":        backend.ID + "_starting",
+				"description": "Backend starting up or temporarily unavailable",
+			})
 		}
 	}
 
@@ -295,11 +309,19 @@ func handleToolsCall(a *app, w http.ResponseWriter, r *http.Request, userID stri
 		toolArgs, _ = params["arguments"].(map[string]interface{})
 	}
 
+	// Get backend ID from tool name (needed for enforcer)
+	backendID := ""
+	if toolName != "" && !strings.HasPrefix(toolName, "mcpbridge_") {
+		if bid, _, err := a.toolMuxer.FindBackendForTool(toolName); err == nil {
+			backendID = bid
+		}
+	}
+
 	// Enforcer check - policy enforcement
 	if a.enforcer != nil && toolName != "" && !strings.HasPrefix(toolName, "mcpbridge_") {
 		ctx := r.Context()
-		shared.Infof("Enforcer: Evaluating tool call - user=%s tool=%s", userID, toolName)
-		decision, err := a.enforcer.HandleToolCall(ctx, userID, toolName, toolArgs, "")
+		shared.Infof("Enforcer: Evaluating tool call - user=%s tool=%s backend=%s", userID, toolName, backendID)
+		decision, err := a.enforcer.HandleToolCall(ctx, userID, toolName, toolArgs, backendID)
 		if err != nil {
 			shared.Errorf("Enforcer error: %v", err)
 			// Continue anyway - fail open is safer than blocking everything
@@ -324,9 +346,10 @@ func handleToolsCall(a *app, w http.ResponseWriter, r *http.Request, userID stri
 				shared.Debugf("Enforcer PENDING_APPROVAL for tool: %s", toolName)
 				// Create approval request
 				approvalID, err := a.enforcer.RequestApproval(ctx, enforcer.DecisionContext{
-					UserID: userID,
-					Tool:   toolName,
-					Args:   toolArgs,
+					UserID:    userID,
+					Tool:      toolName,
+					Args:      toolArgs,
+					BackendID: backendID,
 				}, decision.PolicyID, decision.Message)
 				if err != nil {
 					shared.Errorf("Failed to create approval request: %v", err)

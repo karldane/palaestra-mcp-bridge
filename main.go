@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/mcp-bridge/mcp-bridge/auth"
@@ -25,10 +26,36 @@ func main() {
 	seedUser := flag.Bool("seed", false, "Seed a default test user (admin@localhost / admin) if no users exist")
 	versionFlag := flag.Bool("version", false, "Print version and exit")
 	insecureTesting := flag.Bool("INSECURE_TESTING_MODE", false, "Enable insecure testing mode on port 8081 (no auth, admin user)")
+	precacheEmail := flag.String("precache-tooling", "", "User email to use for precaching backend tools (runs precache and exits)")
 	flag.Parse()
 
 	if *versionFlag {
 		fmt.Println("mcp-bridge version 1.0.0")
+		os.Exit(0)
+	}
+
+	// Precache mode - scan backends and cache tools, then exit
+	if *precacheEmail != "" {
+		dbPath := os.Getenv("DB_PATH")
+		if dbPath == "" {
+			dbPath = "mcp-bridge.db"
+		}
+		st, err := store.New(dbPath)
+		if err != nil {
+			log.Fatalf("Failed to open database: %v", err)
+		}
+		defer st.Close()
+
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+		defer cancel()
+
+		err = RunPrecache(ctx, PrecacheConfig{
+			UserEmail: *precacheEmail,
+			Store:     st,
+		})
+		if err != nil {
+			log.Fatalf("Precache failed: %v", err)
+		}
 		os.Exit(0)
 	}
 	shared.Info("MCP Bridge starting...")
@@ -153,7 +180,15 @@ func main() {
 			enf = nil
 		} else {
 			shared.Infof("Enforcer initialized with policy enforcement")
+			enf.StartRateLimitRefill(context.Background(), time.Second)
 		}
+	}
+
+	// ---- Enforcer tool profile scanner ----
+	// Scan self-reporting backends at startup to populate enforcer_tool_profiles.
+	if enf != nil {
+		scanSelfReportingBackends(st, shared.Infof, shared.Warnf)
+		loadOverridesIntoResolver(st, enf, shared.Infof, shared.Warnf)
 	}
 
 	// ---- Wire up app ----
@@ -165,6 +200,25 @@ func main() {
 		config:      cfg,
 		enforcer:    enf,
 	}
+
+	// Wire up approval executor if enforcer is enabled
+	if enf != nil {
+		executor := web.NewApprovalRequestExecutor(pm, func(userID, backendID string) *poolmgr.Pool {
+			return a.getPoolForUser(userID, backendID)
+		}, func(backendID string) string {
+			return toolMuxer.GetPrefixForBackend(backendID)
+		})
+		enf.SetExecutor(executor)
+	}
+
+	// Check for uncached backends and warn
+	if uncached, err := st.GetUncachedBackends(); err == nil && len(uncached) > 0 {
+		shared.Warnf("WARNING: The following backends have no cached tools: %s", strings.Join(uncached, ", "))
+		shared.Warnf("Run './mcp-bridge --precache-tooling=YOUR_EMAIL' to cache tools for these backends")
+	}
+
+	// Start background retry loop for unavailable backends
+	go StartBackendRetryLoop(context.Background(), st)
 
 	// ---- HTTP routing ----
 	mux := http.NewServeMux()
@@ -236,6 +290,7 @@ func main() {
 	// Health checks — NOT behind auth middleware
 	mux.HandleFunc("/healthz", healthzHandler)
 	mux.HandleFunc("/readyz", readyzHandler(a))
+	mux.HandleFunc("/sse", sseHandler(a))
 
 	// Root path - MCP Streamable HTTP (behind auth middleware)
 	mcpBridgeServer := NewMCPBridgeServer(a, toolMuxer)
@@ -266,6 +321,10 @@ func main() {
 		webHandler.Register(testMux)
 		testMux.HandleFunc("/healthz", healthzHandler)
 		testMux.HandleFunc("/readyz", readyzHandler(a))
+		testMux.HandleFunc("/sse", func(w http.ResponseWriter, r *http.Request) {
+			ctx := context.WithValue(r.Context(), auth.UserIDKey, adminUser.ID)
+			sseHandler(a)(w, r.WithContext(ctx))
+		})
 
 		// Testing server uses the same MCP bridge but injects admin user into context
 		testMux.Handle("/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -283,5 +342,46 @@ func main() {
 
 	if err := http.ListenAndServe(":"+port, mux); err != nil {
 		log.Fatal(err)
+	}
+}
+
+// StartBackendRetryLoop runs in background, attempting to reconnect unavailable backends
+func StartBackendRetryLoop(ctx context.Context, st *store.Store) {
+	ticker := time.NewTicker(1 * time.Minute)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			shared.Info("Backend retry loop stopped")
+			return
+		case <-ticker.C:
+			backends, err := st.GetBackendsNeedingRetry()
+			if err != nil {
+				shared.Warnf("Backend retry loop: failed to get backends needing retry: %v", err)
+				continue
+			}
+
+			for _, backendID := range backends {
+				shared.Infof("Backend retry: attempting reconnection for %s", backendID)
+				// For now, just attempt a process spawn - if it succeeds, mark available
+				// The actual tool fetching will happen on first use
+				backend, err := st.GetBackend(backendID)
+				if err != nil {
+					shared.Warnf("Backend retry: failed to get backend %s: %v", backendID, err)
+					continue
+				}
+
+				// Quick test spawn
+				result := poolmgr.ProbeBackend(backend.Command, []string{}, 10*time.Second)
+				if result.Status == "ok" {
+					shared.Infof("Backend retry: %s reconnected successfully", backendID)
+					st.SetBackendAvailable(backendID)
+				} else {
+					shared.Warnf("Backend retry: %s still unavailable: %s", backendID, result.Message)
+					st.SetBackendUnavailable(backendID, result.Message)
+				}
+			}
+		}
 	}
 }

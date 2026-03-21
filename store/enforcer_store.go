@@ -21,6 +21,8 @@ func NewEnforcerStore(db *sql.DB) enforcer.EnforcerStore {
 	return &EnforcerStore{db: db}
 }
 
+const approvalColumns = `id, user_id, user_email, user_role, trust_level, tool_name, tool_args, backend_id, safety_profile, status, requested_at, expires_at, approved_by, approved_at, denial_reason, comments, policy_id, violation_msg, request_body, response_status, response_body, executed_at, error_msg`
+
 // CreatePolicy inserts a new policy
 func (s *EnforcerStore) CreatePolicy(policy enforcer.PolicyRow) error {
 	enabledInt := 0
@@ -77,6 +79,18 @@ func (s *EnforcerStore) DeletePolicy(id string) error {
 	return err
 }
 
+// UpdatePolicy updates an existing policy
+func (s *EnforcerStore) UpdatePolicy(policy enforcer.PolicyRow) error {
+	enabledInt := 0
+	if policy.Enabled {
+		enabledInt = 1
+	}
+	_, err := s.db.Exec(`UPDATE enforcer_policies SET name = ?, description = ?, scope = ?, expression = ?, action = ?, severity = ?, message = ?, enabled = ?, priority = ?, updated_at = ? WHERE id = ?`,
+		policy.Name, policy.Description, policy.Scope, policy.Expression, policy.Action,
+		policy.Severity, policy.Message, enabledInt, policy.Priority, policy.UpdatedAt, policy.ID)
+	return err
+}
+
 // CreateApprovalRequest inserts a new approval request
 func (s *EnforcerStore) CreateApprovalRequest(req enforcer.ApprovalRequestRow) error {
 	_, err := s.db.Exec(`INSERT INTO enforcer_approvals (id, user_id, user_email, user_role, trust_level, tool_name, tool_args, backend_id, safety_profile, status, requested_at, expires_at, policy_id, violation_msg, request_body) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
@@ -89,17 +103,18 @@ func (s *EnforcerStore) CreateApprovalRequest(req enforcer.ApprovalRequestRow) e
 // GetApprovalRequest retrieves an approval request by ID
 func (s *EnforcerStore) GetApprovalRequest(id string) (enforcer.ApprovalRequestRow, error) {
 	var req enforcer.ApprovalRequestRow
-	err := s.db.QueryRow(`SELECT id, user_id, user_email, user_role, trust_level, tool_name, tool_args, backend_id, safety_profile, status, requested_at, expires_at, approved_by, approved_at, denial_reason, comments, policy_id, violation_msg, COALESCE(request_body, '') FROM enforcer_approvals WHERE id = ?`, id).Scan(
+	err := s.db.QueryRow(`SELECT `+approvalColumns+` FROM enforcer_approvals WHERE id = ?`, id).Scan(
 		&req.ID, &req.UserID, &req.UserEmail, &req.UserRole, &req.TrustLevel, &req.ToolName,
 		&req.ToolArgs, &req.BackendID, &req.SafetyProfile, &req.Status, &req.RequestedAt,
 		&req.ExpiresAt, &req.ApprovedBy, &req.ApprovedAt, &req.DenialReason, &req.Comments,
-		&req.PolicyID, &req.ViolationMsg, &req.RequestBody)
+		&req.PolicyID, &req.ViolationMsg, &req.RequestBody, &req.ResponseStatus,
+		&req.ResponseBody, &req.ExecutedAt, &req.ErrorMsg)
 	return req, err
 }
 
 // ListPendingApprovals retrieves all pending approval requests
 func (s *EnforcerStore) ListPendingApprovals() ([]enforcer.ApprovalRequestRow, error) {
-	rows, err := s.db.Query(`SELECT id, user_id, user_email, user_role, trust_level, tool_name, tool_args, backend_id, safety_profile, status, requested_at, expires_at, approved_by, approved_at, denial_reason, comments, policy_id, violation_msg, COALESCE(request_body, '') FROM enforcer_approvals WHERE status = 'PENDING' ORDER BY requested_at ASC`)
+	rows, err := s.db.Query(`SELECT ` + approvalColumns + ` FROM enforcer_approvals WHERE status = 'PENDING' ORDER BY requested_at ASC`)
 	if err != nil {
 		return nil, err
 	}
@@ -111,13 +126,58 @@ func (s *EnforcerStore) ListPendingApprovals() ([]enforcer.ApprovalRequestRow, e
 		err := rows.Scan(&req.ID, &req.UserID, &req.UserEmail, &req.UserRole, &req.TrustLevel,
 			&req.ToolName, &req.ToolArgs, &req.BackendID, &req.SafetyProfile, &req.Status,
 			&req.RequestedAt, &req.ExpiresAt, &req.ApprovedBy, &req.ApprovedAt,
-			&req.DenialReason, &req.Comments, &req.PolicyID, &req.ViolationMsg, &req.RequestBody)
+			&req.DenialReason, &req.Comments, &req.PolicyID, &req.ViolationMsg, &req.RequestBody,
+			&req.ResponseStatus, &req.ResponseBody, &req.ExecutedAt, &req.ErrorMsg)
 		if err != nil {
 			return nil, err
 		}
 		requests = append(requests, req)
 	}
 	return requests, rows.Err()
+}
+
+// ListAllApprovals retrieves all approval requests (not just pending)
+func (s *EnforcerStore) ListAllApprovals() ([]enforcer.ApprovalRequestRow, error) {
+	rows, err := s.db.Query(`SELECT ` + approvalColumns + ` FROM enforcer_approvals ORDER BY requested_at DESC LIMIT 100`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var requests []enforcer.ApprovalRequestRow
+	for rows.Next() {
+		var req enforcer.ApprovalRequestRow
+		err := rows.Scan(&req.ID, &req.UserID, &req.UserEmail, &req.UserRole, &req.TrustLevel,
+			&req.ToolName, &req.ToolArgs, &req.BackendID, &req.SafetyProfile, &req.Status,
+			&req.RequestedAt, &req.ExpiresAt, &req.ApprovedBy, &req.ApprovedAt,
+			&req.DenialReason, &req.Comments, &req.PolicyID, &req.ViolationMsg, &req.RequestBody,
+			&req.ResponseStatus, &req.ResponseBody, &req.ExecutedAt, &req.ErrorMsg)
+		if err != nil {
+			return nil, err
+		}
+		requests = append(requests, req)
+	}
+	return requests, rows.Err()
+}
+
+// MarkExecuting marks an approval request as executing
+func (s *EnforcerStore) MarkExecuting(id string) error {
+	_, err := s.db.Exec(`UPDATE enforcer_approvals SET status = 'EXECUTING' WHERE id = ?`, id)
+	return err
+}
+
+// MarkCompleted marks an approval request as completed with response data
+func (s *EnforcerStore) MarkCompleted(id string, responseStatus int, responseBody string) error {
+	_, err := s.db.Exec(`UPDATE enforcer_approvals SET status = 'COMPLETED', response_status = ?, response_body = ?, executed_at = ? WHERE id = ?`,
+		responseStatus, responseBody, time.Now(), id)
+	return err
+}
+
+// MarkFailed marks an approval request as failed with error message
+func (s *EnforcerStore) MarkFailed(id string, errorMsg string) error {
+	_, err := s.db.Exec(`UPDATE enforcer_approvals SET status = 'FAILED', error_msg = ?, executed_at = ? WHERE id = ?`,
+		errorMsg, time.Now(), id)
+	return err
 }
 
 // ApproveRequest marks an approval request as approved
@@ -137,6 +197,13 @@ func (s *EnforcerStore) DenyRequest(id string, approverID string, reason string)
 // CleanupExpiredApprovals removes or marks expired approval requests
 func (s *EnforcerStore) CleanupExpiredApprovals() error {
 	_, err := s.db.Exec(`UPDATE enforcer_approvals SET status = 'EXPIRED' WHERE status = 'PENDING' AND expires_at < ?`, time.Now())
+	return err
+}
+
+// CleanupOldApprovals deletes completed/denied/expired requests older than the specified duration
+func (s *EnforcerStore) CleanupOldApprovals(olderThan time.Duration) error {
+	cutoff := time.Now().Add(-olderThan)
+	_, err := s.db.Exec(`DELETE FROM enforcer_approvals WHERE status IN ('COMPLETED', 'DENIED', 'EXPIRED', 'FAILED') AND requested_at < ?`, cutoff)
 	return err
 }
 
@@ -229,4 +296,120 @@ func (s *EnforcerStore) LogAuditEvent(requestID string, userID string, toolName 
 	_, err := s.db.Exec(`INSERT INTO enforcer_audit_log (id, request_id, user_id, tool_name, action, policy_id, message, context, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		generateID(), requestID, userID, toolName, action, policyID, message, string(contextJSON), time.Now())
 	return err
+}
+
+// GetToolProfile retrieves a tool's self-reported safety profile.
+func (s *EnforcerStore) GetToolProfile(backendID, toolName string) (enforcer.ToolProfileRow, error) {
+	var p enforcer.ToolProfileRow
+	var hitl, pii, idemp int
+	err := s.db.QueryRow(`
+		SELECT id, backend_id, tool_name, risk_level, impact_scope, resource_cost, requires_hitl, pii_exposure, idempotent, raw_profile, scanned_at
+		FROM enforcer_tool_profiles WHERE backend_id = ? AND tool_name = ?`,
+		backendID, toolName,
+	).Scan(&p.ID, &p.BackendID, &p.ToolName, &p.RiskLevel, &p.ImpactScope, &p.ResourceCost, &hitl, &pii, &idemp, &p.RawProfile, &p.ScannedAt)
+	if err != nil {
+		return enforcer.ToolProfileRow{}, err
+	}
+	p.RequiresHITL = hitl != 0
+	p.PIIExposure = pii != 0
+	p.Idempotent = idemp != 0
+	return p, nil
+}
+
+// UpsertOverride inserts or updates a tool override.
+func (s *EnforcerStore) UpsertOverride(override enforcer.EnforcerOverrideRow) error {
+	hitl := 0
+	if override.RequiresHITL {
+		hitl = 1
+	}
+	pii := 0
+	if override.PIIExposure {
+		pii = 1
+	}
+	_, err := s.db.Exec(`
+		INSERT INTO enforcer_overrides (id, tool_name, backend_id, risk_level, impact_scope, resource_cost, requires_hitl, pii_exposure, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		ON CONFLICT(tool_name, backend_id) DO UPDATE SET
+			risk_level=excluded.risk_level,
+			impact_scope=excluded.impact_scope,
+			resource_cost=excluded.resource_cost,
+			requires_hitl=excluded.requires_hitl,
+			pii_exposure=excluded.pii_exposure,
+			updated_at=excluded.updated_at`,
+		override.ID, override.ToolName, override.BackendID, override.RiskLevel, override.ImpactScope,
+		override.ResourceCost, hitl, pii, override.CreatedAt, override.UpdatedAt,
+	)
+	return err
+}
+
+// GetOverride retrieves an override by tool name and backend.
+func (s *EnforcerStore) GetOverride(toolName, backendID string) (enforcer.EnforcerOverrideRow, error) {
+	var o enforcer.EnforcerOverrideRow
+	var hitl, pii int
+	err := s.db.QueryRow(`
+		SELECT id, tool_name, backend_id, risk_level, impact_scope, resource_cost, requires_hitl, pii_exposure, created_at, updated_at
+		FROM enforcer_overrides WHERE tool_name = ? AND backend_id = ?`,
+		toolName, backendID,
+	).Scan(&o.ID, &o.ToolName, &o.BackendID, &o.RiskLevel, &o.ImpactScope, &o.ResourceCost, &hitl, &pii, &o.CreatedAt, &o.UpdatedAt)
+	if err != nil {
+		return enforcer.EnforcerOverrideRow{}, err
+	}
+	o.RequiresHITL = hitl != 0
+	o.PIIExposure = pii != 0
+	return o, nil
+}
+
+// ListOverrides returns all overrides.
+func (s *EnforcerStore) ListOverrides() ([]enforcer.EnforcerOverrideRow, error) {
+	rows, err := s.db.Query(`
+		SELECT id, tool_name, backend_id, risk_level, impact_scope, resource_cost, requires_hitl, pii_exposure, created_at, updated_at
+		FROM enforcer_overrides ORDER BY tool_name, backend_id`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var overrides []enforcer.EnforcerOverrideRow
+	for rows.Next() {
+		var o enforcer.EnforcerOverrideRow
+		var hitl, pii int
+		if err := rows.Scan(&o.ID, &o.ToolName, &o.BackendID, &o.RiskLevel, &o.ImpactScope, &o.ResourceCost, &hitl, &pii, &o.CreatedAt, &o.UpdatedAt); err != nil {
+			return nil, err
+		}
+		o.RequiresHITL = hitl != 0
+		o.PIIExposure = pii != 0
+		overrides = append(overrides, o)
+	}
+	return overrides, rows.Err()
+}
+
+// DeleteOverride removes an override.
+func (s *EnforcerStore) DeleteOverride(toolName, backendID string) error {
+	_, err := s.db.Exec(`DELETE FROM enforcer_overrides WHERE tool_name = ? AND backend_id = ?`, toolName, backendID)
+	return err
+}
+
+// ListAllToolProfiles returns all stored tool profiles.
+func (s *EnforcerStore) ListAllToolProfiles() ([]ToolProfileRow, error) {
+	rows, err := s.db.Query(`
+		SELECT id, backend_id, tool_name, risk_level, impact_scope, resource_cost, requires_hitl, pii_exposure, idempotent, raw_profile, scanned_at
+		FROM enforcer_tool_profiles ORDER BY backend_id, tool_name`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var profiles []ToolProfileRow
+	for rows.Next() {
+		var p ToolProfileRow
+		var hitl, pii, idemp int
+		if err := rows.Scan(&p.ID, &p.BackendID, &p.ToolName, &p.RiskLevel, &p.ImpactScope, &p.ResourceCost, &hitl, &pii, &idemp, &p.RawProfile, &p.ScannedAt); err != nil {
+			return nil, err
+		}
+		p.RequiresHITL = hitl != 0
+		p.PIIExposure = pii != 0
+		p.Idempotent = idemp != 0
+		profiles = append(profiles, p)
+	}
+	return profiles, rows.Err()
 }

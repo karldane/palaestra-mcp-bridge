@@ -51,6 +51,23 @@ func seedBackendsFromConfig(st *store.Store, cfg *config.InternalConfig) {
 		return // DB already has backends; don't overwrite.
 	}
 
+	// Create a built-in mcpbridge system backend that speaks MCP
+	// This is used as a fallback when no other backends are available
+	mcpbridgeBackend := &store.Backend{
+		ID:            "mcpbridge",
+		Command:       "mcp-bridge-builtin",
+		PoolSize:      1,
+		ToolPrefix:    "",
+		Enabled:       true,
+		IsSystem:      true,
+		SelfReporting: true,
+	}
+	if err := st.CreateBackend(mcpbridgeBackend); err != nil {
+		shared.Errorf("seed-backends: create mcpbridge: %v", err)
+	} else {
+		shared.Info("seed-backends: created built-in mcpbridge backend")
+	}
+
 	count := 0
 	for id, bc := range cfg.Backends {
 		envJSON := "{}"
@@ -60,12 +77,13 @@ func seedBackendsFromConfig(st *store.Store, cfg *config.InternalConfig) {
 			}
 		}
 		b := &store.Backend{
-			ID:         id,
-			Command:    bc.Command,
-			PoolSize:   bc.PoolSize,
-			ToolPrefix: bc.ToolPrefix,
-			Env:        envJSON,
-			Enabled:    true,
+			ID:            id,
+			Command:       bc.Command,
+			PoolSize:      bc.PoolSize,
+			ToolPrefix:    bc.ToolPrefix,
+			Env:           envJSON,
+			Enabled:       true,
+			SelfReporting: bc.SelfReporting,
 		}
 		if err := st.CreateBackend(b); err != nil {
 			shared.Errorf("seed-backends: create %s: %v", id, err)

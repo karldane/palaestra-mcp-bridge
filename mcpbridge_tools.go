@@ -99,6 +99,22 @@ func (s *MCPBridgeServer) registerSystemTools(mcpServer *server.MCPServer) {
 			Required: []string{"approval_id"},
 		},
 	}, s.handleApprovalStatusTool)
+
+	// Rate limit quotas tool
+	mcpServer.AddTool(mcp.Tool{
+		Name:        "mcpbridge_quotas",
+		Description: "Get your current rate limit quotas. Shows available tokens in risk and resource buckets per backend. Risk buckets limit destructive operations (writes/deletes), resource buckets limit expensive API calls.",
+		InputSchema: mcp.ToolInputSchema{
+			Type: "object",
+			Properties: map[string]interface{}{
+				"backend_id": map[string]interface{}{
+					"type":        "string",
+					"description": "Optional: specific backend to check (e.g., 'slack', 'newrelic'). If not provided, shows all backends.",
+				},
+			},
+			Required: []string{},
+		},
+	}, s.handleQuotasTool)
 }
 
 func (s *MCPBridgeServer) handlePingTool(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
@@ -348,13 +364,36 @@ func (s *MCPBridgeServer) handleApprovalStatusTool(ctx context.Context, request 
 		result.WriteString("\n⏳ Request is pending administrator review.\n")
 		result.WriteString("Please wait for an administrator to approve or deny.\n")
 
-	case "APPROVED":
-		result.WriteString("\n✅ Request was APPROVED!\n")
+	case "EXECUTING":
+		result.WriteString("\n🔄 Request is being executed.\n")
+		result.WriteString("Please check back shortly for results.\n")
+
+	case "COMPLETED":
+		result.WriteString("\n✅ Request was APPROVED and EXECUTED!\n")
 		if approval.ApprovedBy.Valid {
 			result.WriteString(fmt.Sprintf("Approved by: %s\n", approval.ApprovedBy.String))
 		}
 		if approval.Comments != "" {
 			result.WriteString(fmt.Sprintf("Comments: %s\n", approval.Comments))
+		}
+		result.WriteString(fmt.Sprintf("\nHTTP Status Code: %d\n", approval.ResponseStatus))
+		result.WriteString("\nResponse Body:\n")
+		result.WriteString(approval.ResponseBody)
+
+	case "FAILED":
+		result.WriteString("\n❌ Request was APPROVED but EXECUTION FAILED.\n")
+		if approval.ApprovedBy.Valid {
+			result.WriteString(fmt.Sprintf("Approved by: %s\n", approval.ApprovedBy.String))
+		}
+		if approval.ErrorMsg != "" {
+			result.WriteString(fmt.Sprintf("\nError: %s\n", approval.ErrorMsg))
+		}
+		if approval.ResponseStatus > 0 {
+			result.WriteString(fmt.Sprintf("HTTP Status Code: %d\n", approval.ResponseStatus))
+		}
+		if approval.ResponseBody != "" {
+			result.WriteString("\nResponse from server:\n")
+			result.WriteString(approval.ResponseBody)
 		}
 		result.WriteString("\nOriginal request body:\n")
 		result.WriteString(approval.RequestBody)
@@ -436,6 +475,71 @@ func (s *MCPBridgeServer) handleReadmeTool(ctx context.Context, request mcp.Call
 	result.WriteString("\n✅ You are now ready to use MCP Bridge tools!\n")
 	result.WriteString("Remember: When using GitHub search tools, use filters like 'is:pr org:tusker-direct'\n")
 	result.WriteString("For Jira, use projectKey=PROJ to filter by project.\n")
+
+	return mcp.NewToolResultText(result.String()), nil
+}
+
+func (s *MCPBridgeServer) handleQuotasTool(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	if s.app.enforcer == nil {
+		return mcp.NewToolResultText("Error: Enforcer not available"), nil
+	}
+
+	userID := ctx.Value("user_id").(string)
+	backendID, _ := request.Params.Arguments.(map[string]interface{})["backend_id"].(string)
+
+	var result strings.Builder
+	result.WriteString("=== Rate Limit Quotas ===\n\n")
+
+	backends, err := s.app.store.ListBackends()
+	if err != nil {
+		return mcp.NewToolResultText("Error: " + err.Error()), nil
+	}
+
+	for _, backend := range backends {
+		if !backend.Enabled {
+			continue
+		}
+
+		if backendID != "" && backend.ID != backendID {
+			continue
+		}
+
+		status := s.app.enforcer.GetRateLimitStatus(userID, backend.ID)
+
+		result.WriteString(fmt.Sprintf("📦 BACKEND: %s\n", strings.ToUpper(backend.ID)))
+		result.WriteString(strings.Repeat("─", 30+len(backend.ID)))
+		result.WriteString("\n\n")
+
+		if riskBucket, ok := status["risk_bucket"].(map[string]interface{}); ok {
+			riskAvailable := int(riskBucket["available"].(float64))
+			riskCapacity := int(riskBucket["capacity"].(float64))
+			riskRefill := int(riskBucket["refill_rate"].(float64))
+			riskUsed := riskCapacity - riskAvailable
+			riskPct := float64(riskUsed) / float64(riskCapacity) * 100
+			result.WriteString(fmt.Sprintf("  🔴 Risk Bucket: %d/%d tokens (%.0f%% used)\n", riskAvailable, riskCapacity, riskPct))
+			result.WriteString(fmt.Sprintf("     Refill rate: %d tokens/minute\n", riskRefill))
+			result.WriteString(fmt.Sprintf("     ⚠️  Limits write and delete operations\n\n"))
+		}
+
+		if resBucket, ok := status["resource_bucket"].(map[string]interface{}); ok {
+			resAvailable := int(resBucket["available"].(float64))
+			resCapacity := int(resBucket["capacity"].(float64))
+			resRefill := int(resBucket["refill_rate"].(float64))
+			resUsed := resCapacity - resAvailable
+			resPct := float64(resUsed) / float64(resCapacity) * 100
+			result.WriteString(fmt.Sprintf("  🟡 Resource Bucket: %d/%d tokens (%.0f%% used)\n", resAvailable, resCapacity, resPct))
+			result.WriteString(fmt.Sprintf("     Refill rate: %d tokens/minute\n", resRefill))
+			result.WriteString(fmt.Sprintf("     ⚠️  Limits expensive API operations\n\n"))
+		}
+
+		result.WriteString("\n")
+	}
+
+	result.WriteString("💡 Tips:\n")
+	result.WriteString("- Risk bucket depletes on write/delete operations\n")
+	result.WriteString("- Resource bucket depletes on all operations\n")
+	result.WriteString("- Both buckets refill automatically over time\n")
+	result.WriteString("- Contact admin if you need higher limits\n")
 
 	return mcp.NewToolResultText(result.String()), nil
 }

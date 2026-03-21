@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"os"
 	"os/exec"
 	"strings"
 	"sync"
@@ -25,6 +26,7 @@ type ManagedProcess struct {
 	mu        sync.Mutex
 	UserID    string
 	BackendID string
+	StderrBuf strings.Builder // Captured stderr for error diagnosis
 }
 
 type PendingRequest struct {
@@ -63,7 +65,10 @@ func SpawnProcess(pool *Pool, command string, env []string) (*ManagedProcess, er
 		return nil, err
 	}
 
-	go captureStderr(proc)
+	// Only capture stderr for real processes, not for built-in servers
+	if command != "mcp-bridge-builtin" {
+		go captureStderr(proc)
+	}
 	go captureStdout(pool, proc)
 
 	return proc, nil
@@ -137,6 +142,11 @@ func isAllowedCommand(command string) error {
 // spawnProcessRaw starts a child process without launching any capture
 // goroutines. The caller is responsible for reading stdout/stderr.
 func spawnProcessRaw(command string, env []string) (*ManagedProcess, error) {
+	// Handle built-in MCP echo server
+	if command == "mcp-bridge-builtin" {
+		return spawnBuiltinMCPServer()
+	}
+
 	// Validate command before execution
 	if err := isAllowedCommand(command); err != nil {
 		return nil, fmt.Errorf("command not allowed: %w", err)
@@ -210,8 +220,9 @@ func captureStdout(pool *Pool, proc *ManagedProcess) {
 	}()
 
 	scanner := bufio.NewScanner(proc.Stdout)
-	// Increase buffer size to handle large responses (e.g., GitHub MCP server init)
-	const maxCapacity = 512 * 1024 // 512KB
+	// Increase buffer size to handle large responses (e.g., listing all users, full PRs)
+	// Go's bufio.Scanner has a max of 64MB, we use 32MB to handle most cases
+	const maxCapacity = 32 * 1024 * 1024 // 32MB
 	buf := make([]byte, maxCapacity)
 	scanner.Buffer(buf, maxCapacity)
 
@@ -220,7 +231,13 @@ func captureStdout(pool *Pool, proc *ManagedProcess) {
 		dataCopy := make([]byte, len(data))
 		copy(dataCopy, data)
 
-		shared.Debugf("captureStdout read line: %s", string(dataCopy))
+		// Log truncated version to avoid flooding logs with large responses
+		const maxLogLen = 200
+		logLine := string(dataCopy)
+		if len(logLine) > maxLogLen {
+			logLine = logLine[:maxLogLen] + "...[truncated]"
+		}
+		shared.Debugf("captureStdout read line: %s", logLine)
 
 		proc.mu.Lock()
 		select {
@@ -244,6 +261,9 @@ func captureStderr(proc *ManagedProcess) {
 		if err != nil {
 			break
 		}
+		proc.mu.Lock()
+		proc.StderrBuf.Write(buf[:n])
+		proc.mu.Unlock()
 		shared.Debugf("mcp stderr: %s", string(buf[:n]))
 	}
 }
@@ -272,4 +292,118 @@ func min(a, b time.Duration) time.Duration {
 		return a
 	}
 	return b
+}
+
+// spawnBuiltinMCPServer creates an in-process MCP echo server that responds
+// to MCP protocol messages. This is used as a fallback when no other backends
+// are available.
+func spawnBuiltinMCPServer() (*ManagedProcess, error) {
+	// Create pipes for stdin/stdout simulation
+	reader, writer := io.Pipe()
+	outputReader, outputWriter := io.Pipe()
+
+	proc := &ManagedProcess{
+		LineChan: make(chan []byte, 100),
+		isWarm:   true,
+	}
+
+	// Create a fake exec.Cmd for compatibility
+	cmd := &exec.Cmd{
+		Process: &os.Process{},
+	}
+	proc.Cmd = cmd
+
+	// Handle MCP protocol in a goroutine
+	go func() {
+		defer reader.Close()
+		defer outputWriter.Close()
+
+		scanner := bufio.NewScanner(reader)
+		const maxCapacity = 32 * 1024 * 1024 // 32MB
+		buf := make([]byte, maxCapacity)
+		scanner.Buffer(buf, maxCapacity)
+
+		for scanner.Scan() {
+			line := scanner.Bytes()
+			proc.LineChan <- line
+
+			// Try to parse and respond
+			var msg JSONRPCMessage
+			if err := json.Unmarshal(line, &msg); err == nil {
+				var response []byte
+				switch msg.Method {
+				case "initialize":
+					response, _ = json.Marshal(map[string]interface{}{
+						"jsonrpc": "2.0",
+						"id":      msg.ID,
+						"result": map[string]interface{}{
+							"protocolVersion": "2024-11-05",
+							"capabilities":    map[string]interface{}{},
+							"serverInfo": map[string]string{
+								"name":    "mcp-bridge-builtin",
+								"version": "1.0.0",
+							},
+							"instructions": "Built-in MCP Bridge server - used as fallback when other backends are unavailable",
+						},
+					})
+				case "tools/list":
+					response, _ = json.Marshal(map[string]interface{}{
+						"jsonrpc": "2.0",
+						"id":      msg.ID,
+						"result": map[string]interface{}{
+							"tools": []map[string]interface{}{
+								{
+									"name":        "mcpbridge_echo",
+									"description": "Echo tool - returns the input arguments. Used as fallback when other backends are unavailable.",
+									"inputSchema": map[string]interface{}{
+										"type": "object",
+										"properties": map[string]interface{}{
+											"message": map[string]interface{}{
+												"type":        "string",
+												"description": "Message to echo back",
+											},
+										},
+									},
+								},
+								{
+									"name":        "mcpbridge_status",
+									"description": "Returns system status information",
+									"inputSchema": map[string]interface{}{
+										"type":       "object",
+										"properties": map[string]interface{}{},
+									},
+								},
+							},
+						},
+					})
+				case "tools/call":
+					if p, ok := msg.Params.(map[string]interface{}); ok {
+						response, _ = json.Marshal(map[string]interface{}{
+							"jsonrpc": "2.0",
+							"id":      msg.ID,
+							"result": map[string]interface{}{
+								"content": []map[string]interface{}{
+									{
+										"type": "text",
+										"text": fmt.Sprintf("Echo response: %v", p),
+									},
+								},
+							},
+						})
+					}
+				}
+
+				if response != nil {
+					response = append(response, '\n')
+					outputWriter.Write(response)
+				}
+			}
+		}
+	}()
+
+	// Create stdin/stdout interfaces from the pipes
+	proc.Stdin = writer
+	proc.Stdout = outputReader
+
+	return proc, nil
 }

@@ -142,3 +142,109 @@ func ProbeBackend(command string, env []string, timeout time.Duration) *ProbeRes
 		}
 	}
 }
+
+// ScanBackendTools spawns a backend, performs MCP handshake, calls tools/list,
+// and returns the raw JSON-RPC response containing the tools array.
+// This is used by the enforcer scanner to extract self-reported EnforcerProfile data.
+func ScanBackendTools(command string, env []string, timeout time.Duration) ([]byte, error) {
+	pool := &Pool{
+		Warm:            make(chan *ManagedProcess, 1),
+		Spawning:        make(chan struct{}, 1),
+		Command:         command,
+		Env:             env,
+		backoffDelay:    100 * time.Millisecond,
+		pendingRequests: make(map[string]*PendingRequest),
+		broadcastCh:     make(chan []byte, 100),
+		BackendID:       "__scan__",
+		lastUsed:        time.Now(),
+	}
+	go pool.responseDispatcher()
+
+	proc, err := spawnProcessRaw(command, env)
+	if err != nil {
+		return nil, fmt.Errorf("spawn error: %w", err)
+	}
+	defer proc.Kill()
+
+	go captureStdout(pool, proc)
+
+	initID := fmt.Sprintf("scan-%d", time.Now().UnixNano())
+	initMsg := JSONRPCMessage{
+		JSONRPC: "2.0",
+		ID:      initID,
+		Method:  "initialize",
+		Params: map[string]interface{}{
+			"protocolVersion": "2024-11-05",
+			"capabilities":    map[string]interface{}{},
+			"clientInfo": map[string]string{
+				"name":    "mcp-bridge-scan",
+				"version": "1.0.0",
+			},
+		},
+	}
+
+	initBody, _ := json.Marshal(initMsg)
+	buf := new(bytes.Buffer)
+	if compErr := json.Compact(buf, initBody); compErr != nil {
+		buf.Write(initBody)
+	}
+	buf.WriteByte('\n')
+
+	respCh := pool.RegisterRequest(initID)
+	proc.Stdin.Write(buf.Bytes())
+
+	select {
+	case _, ok := <-respCh:
+		pool.UnregisterRequest(initID)
+		if !ok {
+			return nil, fmt.Errorf("initialize failed: channel closed")
+		}
+	case <-time.After(timeout):
+		pool.UnregisterRequest(initID)
+		return nil, fmt.Errorf("initialize timeout after %s", timeout)
+	}
+
+	notifMsg := JSONRPCMessage{
+		JSONRPC: "2.0",
+		Method:  "notifications/initialized",
+	}
+	notifBody, _ := json.Marshal(notifMsg)
+	buf.Reset()
+	if compErr := json.Compact(buf, notifBody); compErr != nil {
+		buf.Write(notifBody)
+	}
+	buf.WriteByte('\n')
+	proc.Stdin.Write(buf.Bytes())
+
+	time.Sleep(100 * time.Millisecond)
+
+	toolsID := fmt.Sprintf("scan-tools-%d", time.Now().UnixNano())
+	toolsMsg := JSONRPCMessage{
+		JSONRPC: "2.0",
+		ID:      toolsID,
+		Method:  "tools/list",
+		Params:  map[string]interface{}{},
+	}
+
+	toolsBody, _ := json.Marshal(toolsMsg)
+	buf.Reset()
+	if compErr := json.Compact(buf, toolsBody); compErr != nil {
+		buf.Write(toolsBody)
+	}
+	buf.WriteByte('\n')
+
+	toolsCh := pool.RegisterRequest(toolsID)
+	proc.Stdin.Write(buf.Bytes())
+
+	select {
+	case resp, ok := <-toolsCh:
+		pool.UnregisterRequest(toolsID)
+		if !ok || len(resp) == 0 {
+			return nil, fmt.Errorf("tools/list: no response")
+		}
+		return resp, nil
+	case <-time.After(timeout):
+		pool.UnregisterRequest(toolsID)
+		return nil, fmt.Errorf("tools/list timeout after %s", timeout)
+	}
+}

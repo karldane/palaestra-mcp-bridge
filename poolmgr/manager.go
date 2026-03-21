@@ -233,6 +233,7 @@ type PoolStatus struct {
 	CurrentSize   int
 	MinPoolSize   int
 	MaxPoolSize   int
+	Unavailable   bool     // True if backend has exhausted spawn attempts
 	MemoryBytes   uint64   // Total memory usage in bytes
 	ProcessMemory []uint64 // Per-process memory in bytes
 }
@@ -259,6 +260,7 @@ func (pm *PoolManager) GetPoolsForUser(userID string) []PoolStatus {
 			CurrentSize: pool.GetCurrentSize(),
 			MinPoolSize: pool.MinPoolSize,
 			MaxPoolSize: pool.MaxPoolSize,
+			Unavailable: pool.IsUnavailable(),
 		}
 		// Get memory usage for all warm processes
 		status.ProcessMemory = pool.GetProcessMemory()
@@ -289,6 +291,7 @@ func (pm *PoolManager) GetAllPools() []PoolStatus {
 			CurrentSize: pool.GetCurrentSize(),
 			MinPoolSize: pool.MinPoolSize,
 			MaxPoolSize: pool.MaxPoolSize,
+			Unavailable: pool.IsUnavailable(),
 		}
 		// Get memory usage for all warm processes
 		status.ProcessMemory = pool.GetProcessMemory()
@@ -298,4 +301,16 @@ func (pm *PoolManager) GetAllPools() []PoolStatus {
 		statuses = append(statuses, status)
 	}
 	return statuses
+}
+
+// ResetPool marks a pool as available again and triggers a new spawn attempt
+func (pm *PoolManager) ResetPool(backendID, userID string) {
+	key := backendID + ":" + userID
+	pm.mu.RLock()
+	pool, ok := pm.pools[key]
+	pm.mu.RUnlock()
+
+	if ok {
+		pool.ResetSpawnAttempts()
+	}
 }

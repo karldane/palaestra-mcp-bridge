@@ -55,7 +55,8 @@
             {{end}}
           </td>
           <td>
-            <span class="text-muted">Edit | Delete</span>
+            <a href="/web/admin/enforcer/policies/edit?id={{.ID}}" class="btn btn-sm btn-secondary">Edit</a>
+            <button class="btn btn-sm btn-danger" onclick="deletePolicy('{{.ID}}')">Delete</button>
           </td>
         </tr>
         {{else}}
@@ -84,5 +85,23 @@
     </form>
   </div>
 </div>
+<script>
+async function deletePolicy(id) {
+  if (!confirm('Delete this policy? This action cannot be undone.')) return;
+  
+  try {
+    const resp = await fetch('/web/admin/enforcer/policies/delete?id=' + encodeURIComponent(id), {
+      method: 'POST'
+    });
+    if (resp.ok) {
+      window.location.reload();
+    } else {
+      alert('Failed to delete policy');
+    }
+  } catch (e) {
+    alert('Error: ' + e);
+  }
+}
+</script>
 {{template "foot" .}}
 {{end}}

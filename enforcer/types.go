@@ -111,8 +111,40 @@ type DecisionContext struct {
 	BackendID   string
 	BackendType string
 
+	// Rate limiting context
+	RateLimit RateLimitInfo
+
 	// Original request for replay after approval
 	RequestBody string
+}
+
+// RateLimitInfo contains rate limit bucket state for evaluation
+type RateLimitInfo struct {
+	RiskBucket     BucketStatus
+	ResourceBucket BucketStatus
+}
+
+// BucketStatus represents the current state of a bucket
+type BucketStatus struct {
+	Available  int // Current available tokens
+	Capacity   int // Max capacity
+	RefillRate int // Tokens per minute
+}
+
+// NewRateLimitInfo creates a RateLimitInfo from bucket states
+func NewRateLimitInfo(riskAvailable, riskCapacity, riskRefill, resourceAvailable, resourceCapacity, resourceRefill int) RateLimitInfo {
+	return RateLimitInfo{
+		RiskBucket: BucketStatus{
+			Available:  riskAvailable,
+			Capacity:   riskCapacity,
+			RefillRate: riskRefill,
+		},
+		ResourceBucket: BucketStatus{
+			Available:  resourceAvailable,
+			Capacity:   resourceCapacity,
+			RefillRate: resourceRefill,
+		},
+	}
 }
 
 // CELPolicy represents a single policy rule for CEL evaluation
@@ -190,13 +222,13 @@ type KillSwitch struct {
 // Registry stores and resolves safety profiles for tools
 type Registry interface {
 	// Resolve determines the safety profile for a tool using tiered priority
-	Resolve(toolName string, backendID string, annotations map[string]interface{}) (SafetyProfile, error)
+	Resolve(toolName string, backendID string) (SafetyProfile, error)
 
 	// RegisterOverride adds a manual override for a tool
-	RegisterOverride(toolName string, profile SafetyProfile) error
+	RegisterOverride(toolName, backendID string, profile SafetyProfile) error
 
 	// RemoveOverride removes a manual override
-	RemoveOverride(toolName string) error
+	RemoveOverride(toolName, backendID string) error
 
 	// GetProfile retrieves the current safety profile for a tool
 	GetProfile(toolName string) (SafetyProfile, bool)
@@ -276,8 +308,9 @@ type EnforcerConfig struct {
 	Enabled                     bool
 	DefaultAction               Action
 	PolicyFile                  string
-	ApprovalTimeout             time.Duration // Default: 10 minutes
+	ApprovalTimeout             time.Duration // Default: 24 hours
 	CleanupInterval             time.Duration // How often to cleanup expired requests
+	RetentionPeriod             time.Duration // How long to keep completed/denied requests
 	EnableDescriptionDecoration bool
 	EnableKillSwitch            bool
 }
@@ -289,6 +322,7 @@ func DefaultEnforcerConfig() EnforcerConfig {
 		DefaultAction:               ActionAllow,
 		ApprovalTimeout:             24 * time.Hour,
 		CleanupInterval:             1 * time.Minute,
+		RetentionPeriod:             7 * 24 * time.Hour, // 7 days
 		EnableDescriptionDecoration: true,
 		EnableKillSwitch:            true,
 	}
@@ -302,6 +336,9 @@ var ErrApprovalRequired = fmt.Errorf("human approval required")
 
 // ErrKillSwitchActive is returned when a kill switch is active
 var ErrKillSwitchActive = fmt.Errorf("emergency kill switch is active")
+
+// ErrRateLimitExceeded is returned when a rate limit bucket is exhausted
+var ErrRateLimitExceeded = fmt.Errorf("rate limit exceeded")
 
 // IsDenyAction checks if the action represents a hard block
 func IsDenyAction(action Action) bool {

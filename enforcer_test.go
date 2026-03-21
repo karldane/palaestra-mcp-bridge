@@ -24,14 +24,16 @@ func TestEnforcerPolicyEvaluation(t *testing.T) {
 	a.enforcer = enf
 
 	// Manually add a test policy to block "delete" operations
-	testPolicy := enforcer.CELPolicy{
+	testPolicy := enforcer.PolicyRow{
 		ID:          "test_block_delete",
+		Name:        "Block Delete Operations",
 		Description: "Block delete operations",
 		Expression:  "tool.contains('delete')",
-		Action:      enforcer.ActionDeny,
-		Severity:    enforcer.SeverityHigh,
+		Action:      "DENY",
+		Severity:    "HIGH",
 		Message:     "Delete operations blocked by test policy",
 		Enabled:     true,
+		Priority:    100,
 	}
 	if err := enf.AddPolicy(testPolicy); err != nil {
 		t.Fatalf("Failed to add test policy: %v", err)
@@ -89,14 +91,16 @@ func TestEnforcerBlocksBeforeExecution(t *testing.T) {
 	a.enforcer = enf
 
 	// Add a strict policy that denies ALL delete operations
-	denyPolicy := enforcer.CELPolicy{
+	denyPolicy := enforcer.PolicyRow{
 		ID:          "block_all_deletes",
+		Name:        "Block All Deletes",
 		Description: "Block all delete operations",
 		Expression:  "safety.impact_scope == 'delete'",
-		Action:      enforcer.ActionDeny,
-		Severity:    enforcer.SeverityCritical,
+		Action:      "DENY",
+		Severity:    "CRITICAL",
 		Message:     "Delete operations are prohibited",
 		Enabled:     true,
+		Priority:    100,
 	}
 	if err := enf.AddPolicy(denyPolicy); err != nil {
 		t.Fatalf("Failed to add deny policy: %v", err)

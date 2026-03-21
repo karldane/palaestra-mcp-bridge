@@ -26,11 +26,12 @@ type ServerConfig struct {
 }
 
 type BackendConfig struct {
-	Command    string            `yaml:"command"`
-	PoolSize   int               `yaml:"poolSize"`
-	Env        map[string]string `yaml:"env"`
-	Secrets    []SecretRef       `yaml:"secrets"`
-	ToolPrefix string            `yaml:"toolPrefix"`
+	Command       string            `yaml:"command"`
+	PoolSize      int               `yaml:"poolSize"`
+	Env           map[string]string `yaml:"env"`
+	Secrets       []SecretRef       `yaml:"secrets"`
+	ToolPrefix    string            `yaml:"toolPrefix"`
+	SelfReporting bool              `yaml:"selfReporting"`
 }
 
 type SecretRef struct {
