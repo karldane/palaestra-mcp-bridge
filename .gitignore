@@ -35,3 +35,4 @@ docker_logs
 *.tdy.bak
 AGENTS.md
 dev
+TODO.md
