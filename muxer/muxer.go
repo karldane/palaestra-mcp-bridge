@@ -179,7 +179,7 @@ func (tm *ToolMuxer) BuildEnvForUser(userID, backendID string) []string {
 
 	// Step 1: Apply user tokens (lower priority than systemwide).
 	if tm.store != nil {
-		tokens, err := tm.store.GetUserTokens(userID, backendID)
+		tokens, err := tm.store.GetUserTokensDecrypted(userID, backendID)
 		if err != nil {
 			shared.Debugf("Error getting user tokens for %s/%s: %v", userID, backendID, err)
 		} else {

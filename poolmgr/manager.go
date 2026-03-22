@@ -82,19 +82,29 @@ func (pm *PoolManager) GetOrCreatePool(backendID, command string, poolSize int) 
 // or creates a new one with the given command, min/max pool sizes, and environment.
 // If the env has changed, the existing pool is shut down and recreated.
 func (pm *PoolManager) GetOrCreateUserPool(backendID, userID, command string, minPoolSize, maxPoolSize int, env []string) *Pool {
+	return pm.GetOrCreateUserPoolWithSecrets(backendID, userID, command, minPoolSize, maxPoolSize, env, nil)
+}
+
+// GetOrCreateUserPoolWithSecrets returns an existing pool keyed by "backendID:userID",
+// or creates a new one with the given command, min/max pool sizes, environment, and secrets.
+// If the env or secrets have changed, the existing pool is shut down and recreated.
+func (pm *PoolManager) GetOrCreateUserPoolWithSecrets(backendID, userID, command string, minPoolSize, maxPoolSize int, env []string, secrets map[string]string) *Pool {
 	key := backendID + ":" + userID
 
 	pm.mu.RLock()
 	if pool, ok := pm.pools[key]; ok {
 		// Check if env has changed
 		if pool.EnvMatches(env) {
-			pm.mu.RUnlock()
-			pool.TouchLastUsed()
-			return pool
+			// For secrets, we need to check if the injector matches (for now, we'll recreate if secrets provided)
+			if secrets == nil || pool.secretInjector != nil {
+				pm.mu.RUnlock()
+				pool.TouchLastUsed()
+				return pool
+			}
 		}
-		// Env changed - need to recreate
+		// Env changed or secrets mismatch - need to recreate
 		pm.mu.RUnlock()
-		shared.Infof("env changed for pool %s, shutting down and recreating", key)
+		shared.Infof("env/secrets changed for pool %s, shutting down and recreating", key)
 		pool.Shutdown()
 
 		pm.mu.Lock()
@@ -110,12 +120,15 @@ func (pm *PoolManager) GetOrCreateUserPool(backendID, userID, command string, mi
 	// Double-check after upgrade.
 	if pool, ok := pm.pools[key]; ok {
 		if pool.EnvMatches(env) {
-			pool.TouchLastUsed()
-			return pool
+			// Check secrets compatibility
+			if secrets == nil || pool.secretInjector != nil {
+				pool.TouchLastUsed()
+				return pool
+			}
+			// Another thread recreated with wrong env/secrets - shut it down
+			pool.Shutdown()
+			delete(pm.pools, key)
 		}
-		// Another thread recreated with wrong env - shut it down
-		pool.Shutdown()
-		delete(pm.pools, key)
 	}
 
 	// Ensure defaults
@@ -126,11 +139,21 @@ func (pm *PoolManager) GetOrCreateUserPool(backendID, userID, command string, mi
 		maxPoolSize = minPoolSize
 	}
 
-	pool := NewPoolWithEnv(key, minPoolSize, maxPoolSize, command, env)
+	var pool *Pool
+	if secrets != nil {
+		// Create pool with secrets support
+		pool = NewPoolWithSecrets(key, minPoolSize, maxPoolSize, command, env, "/run/secrets/mcp-bridge")
+	} else {
+		pool = NewPoolWithEnv(key, minPoolSize, maxPoolSize, command, env)
+	}
 	pool.SetDedicated(userID)
 	pm.pools[key] = pool
 	pool.TouchLastUsed()
-	shared.Infof("created user pool %s (command=%s, min=%d, max=%d)", key, command, minPoolSize, maxPoolSize)
+	if secrets != nil {
+		shared.Infof("created user pool with secrets %s (command=%s, min=%d, max=%d)", key, command, minPoolSize, maxPoolSize)
+	} else {
+		shared.Infof("created user pool %s (command=%s, min=%d, max=%d)", key, command, minPoolSize, maxPoolSize)
+	}
 	return pool
 }
 

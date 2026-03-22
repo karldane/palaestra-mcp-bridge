@@ -8,6 +8,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/mcp-bridge/mcp-bridge/internal/secret"
 	"github.com/mcp-bridge/mcp-bridge/shared"
 )
 
@@ -45,6 +46,8 @@ type Pool struct {
 	instructionsMu   sync.Mutex
 	spawnAttempts    int // Number of consecutive failed spawn attempts
 	maxSpawnAttempts int // Max attempts before giving up (0 = unlimited)
+	secretInjector   secret.SecretInjector
+	secretsPath      string
 }
 
 func NewPool(backendID string, size int, command string) *Pool {
@@ -113,6 +116,13 @@ func NewPoolWithEnv(backendID string, minPoolSize, maxPoolSize int, command stri
 
 	go pool.responseDispatcher()
 
+	return pool
+}
+
+func NewPoolWithSecrets(backendID string, minPoolSize, maxPoolSize int, command string, env []string, secretsPath string) *Pool {
+	pool := NewPoolWithEnv(backendID, minPoolSize, maxPoolSize, command, env)
+	pool.secretsPath = secretsPath
+	pool.secretInjector = secret.NewFileSecretInjector(secretsPath)
 	return pool
 }
 

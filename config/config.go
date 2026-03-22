@@ -1,17 +1,21 @@
 package config
 
 import (
+	"fmt"
 	"os"
 	"strconv"
 	"strings"
 	"time"
 
+	"github.com/mcp-bridge/mcp-bridge/internal/crypto"
+
 	"gopkg.in/yaml.v3"
 )
 
 type InternalConfig struct {
-	Server   ServerConfig             `yaml:"server"`
-	Backends map[string]BackendConfig `yaml:"backends"`
+	Server     ServerConfig             `yaml:"server"`
+	Backends   map[string]BackendConfig `yaml:"backends"`
+	Encryption EncryptionConfig         `yaml:"encryption"`
 }
 
 type ServerConfig struct {
@@ -38,6 +42,50 @@ type SecretRef struct {
 	Name    string `yaml:"name"`
 	EnvKey  string `yaml:"envKey"`
 	Context string `yaml:"context"`
+}
+
+type EncryptionConfig struct {
+	Provider          string `yaml:"provider"`
+	KeyEnv            string `yaml:"keyEnv"`
+	KeyFileEnv        string `yaml:"keyFileEnv"`
+	K8sSecretPath     string `yaml:"k8sSecretPath"`
+	K8sKeyName        string `yaml:"k8sKeyName"`
+	RequireEncryption bool   `yaml:"requireEncryption"`
+}
+
+func (c *EncryptionConfig) Validate() error {
+	switch c.Provider {
+	case "envvar":
+		if c.KeyEnv == "" && c.KeyFileEnv == "" {
+			return fmt.Errorf("encryption provider 'envvar' requires keyEnv or keyFileEnv")
+		}
+	case "k8s":
+		if c.K8sSecretPath == "" {
+			return fmt.Errorf("encryption provider 'k8s' requires k8sSecretPath")
+		}
+	case "":
+		if c.RequireEncryption {
+			return fmt.Errorf("encryption required but no provider configured")
+		}
+	default:
+		return fmt.Errorf("unknown encryption provider: %s", c.Provider)
+	}
+	return nil
+}
+
+func (c *EncryptionConfig) NewKEKProvider() (crypto.KEKProvider, error) {
+	switch c.Provider {
+	case "envvar":
+		return crypto.NewEnvVarProvider(c.KeyEnv, c.KeyFileEnv), nil
+	case "k8s":
+		return crypto.NewK8sSecretProvider(c.K8sSecretPath, c.K8sKeyName)
+	default:
+		return nil, fmt.Errorf("unknown provider: %s", c.Provider)
+	}
+}
+
+func (c *InternalConfig) ValidateEncryption() error {
+	return c.Encryption.Validate()
 }
 
 func parseDuration(s string) time.Duration {
@@ -87,6 +135,10 @@ func Load(path string) (*InternalConfig, error) {
 	cfg.Server.AccessTokenTTLParsed = parseDuration(cfg.Server.AccessTokenTTL)
 	if cfg.Server.AccessTokenTTLParsed == 0 {
 		cfg.Server.AccessTokenTTLParsed = 24 * time.Hour
+	}
+
+	if err := cfg.ValidateEncryption(); err != nil {
+		return nil, fmt.Errorf("encryption config validation failed: %w", err)
 	}
 
 	return &cfg, nil

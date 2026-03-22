@@ -2,6 +2,7 @@ package poolmgr
 
 import (
 	"bufio"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -11,22 +12,24 @@ import (
 	"sync"
 	"time"
 
+	"github.com/mcp-bridge/mcp-bridge/internal/secret"
 	"github.com/mcp-bridge/mcp-bridge/shared"
 	"github.com/shirou/gopsutil/v3/process"
 )
 
 type ManagedProcess struct {
-	Cmd       *exec.Cmd
-	Stdin     io.WriteCloser
-	Stdout    io.ReadCloser
-	Stderr    io.ReadCloser
-	LineChan  chan []byte
-	isWarm    bool
-	ID        string
-	mu        sync.Mutex
-	UserID    string
-	BackendID string
-	StderrBuf strings.Builder // Captured stderr for error diagnosis
+	Cmd            *exec.Cmd
+	Stdin          io.WriteCloser
+	Stdout         io.ReadCloser
+	Stderr         io.ReadCloser
+	LineChan       chan []byte
+	isWarm         bool
+	ID             string
+	mu             sync.Mutex
+	UserID         string
+	BackendID      string
+	StderrBuf      strings.Builder // Captured stderr for error diagnosis
+	secretInjector secret.SecretInjector
 }
 
 type PendingRequest struct {
@@ -39,6 +42,13 @@ func (m *ManagedProcess) Kill() {
 	if m.Cmd.Process != nil {
 		m.Cmd.Process.Kill()
 	}
+}
+
+func (m *ManagedProcess) CleanupSecrets() error {
+	if m.secretInjector != nil {
+		return m.secretInjector.Cleanup()
+	}
+	return nil
 }
 
 // GetMemoryUsage returns the memory usage in bytes for this process
@@ -72,6 +82,42 @@ func SpawnProcess(pool *Pool, command string, env []string) (*ManagedProcess, er
 	go captureStdout(pool, proc)
 
 	return proc, nil
+}
+
+func SpawnProcessWithSecrets(pool *Pool, command string, env []string, secrets map[string]string) (*ManagedProcess, error) {
+	shared.Debugf("SpawnProcessWithSecrets: backend=%s, command=%q, secrets=%v", pool.BackendID, command, getSecretKeys(secrets))
+
+	injector := secret.NewFileSecretInjector(pool.secretsPath)
+	envVars, err := injector.PrepareSecrets(context.Background(), secrets)
+	if err != nil {
+		shared.Debugf("SpawnProcessWithSecrets PrepareSecrets ERROR: %v", err)
+		return nil, fmt.Errorf("failed to prepare secrets: %w", err)
+	}
+
+	allEnv := append(env, envVars...)
+	proc, err := spawnProcessRaw(command, allEnv)
+	if err != nil {
+		shared.Debugf("SpawnProcessWithSecrets spawnProcessRaw ERROR: %v", err)
+		injector.Cleanup()
+		return nil, err
+	}
+
+	proc.secretInjector = injector
+
+	if command != "mcp-bridge-builtin" {
+		go captureStderr(proc)
+	}
+	go captureStdout(pool, proc)
+
+	return proc, nil
+}
+
+func getSecretKeys(secrets map[string]string) []string {
+	keys := make([]string, 0, len(secrets))
+	for k := range secrets {
+		keys = append(keys, k)
+	}
+	return keys
 }
 
 // isSimpleCommand returns true if the command is a simple command that doesn't

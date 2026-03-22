@@ -254,9 +254,97 @@ go test -v ./auth/...
 go test -v ./web/...
 ```
 
+## Encryption Setup
+
+MCP-Bridge uses envelope encryption to protect all user secrets at rest.
+
+### Quick Setup
+
+```bash
+# 1. Generate encryption key
+export ENCRYPTION_KEY=$(openssl rand -hex 32)
+
+# 2. Check status
+./migrate --encryption-key=$ENCRYPTION_KEY --status
+
+# 3. Encrypt existing secrets
+./migrate --encryption-key=$ENCRYPTION_KEY
+
+# 4. Verify
+./migrate --encryption-key=$ENCRYPTION_KEY --verify
+
+# 5. Start server with key
+export ENCRYPTION_KEY=$ENCRYPTION_KEY
+./mcp-bridge
+```
+
+### Configuration
+
+Add to `config.yaml`:
+
+```yaml
+encryption:
+  provider: "envvar"      # or "k8s"
+  key_env: "ENCRYPTION_KEY"
+  key_file_env: "ENCRYPTION_KEY_FILE"
+  require_encryption: true
+```
+
+### Kubernetes Secret Provider
+
+```yaml
+# Create secret
+kubectl create secret generic mcp-bridge-encryption-key \
+  --from-literal=master.key="$(openssl rand -hex 32)" \
+  --namespace=mcp-bridge
+
+# Mount in deployment
+spec:
+  containers:
+  - name: mcp-bridge
+    env:
+    - name: ENCRYPTION_PROVIDER
+      value: "k8s"
+    - name: K8S_SECRET_PATH
+      value: "/var/run/secrets/encryption"
+    volumeMounts:
+    - name: encryption-key
+      mountPath: /var/run/secrets/encryption
+      readOnly: true
+  volumes:
+  - name: encryption-key
+    secret:
+      secretName: mcp-bridge-encryption-key
+```
+
+### Migration Tool Commands
+
+```bash
+# Show status
+./migrate --status
+
+# Dry run
+./migrate --dry-run
+
+# Migrate
+./migrate
+
+# Verify
+./migrate --verify
+
+# Rollback (emergency)
+./migrate --rollback
+```
+
+For detailed documentation, see:
+- [docs/ENCRYPTION.md](docs/ENCRYPTION.md) - Complete setup guide
+- [docs/SECURITY.md](docs/SECURITY.md) - Security architecture
+
 ## Production Notes
 
+- **Encryption is required** for production - generate and protect your KEK
 - Set a strong password for the admin account immediately after first run
 - Use HTTPS (terminate TLS at a reverse proxy)
 - The SQLite database should be backed up regularly
+- Store the encryption key separately from the database backup
 - For Kubernetes deployment, see `infra/` directory

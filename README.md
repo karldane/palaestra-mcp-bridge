@@ -12,6 +12,8 @@ admin interface.
   registration, authorization code flow with PKCE
 - **Per-user credential injection** &mdash; each user's API tokens are
   injected into the MCP server environment at spawn time
+- **Encryption at rest** &mdash; all secrets encrypted using AES-256-GCM
+  envelope encryption with K8s secret management support
 - **Bcrypt passwords** &mdash; user passwords are stored as bcrypt hashes;
   legacy plaintext is auto-upgraded on login
 - **Process pools** &mdash; per-user, per-backend warm pools with idle
@@ -33,6 +35,7 @@ admin interface.
 
 - Go 1.19+ (CGo enabled for SQLite)
 - `gcc` / C toolchain (required by `go-sqlite3`)
+- **Encryption key**: Required for production (see [Encryption Setup](docs/ENCRYPTION.md))
 
 ## Quick Start
 
@@ -155,3 +158,33 @@ In your opencode config (`~/.config/opencode/config.json`):
 The bridge handles OAuth discovery and PKCE automatically.
 
 See [USAGE.md](USAGE.md) for detailed usage information.
+
+## Security
+
+MCP-Bridge implements enterprise-grade security for multi-tenant deployments:
+
+- **Encryption at rest**: All user API keys and secrets are encrypted using AES-256-GCM
+- **Envelope encryption**: Each secret has its own Data Encryption Key (DEK) encrypted by a master Key Encryption Key (KEK)
+- **KEK management**: Pluggable providers for env vars, K8s secrets, or external KMS
+- **Secret injection**: File-based injection prevents secret leakage via `ps auxwww`
+
+### Quick Encryption Setup
+
+```bash
+# 1. Generate encryption key
+export ENCRYPTION_KEY=$(openssl rand -hex 32)
+
+# 2. Run migration
+./migrate --encryption-key=$ENCRYPTION_KEY
+
+# 3. Verify
+./migrate --encryption-key=$ENCRYPTION_KEY --verify
+
+# 4. Start server with key
+export ENCRYPTION_KEY=$ENCRYPTION_KEY
+./mcp-bridge
+```
+
+For detailed encryption documentation:
+- [Encryption Setup Guide](docs/ENCRYPTION.md) - Setup, migration, and troubleshooting
+- [Security Architecture](docs/SECURITY.md) - Architecture details and threat model

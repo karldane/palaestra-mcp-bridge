@@ -1,6 +1,9 @@
 package store
 
 import (
+	"context"
+	"database/sql"
+	"errors"
 	"time"
 
 	"golang.org/x/crypto/bcrypt"
@@ -117,6 +120,7 @@ type UserToken struct {
 	BackendID string
 	EnvKey    string
 	Value     string
+	Encrypted string
 }
 
 // SetUserToken creates or updates a user token.
@@ -132,7 +136,7 @@ func (s *Store) SetUserToken(t *UserToken) error {
 // GetUserTokens retrieves tokens for a specific user and backend.
 func (s *Store) GetUserTokens(userID, backendID string) ([]*UserToken, error) {
 	rows, err := s.db.Query(
-		`SELECT user_id, backend_id, env_key, value
+		`SELECT user_id, backend_id, env_key, value, COALESCE(encrypted_value, '') as encrypted_value
 		 FROM user_tokens WHERE user_id = ? AND backend_id = ?`,
 		userID, backendID,
 	)
@@ -144,7 +148,7 @@ func (s *Store) GetUserTokens(userID, backendID string) ([]*UserToken, error) {
 	var tokens []*UserToken
 	for rows.Next() {
 		t := &UserToken{}
-		if err := rows.Scan(&t.UserID, &t.BackendID, &t.EnvKey, &t.Value); err != nil {
+		if err := rows.Scan(&t.UserID, &t.BackendID, &t.EnvKey, &t.Value, &t.Encrypted); err != nil {
 			return nil, err
 		}
 		tokens = append(tokens, t)
@@ -155,7 +159,7 @@ func (s *Store) GetUserTokens(userID, backendID string) ([]*UserToken, error) {
 // GetAllUserTokens retrieves all tokens for a user across all backends.
 func (s *Store) GetAllUserTokens(userID string) ([]*UserToken, error) {
 	rows, err := s.db.Query(
-		`SELECT user_id, backend_id, env_key, value
+		`SELECT user_id, backend_id, env_key, value, COALESCE(encrypted_value, '') as encrypted_value
 		 FROM user_tokens WHERE user_id = ?`,
 		userID,
 	)
@@ -167,7 +171,7 @@ func (s *Store) GetAllUserTokens(userID string) ([]*UserToken, error) {
 	var tokens []*UserToken
 	for rows.Next() {
 		t := &UserToken{}
-		if err := rows.Scan(&t.UserID, &t.BackendID, &t.EnvKey, &t.Value); err != nil {
+		if err := rows.Scan(&t.UserID, &t.BackendID, &t.EnvKey, &t.Value, &t.Encrypted); err != nil {
 			return nil, err
 		}
 		tokens = append(tokens, t)
@@ -182,6 +186,167 @@ func (s *Store) DeleteUserToken(userID, backendID, envKey string) error {
 		userID, backendID, envKey,
 	)
 	return err
+}
+
+// SetUserTokenEncrypted stores an already-encrypted secret.
+func (s *Store) SetUserTokenEncrypted(userID, backendID, envKey, encryptedValue string) error {
+	_, err := s.db.Exec(
+		`INSERT OR REPLACE INTO user_tokens (user_id, backend_id, env_key, value, encrypted_value)
+		 VALUES (?, ?, ?, '', ?)`,
+		userID, backendID, envKey, encryptedValue,
+	)
+	return err
+}
+
+// GetUserTokenDecrypted retrieves and decrypts a user token.
+func (s *Store) GetUserTokenDecrypted(userID, backendID, envKey string) (string, error) {
+	if s.keyStore == nil {
+		return "", errors.New("keystore not initialized")
+	}
+
+	var value, encrypted string
+	err := s.db.QueryRow(
+		`SELECT value, COALESCE(encrypted_value, '') FROM user_tokens 
+		 WHERE user_id = ? AND backend_id = ? AND env_key = ?`,
+		userID, backendID, envKey,
+	).Scan(&value, &encrypted)
+
+	if err == sql.ErrNoRows {
+		return "", err
+	}
+	if err != nil {
+		return "", err
+	}
+
+	if encrypted != "" {
+		decrypted, err := s.keyStore.DecryptSecret([]byte(encrypted))
+		if err != nil {
+			return "", err
+		}
+		return string(decrypted), nil
+	}
+
+	return value, nil
+}
+
+// GetUserTokensDecrypted retrieves all tokens for a user/backend and decrypts them.
+func (s *Store) GetUserTokensDecrypted(userID, backendID string) ([]UserToken, error) {
+	tokens, err := s.GetUserTokens(userID, backendID)
+	if err != nil {
+		return nil, err
+	}
+
+	var result []UserToken
+	for _, t := range tokens {
+		token := UserToken{
+			UserID:    t.UserID,
+			BackendID: t.BackendID,
+			EnvKey:    t.EnvKey,
+			Value:     t.Value,
+			Encrypted: t.Encrypted,
+		}
+
+		if t.Encrypted != "" && s.keyStore != nil {
+			decrypted, err := s.keyStore.DecryptSecret([]byte(t.Encrypted))
+			if err == nil {
+				token.Value = string(decrypted)
+			}
+		}
+
+		result = append(result, token)
+	}
+
+	return result, nil
+}
+
+// HasEncryptedTokens checks if any tokens are encrypted.
+func (s *Store) HasEncryptedTokens() (bool, error) {
+	var count int
+	err := s.db.QueryRow(
+		`SELECT COUNT(*) FROM user_tokens WHERE encrypted_value IS NOT NULL AND encrypted_value != ''`,
+	).Scan(&count)
+	if err != nil {
+		return false, err
+	}
+	return count > 0, nil
+}
+
+// MigrateSecrets migrates plaintext secrets to encrypted format.
+func (s *Store) MigrateSecrets(ctx context.Context) error {
+	if s.keyStore == nil {
+		return errors.New("keystore not initialized")
+	}
+
+	rows, err := s.db.Query(
+		`SELECT user_id, backend_id, env_key, value FROM user_tokens 
+		 WHERE (encrypted_value IS NULL OR encrypted_value = '') AND value != ''`,
+	)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var userID, backendID, envKey, value string
+		if err := rows.Scan(&userID, &backendID, &envKey, &value); err != nil {
+			return err
+		}
+
+		encrypted, err := s.keyStore.EncryptSecret([]byte(value))
+		if err != nil {
+			return err
+		}
+
+		_, err = s.db.Exec(
+			`UPDATE user_tokens SET encrypted_value = ? WHERE user_id = ? AND backend_id = ? AND env_key = ?`,
+			string(encrypted), userID, backendID, envKey,
+		)
+		if err != nil {
+			return err
+		}
+	}
+
+	return rows.Err()
+}
+
+// VerifyEncryptedSecrets verifies all secrets can be decrypted.
+// Returns success count, fail count, and error.
+func (s *Store) VerifyEncryptedSecrets(ctx context.Context) (int, int, error) {
+	if s.keyStore == nil {
+		return 0, 0, errors.New("keystore not initialized")
+	}
+
+	rows, err := s.db.Query(
+		`SELECT user_id, backend_id, env_key, value, COALESCE(encrypted_value, '') FROM user_tokens`,
+	)
+	if err != nil {
+		return 0, 0, err
+	}
+	defer rows.Close()
+
+	success := 0
+	fail := 0
+
+	for rows.Next() {
+		var userID, backendID, envKey, value, encrypted string
+		if err := rows.Scan(&userID, &backendID, &envKey, &value, &encrypted); err != nil {
+			return 0, 0, err
+		}
+
+		if encrypted == "" {
+			fail++
+			continue
+		}
+
+		_, err := s.keyStore.DecryptSecret([]byte(encrypted))
+		if err != nil {
+			fail++
+		} else {
+			success++
+		}
+	}
+
+	return success, fail, rows.Err()
 }
 
 // ---------- Password hashing ----------

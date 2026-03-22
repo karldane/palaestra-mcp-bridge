@@ -7,16 +7,23 @@ import (
 	"fmt"
 
 	_ "github.com/mattn/go-sqlite3"
+	"github.com/mcp-bridge/mcp-bridge/internal/crypto"
 )
 
 // Store wraps the SQLite database and provides typed CRUD operations for
 // backends, users, user tokens, OAuth sessions, OAuth codes, and OAuth clients.
 type Store struct {
-	db *sql.DB
+	db       *sql.DB
+	keyStore *crypto.KeyStore
 }
 
 // New opens (or creates) a SQLite database at path and runs migrations.
 func New(path string) (*Store, error) {
+	return NewWithProvider(path, crypto.NewEnvVarProvider("", ""))
+}
+
+// NewWithProvider opens a database with a custom KEK provider (useful for testing).
+func NewWithProvider(path string, provider crypto.KEKProvider) (*Store, error) {
 	db, err := sql.Open("sqlite3", path+"?_journal_mode=WAL&_foreign_keys=on")
 	if err != nil {
 		return nil, fmt.Errorf("open db: %w", err)
@@ -25,7 +32,7 @@ func New(path string) (*Store, error) {
 		db.Close()
 		return nil, fmt.Errorf("ping db: %w", err)
 	}
-	s := &Store{db: db}
+	s := &Store{db: db, keyStore: crypto.NewKeyStore(provider)}
 	if err := s.migrate(); err != nil {
 		db.Close()
 		return nil, fmt.Errorf("migrate: %w", err)
@@ -41,6 +48,11 @@ func (s *Store) Close() error {
 // DB exposes the raw *sql.DB for advanced use (e.g. transactions).
 func (s *Store) DB() *sql.DB {
 	return s.db
+}
+
+// KeyStore returns the encryption key store.
+func (s *Store) KeyStore() *crypto.KeyStore {
+	return s.keyStore
 }
 
 func (s *Store) migrate() error {
@@ -218,6 +230,8 @@ func (s *Store) migrate() error {
 		error_message   TEXT DEFAULT '',
 		updated_at      DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
 	)`)
+
+	s.db.Exec(`ALTER TABLE user_tokens ADD COLUMN encrypted_value TEXT`)
 
 	return nil
 }
