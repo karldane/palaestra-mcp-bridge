@@ -17,7 +17,7 @@ func TestEnforcerPolicyEvaluation(t *testing.T) {
 
 	// Create enforcer with a test policy
 	enforcerConfig := enforcer.DefaultEnforcerConfig()
-	enf, err := enforcer.NewEnforcer(enforcerConfig, store.NewEnforcerStore(a.store.DB()))
+	enf, err := enforcer.NewEnforcer(enforcerConfig, store.NewEnforcerStore(a.store.DB()), nil)
 	if err != nil {
 		t.Fatalf("Failed to create enforcer: %v", err)
 	}
@@ -84,7 +84,7 @@ func TestEnforcerBlocksBeforeExecution(t *testing.T) {
 
 	// Create enforcer with a DENY policy for delete operations
 	enforcerConfig := enforcer.DefaultEnforcerConfig()
-	enf, err := enforcer.NewEnforcer(enforcerConfig, store.NewEnforcerStore(a.store.DB()))
+	enf, err := enforcer.NewEnforcer(enforcerConfig, store.NewEnforcerStore(a.store.DB()), nil)
 	if err != nil {
 		t.Fatalf("Failed to create enforcer: %v", err)
 	}
@@ -157,7 +157,7 @@ func TestEnforcerIntegration(t *testing.T) {
 
 	// Setup enforcer with seeded policies
 	enforcerConfig := enforcer.DefaultEnforcerConfig()
-	enf, err := enforcer.NewEnforcer(enforcerConfig, store.NewEnforcerStore(a.store.DB()))
+	enf, err := enforcer.NewEnforcer(enforcerConfig, store.NewEnforcerStore(a.store.DB()), nil)
 	if err != nil {
 		t.Fatalf("Failed to create enforcer: %v", err)
 	}
