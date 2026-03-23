@@ -1,12 +1,17 @@
 package muxer
 
 import (
+	"context"
 	"encoding/json"
+	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/mcp-bridge/mcp-bridge/config"
 	"github.com/mcp-bridge/mcp-bridge/credential"
+	"github.com/mcp-bridge/mcp-bridge/internal/crypto"
 	"github.com/mcp-bridge/mcp-bridge/poolmgr"
+	"github.com/mcp-bridge/mcp-bridge/store"
 )
 
 func makeTestConfig() *config.InternalConfig {
@@ -450,4 +455,195 @@ func makeToolsCallBody(toolName string) []byte {
 
 	data, _ := json.Marshal(msg)
 	return data
+}
+
+// ---------- Encrypted token tests ----------
+
+func testStoreWithCrypto(t *testing.T) (*store.Store, string) {
+	t.Helper()
+	dir, err := os.MkdirTemp("", "muxer-crypto-test-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	os.Setenv("ENCRYPTION_KEY", "0123456789abcdef0123456789abcdef")
+	t.Cleanup(func() {
+		os.Unsetenv("ENCRYPTION_KEY")
+		os.RemoveAll(dir)
+	})
+
+	provider := crypto.NewEnvVarProvider("ENCRYPTION_KEY", "")
+	_, err = provider.GetKey(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	s, err := store.NewWithProvider(filepath.Join(dir, "test.db"), provider)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { s.Close() })
+	return s, dir
+}
+
+func TestBuildEnvForUser_EncryptedTokens(t *testing.T) {
+	s, _ := testStoreWithCrypto(t)
+
+	// Create user and backend in DB
+	u := &store.User{ID: "user1", Name: "Test", Email: "test@x.com", Password: "pw"}
+	s.CreateUser(u)
+	b := &store.Backend{ID: "circleci", Command: "cat", PoolSize: 1, ToolPrefix: "circleci", Env: "{}"}
+	s.CreateBackend(b)
+
+	// Store encrypted tokens
+	ks := s.KeyStore()
+	tokens := map[string]string{
+		"CIRCLECI_TOKEN": "my-secret-circleci-token-12345",
+		"OTHER_KEY":      "another-secret-value",
+	}
+	for key, value := range tokens {
+		encrypted, err := ks.EncryptSecret([]byte(value))
+		if err != nil {
+			t.Fatalf("failed to encrypt %s: %v", key, err)
+		}
+		if err := s.SetUserTokenEncrypted("user1", "circleci", key, string(encrypted)); err != nil {
+			t.Fatalf("SetUserTokenEncrypted failed for %s: %v", key, err)
+		}
+	}
+
+	// Create muxer with store (no config needed for DB-backed routing)
+	pm := poolmgr.NewPoolManager("cat", 1)
+	defer pm.ShutdownAll()
+	tm := NewToolMuxerWithStore(pm, s, &config.InternalConfig{
+		Server:   config.ServerConfig{Port: "8080"},
+		Backends: map[string]config.BackendConfig{},
+	})
+
+	env := tm.BuildEnvForUser("user1", "circleci")
+
+	// Verify decrypted tokens appear in the environment
+	found := make(map[string]bool)
+	for _, e := range env {
+		for key := range tokens {
+			if e == key+"="+tokens[key] {
+				found[key] = true
+			}
+		}
+	}
+
+	for key := range tokens {
+		if !found[key] {
+			t.Errorf("BuildEnvForUser did not include %s=%s", key, tokens[key])
+		}
+	}
+}
+
+func TestBuildEnvForUser_EncryptedTokens_WithEnvMappings(t *testing.T) {
+	s, _ := testStoreWithCrypto(t)
+
+	// Create user and backend with env_mappings
+	u := &store.User{ID: "user1", Name: "Test", Email: "test@x.com", Password: "pw"}
+	s.CreateUser(u)
+	b := &store.Backend{
+		ID:          "github",
+		Command:     "cat",
+		PoolSize:    1,
+		ToolPrefix:  "github",
+		Env:         "{}",
+		EnvMappings: `{"USER_TOKEN":"GITHUB_TOKEN"}`,
+	}
+	s.CreateBackend(b)
+
+	// Store encrypted token with the user key
+	ks := s.KeyStore()
+	encrypted, err := ks.EncryptSecret([]byte("ghp_secrettoken123"))
+	if err != nil {
+		t.Fatalf("failed to encrypt: %v", err)
+	}
+	if err := s.SetUserTokenEncrypted("user1", "github", "USER_TOKEN", string(encrypted)); err != nil {
+		t.Fatalf("SetUserTokenEncrypted failed: %v", err)
+	}
+
+	pm := poolmgr.NewPoolManager("cat", 1)
+	defer pm.ShutdownAll()
+	tm := NewToolMuxerWithStore(pm, s, &config.InternalConfig{
+		Server:   config.ServerConfig{Port: "8080"},
+		Backends: map[string]config.BackendConfig{},
+	})
+
+	env := tm.BuildEnvForUser("user1", "github")
+
+	// The USER_TOKEN should be mapped to GITHUB_TOKEN in the env
+	found := false
+	for _, e := range env {
+		if e == "GITHUB_TOKEN=ghp_secrettoken123" {
+			found = true
+		}
+	}
+	if !found {
+		t.Error("BuildEnvForUser did not map USER_TOKEN to GITHUB_TOKEN with decrypted value")
+		// Debug: print what we got
+		for _, e := range env {
+			if len(e) > 6 && e[:7] == "GITHUB_" {
+				t.Logf("Found env: %s", e)
+			}
+		}
+	}
+}
+
+func TestBuildEnvForUser_PlaintextTokens_StillWork(t *testing.T) {
+	s, _ := testStoreWithCrypto(t)
+
+	u := &store.User{ID: "user1", Name: "Test", Email: "test@x.com", Password: "pw"}
+	s.CreateUser(u)
+	b := &store.Backend{ID: "jira", Command: "cat", PoolSize: 1, ToolPrefix: "jira", Env: "{}"}
+	s.CreateBackend(b)
+
+	// Store plaintext token (not yet migrated)
+	s.SetUserToken(&store.UserToken{UserID: "user1", BackendID: "jira", EnvKey: "JIRA_TOKEN", Value: "plaintext-token-abc"})
+
+	pm := poolmgr.NewPoolManager("cat", 1)
+	defer pm.ShutdownAll()
+	tm := NewToolMuxerWithStore(pm, s, &config.InternalConfig{
+		Server:   config.ServerConfig{Port: "8080"},
+		Backends: map[string]config.BackendConfig{},
+	})
+
+	env := tm.BuildEnvForUser("user1", "jira")
+
+	found := false
+	for _, e := range env {
+		if e == "JIRA_TOKEN=plaintext-token-abc" {
+			found = true
+		}
+	}
+	if !found {
+		t.Error("BuildEnvForUser did not include plaintext JIRA_TOKEN")
+	}
+}
+
+func TestBuildEnvForUser_NoTokens(t *testing.T) {
+	s, _ := testStoreWithCrypto(t)
+
+	u := &store.User{ID: "user1", Name: "Test", Email: "test@x.com", Password: "pw"}
+	s.CreateUser(u)
+	b := &store.Backend{ID: "empty", Command: "cat", PoolSize: 1, Env: "{}"}
+	s.CreateBackend(b)
+
+	pm := poolmgr.NewPoolManager("cat", 1)
+	defer pm.ShutdownAll()
+	tm := NewToolMuxerWithStore(pm, s, &config.InternalConfig{
+		Server:   config.ServerConfig{Port: "8080"},
+		Backends: map[string]config.BackendConfig{},
+	})
+
+	env := tm.BuildEnvForUser("user1", "empty")
+
+	// Should still have PATH, HOME, USER from system env
+	for _, e := range env {
+		if len(e) > 5 && e[:5] == "PATH=" {
+			return // success
+		}
+	}
+	t.Error("BuildEnvForUser should include at least PATH from system environment")
 }

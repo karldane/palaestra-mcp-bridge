@@ -144,12 +144,25 @@ type ApprovalRequestRow struct {
 	ErrorMsg       string       // Error message if failed
 }
 
+// User represents a user for policy evaluation
+type User struct {
+	ID    string
+	Email string
+	Role  string
+}
+
+// UserStore defines the interface for fetching user info
+type UserStore interface {
+	GetUser(id string) (*User, error)
+}
+
 // Enforcer is the main orchestrator for policy enforcement
 type Enforcer struct {
 	config       EnforcerConfig
 	resolver     *MetadataResolver
 	engine       *CELEngine
 	store        EnforcerStore
+	userStore    UserStore
 	decorator    DescriptionDecorator
 	executor     ApprovalExecutor
 	killSwitches map[string]bool
@@ -158,7 +171,7 @@ type Enforcer struct {
 }
 
 // NewEnforcer creates a new enforcer instance
-func NewEnforcer(config EnforcerConfig, store EnforcerStore) (*Enforcer, error) {
+func NewEnforcer(config EnforcerConfig, store EnforcerStore, userStore UserStore) (*Enforcer, error) {
 	engine, err := NewCELEngine()
 	if err != nil {
 		return nil, fmt.Errorf("failed to create CEL engine: %w", err)
@@ -169,6 +182,7 @@ func NewEnforcer(config EnforcerConfig, store EnforcerStore) (*Enforcer, error) 
 		resolver:     NewMetadataResolver(store),
 		engine:       engine,
 		store:        store,
+		userStore:    userStore,
 		decorator:    &DefaultDescriptionDecorator{},
 		killSwitches: make(map[string]bool),
 		rateLimit:    rl.NewRateLimitManager(),
@@ -392,6 +406,21 @@ func (e *Enforcer) HandleToolCall(ctx context.Context, userID string, toolName s
 		Tool:      toolName,
 		Args:      args,
 		BackendID: backendID,
+	}
+
+	// Fetch user info for policy evaluation
+	if e.userStore != nil && userID != "" {
+		if user, err := e.userStore.GetUser(userID); err == nil {
+			// Access fields directly from *User
+			decisionCtx.UserEmail = user.Email
+			decisionCtx.UserRole = user.Role
+			// Trust level: admins get 100, otherwise default to 50
+			if decisionCtx.UserRole == "admin" {
+				decisionCtx.TrustLevel = 100
+			} else {
+				decisionCtx.TrustLevel = 50
+			}
+		}
 	}
 
 	// Resolve safety profile

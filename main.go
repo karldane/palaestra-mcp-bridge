@@ -22,6 +22,19 @@ import (
 	"github.com/mcp-bridge/mcp-bridge/web"
 )
 
+// userStoreAdapter wraps *store.Store to implement enforcer.UserStore
+type userStoreAdapter struct {
+	store *store.Store
+}
+
+func (a *userStoreAdapter) GetUser(id string) (*enforcer.User, error) {
+	u, err := a.store.GetUser(id)
+	if err != nil {
+		return nil, err
+	}
+	return &enforcer.User{ID: u.ID, Email: u.Email, Role: u.Role}, nil
+}
+
 func main() {
 	seedUser := flag.Bool("seed", false, "Seed a default test user (admin@localhost / admin) if no users exist")
 	versionFlag := flag.Bool("version", false, "Print version and exit")
@@ -126,6 +139,49 @@ func main() {
 	}
 	defer st.Close()
 
+	// Verify encryption key is available and working
+	// The keystore must be able to decrypt existing tokens
+	ks := st.KeyStore()
+	if ks == nil {
+		shared.Errorf("FATAL: Keystore not initialized - encryption key is required")
+		shared.Errorf("Set ENCRYPTION_KEY or ENCRYPTION_KEY_FILE environment variable")
+		log.Fatalf("keystore not initialized")
+	}
+
+	// Try to decrypt an existing token to verify the encryption key is valid
+	testToken, err := st.GetUserTokenDecrypted("58993e3001a71e9e8cd3a21fc1cd9430", "atlassian", "API_TOKEN")
+	if err != nil {
+		if strings.Contains(err.Error(), "keystore not initialized") || strings.Contains(err.Error(), "neither") {
+			shared.Errorf("FATAL: Encryption key not loaded - tokens cannot be decrypted")
+			shared.Errorf("Set ENCRYPTION_KEY (value) or ENCRYPTION_KEY_FILE (path) environment variable")
+			log.Fatalf("encryption key required")
+		}
+		shared.Errorf("FATAL: Encryption key error: %v", err)
+		log.Fatalf("encryption key error: %v", err)
+	} else if len(testToken) == 0 {
+		shared.Warnf("WARNING: Decryption succeeded but API_TOKEN is empty (no credentials stored)")
+		shared.Infof("Encryption key: OK (key is valid, tokens will be passed as empty)")
+	} else {
+		shared.Infof("Encryption key: OK (decrypted token length=%d)", len(testToken))
+	}
+
+	// Migrate any remaining plaintext tokens to encrypted format.
+	// This is idempotent - already-encrypted tokens are skipped.
+	if err := st.MigrateSecrets(context.Background()); err != nil {
+		shared.Warnf("Secret migration warning: %v", err)
+	}
+
+	// Verify all encrypted tokens can be decrypted with the current key.
+	success, fail, err := st.VerifyEncryptedSecrets(context.Background())
+	if err != nil {
+		shared.Warnf("Secret verification error: %v", err)
+	} else {
+		shared.Infof("Secret verification: %d OK, %d failed", success, fail)
+		if fail > 0 {
+			shared.Warnf("WARNING: %d secrets failed verification - backends using those tokens will fail", fail)
+		}
+	}
+
 	// Seed a default user if requested.
 	if *seedUser {
 		seedDefaultUser(st)
@@ -173,7 +229,9 @@ func main() {
 	var enf *enforcer.Enforcer
 	if enforcerConfig.Enabled {
 		var err error
-		enf, err = enforcer.NewEnforcer(enforcerConfig, store.NewEnforcerStore(st.DB()))
+		// Wrap the store.User in an adapter that implements enforcer.UserStore
+		userStore := &userStoreAdapter{store: st}
+		enf, err = enforcer.NewEnforcer(enforcerConfig, store.NewEnforcerStore(st.DB()), userStore)
 		if err != nil {
 			shared.Errorf("Failed to initialize enforcer: %v", err)
 			shared.Errorf("Continuing without policy enforcement")
@@ -282,7 +340,7 @@ func main() {
 		// Debug: log backend being probed (don't log env var values)
 		shared.Debugf("ProbeBackend: backend=%s, command=%q, env_count=%d", backendID, b.Command, len(env))
 
-		result := poolmgr.ProbeBackend(b.Command, env, 10*time.Second)
+		result := poolmgr.ProbeBackend(b.Command, env, 30*time.Second)
 		return json.Marshal(result)
 	}
 	webHandler.Register(mux)
@@ -318,7 +376,14 @@ func main() {
 		// Create mux for testing server (same as production but without auth)
 		testMux := http.NewServeMux()
 		authHandler.Register(testMux)
-		webHandler.Register(testMux)
+
+		// Wrap webHandler with admin context injection for testing mode
+		// Create a sub-mux that will handle /web/* routes with admin user context
+		webMux := http.NewServeMux()
+		webHandler.Register(webMux)
+		wrappedWebMux := webHandler.WithAdminUser(adminUser, webMux)
+		testMux.Handle("/web/", wrappedWebMux)
+
 		testMux.HandleFunc("/healthz", healthzHandler)
 		testMux.HandleFunc("/readyz", readyzHandler(a))
 		testMux.HandleFunc("/sse", func(w http.ResponseWriter, r *http.Request) {
@@ -372,14 +437,28 @@ func StartBackendRetryLoop(ctx context.Context, st *store.Store) {
 					continue
 				}
 
-				// Quick test spawn
-				result := poolmgr.ProbeBackend(backend.Command, []string{}, 10*time.Second)
+				// Build a minimal env: system vars + backend static env.
+				// We don't have a user context here, so we can't inject user tokens,
+				// but the backend needs at least PATH and any static env to start.
+				env := os.Environ()
+				if backend.Env != "" && backend.Env != "{}" {
+					var envMap map[string]string
+					if err := json.Unmarshal([]byte(backend.Env), &envMap); err == nil {
+						for k, v := range envMap {
+							env = append(env, k+"="+v)
+						}
+					}
+				}
+
+				// Quick test spawn — only mark available on success.
+				// Don't mark unavailable on failure because this probe lacks user
+				// tokens; real requests handle marking unavailable when they fail.
+				result := poolmgr.ProbeBackend(backend.Command, env, 30*time.Second)
 				if result.Status == "ok" {
 					shared.Infof("Backend retry: %s reconnected successfully", backendID)
 					st.SetBackendAvailable(backendID)
 				} else {
-					shared.Warnf("Backend retry: %s still unavailable: %s", backendID, result.Message)
-					st.SetBackendUnavailable(backendID, result.Message)
+					shared.Debugf("Backend retry: %s probe failed (tokens may be required): %s", backendID, result.Message)
 				}
 			}
 		}

@@ -197,7 +197,7 @@ func (s *MCPBridgeServer) handleToolsList(w http.ResponseWriter, r *http.Request
 					shared.Debugf("handleToolsList: JSON unmarshal error from backend %s: %v", backend.ID, err)
 				}
 			}
-		case <-time.After(10 * time.Second):
+		case <-time.After(30 * time.Second):
 			pool.UnregisterRequest(reqID)
 			shared.Debugf("handleToolsList: TIMEOUT waiting for tools/list from backend %s, killing stuck process", backend.ID)
 			proc.Kill()
@@ -453,7 +453,7 @@ func (s *MCPBridgeServer) refreshBackendTools(userID string, backend *store.Back
 					}
 				}
 			}
-		case <-time.After(10 * time.Second):
+		case <-time.After(30 * time.Second):
 			pool.UnregisterRequest(reqID)
 			shared.Debugf("refreshBackendTools: timeout for backend %s", backend.ID)
 			proc.Kill()

@@ -4,6 +4,7 @@
 package web
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"html"
@@ -77,6 +78,20 @@ func NewHandler(st *store.Store, templateDir string) (*Handler, error) {
 }
 
 // Register mounts all web routes onto the given ServeMux.
+//
+// HOW TO ADD A NEW WEB ROUTE:
+//  1. Create the handler function in the appropriate *_handlers.go file
+//     (e.g., admin.go for admin routes, auth.go for auth routes)
+//  2. Add the route here in Register(), following the pattern:
+//     mux.Handle("/path", h.requireAuth(http.HandlerFunc(h.YourHandler)))
+//     - use h.requireAdmin() for admin-only routes
+//     - use h.requireAuth() for authenticated user routes
+//     - use mux.HandleFunc() for public routes (no auth)
+//  3. If the route needs a separate POST action (e.g., /edit, /create),
+//     create a separate handler function and register it
+//  4. RESTART THE SERVER - changes require a server restart to take effect
+//
+// Route pattern: /web/admin/{resource} for GET, /web/admin/{resource}/action for POST actions
 func (h *Handler) Register(mux *http.ServeMux) {
 	// Public (no session required)
 	mux.HandleFunc("/web/login", h.LoginHandler)
@@ -95,6 +110,7 @@ func (h *Handler) Register(mux *http.ServeMux) {
 	// Admin only
 	mux.Handle("/web/admin/users", h.requireAdmin(http.HandlerFunc(h.AdminUsersHandler)))
 	mux.Handle("/web/admin/users/create", h.requireAdmin(http.HandlerFunc(h.AdminUsersCreateHandler)))
+	mux.Handle("/web/admin/users/edit", h.requireAdmin(http.HandlerFunc(h.AdminUsersEditHandler)))
 	mux.Handle("/web/admin/users/delete", h.requireAdmin(http.HandlerFunc(h.AdminUsersDeleteHandler)))
 	mux.Handle("/web/admin/backends", h.requireAdmin(http.HandlerFunc(h.AdminBackendsHandler)))
 	mux.Handle("/web/admin/backends/create", h.requireAdmin(http.HandlerFunc(h.AdminBackendsCreateHandler)))
@@ -181,6 +197,15 @@ func userFromContext(r *http.Request) *store.User {
 		}
 	}
 	return nil
+}
+
+// WithAdminUser returns an HTTP handler that injects the admin user into context
+// for the given handler. This is used for testing/insecure mode.
+func (h *Handler) WithAdminUser(admin *store.User, handler http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		ctx := context.WithValue(r.Context(), userContextKey, admin)
+		handler.ServeHTTP(w, r.WithContext(ctx))
+	})
 }
 
 // ---------- Template rendering ----------

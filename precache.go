@@ -45,8 +45,8 @@ func RunPrecache(ctx context.Context, cfg PrecacheConfig) error {
 
 		shared.Infof("Precaching tools for backend: %s", backend.ID)
 
-		// Get user tokens for this backend
-		tokens, err := cfg.Store.GetUserTokens(user.ID, backend.ID)
+		// Get user tokens for this backend (with decryption)
+		tokens, err := cfg.Store.GetUserTokensDecrypted(user.ID, backend.ID)
 		if err != nil {
 			shared.Warnf("Failed to get tokens for %s: %v", backend.ID, err)
 			failed = append(failed, backend.ID)
@@ -93,7 +93,7 @@ func RunPrecache(ctx context.Context, cfg PrecacheConfig) error {
 }
 
 // buildEnvForPrecache builds environment variables for a backend
-func buildEnvForPrecache(backend *store.Backend, tokens []*store.UserToken) (map[string]string, error) {
+func buildEnvForPrecache(backend *store.Backend, tokens []store.UserToken) (map[string]string, error) {
 	// Start with current process environment
 	env := make(map[string]string)
 	for _, e := range os.Environ() {
@@ -104,15 +104,63 @@ func buildEnvForPrecache(backend *store.Backend, tokens []*store.UserToken) (map
 
 	// Parse system-wide env vars from backend config
 	if backend.Env != "" && backend.Env != "{}" {
+		// Handle both JSON object and double-quoted JSON string formats
+		envStr := backend.Env
+		if strings.HasPrefix(envStr, "\"") && strings.HasSuffix(envStr, "\"") {
+			// It's a JSON string - unmarshal to get the actual string
+			var unquoted string
+			if err := json.Unmarshal([]byte(envStr), &unquoted); err == nil {
+				envStr = unquoted
+			}
+		}
+
 		var backendEnv map[string]string
-		if err := json.Unmarshal([]byte(backend.Env), &backendEnv); err == nil {
+		if err := json.Unmarshal([]byte(envStr), &backendEnv); err == nil {
 			for k, v := range backendEnv {
 				env[k] = v
 			}
+		} else {
+			shared.Warnf("Failed to parse backend env: %v", err)
 		}
 	}
 
-	// Add user tokens
+	// Add user tokens and apply env mappings
+	if backend.EnvMappings != "" && backend.EnvMappings != "{}" {
+		var mappings map[string]string
+		if err := json.Unmarshal([]byte(backend.EnvMappings), &mappings); err == nil {
+			// Build reverse mapping (backend key -> user key)
+			reverseMap := make(map[string]string)
+			for userKey, backendKey := range mappings {
+				reverseMap[backendKey] = userKey
+			}
+
+			// For each token, add it to env using the user key (not backend key)
+			for _, token := range tokens {
+				userKey := token.EnvKey
+				// If this token's key is already a backend key (e.g., ATLASSIAN_API_TOKEN),
+				// find the corresponding user key (e.g., API_TOKEN)
+				if mappedUserKey, ok := reverseMap[token.EnvKey]; ok {
+					userKey = mappedUserKey
+				}
+				env[userKey] = token.Value
+			}
+
+			// Apply mappings: convert user keys to backend keys
+			result := make(map[string]string)
+			for k, v := range env {
+				if backendKey, ok := mappings[k]; ok {
+					// Map user key to backend key
+					result[backendKey] = v
+				} else {
+					// Keep all other keys as-is (including backend keys like ATLASSIAN_DOMAIN)
+					result[k] = v
+				}
+			}
+			return result, nil
+		}
+	}
+
+	// No mappings - add tokens directly
 	for _, token := range tokens {
 		env[token.EnvKey] = token.Value
 	}
@@ -145,9 +193,19 @@ func fetchToolsForPrecache(ctx context.Context, command string, env map[string]s
 		return nil, fmt.Errorf("stdout pipe: %w", err)
 	}
 
+	// Capture stderr for debugging
+	stderrPipe, err := execCmd.StderrPipe()
+	if err != nil {
+		return nil, fmt.Errorf("stderr pipe: %w", err)
+	}
+	stderrBuf := &strings.Builder{}
+	go io.Copy(stderrBuf, stderrPipe)
+
+	shared.Debugf("Starting process: %s %v", cmd, args)
 	if err := execCmd.Start(); err != nil {
 		return nil, fmt.Errorf("start process: %w", err)
 	}
+	shared.Infof("Process started with PID: %d", execCmd.Process.Pid)
 
 	// Send initialize
 	initReq := map[string]interface{}{
@@ -196,6 +254,11 @@ func fetchToolsForPrecache(ctx context.Context, command string, env map[string]s
 			break
 		}
 
+		// Check for error
+		if errResp, ok := resp["error"]; ok {
+			shared.Warnf("MCP error response for %s: %v", command, errResp)
+		}
+
 		// Look for tools/list result
 		if id, ok := resp["id"].(string); ok && id == "precache-tools" {
 			if result, ok := resp["result"].(map[string]interface{}); ok {
@@ -214,6 +277,14 @@ func fetchToolsForPrecache(ctx context.Context, command string, env map[string]s
 	close(done)
 	stdin.Close()
 	execCmd.Wait()
+
+	// Log stderr if no tools were returned (for debugging)
+	if len(tools) == 0 {
+		stderrOutput := stderrBuf.String()
+		if stderrOutput != "" {
+			shared.Debugf("Backend process stderr for %s: %s", command, strings.TrimSpace(stderrOutput))
+		}
+	}
 
 	return tools, nil
 }

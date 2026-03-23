@@ -81,6 +81,54 @@ func (h *Handler) AdminUsersDeleteHandler(w http.ResponseWriter, r *http.Request
 	http.Redirect(w, r, "/web/admin/users?success=User+deleted", http.StatusSeeOther)
 }
 
+func (h *Handler) AdminUsersEditHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	userID := r.FormValue("user_id")
+	name := strings.TrimSpace(r.FormValue("name"))
+	email := strings.TrimSpace(r.FormValue("email"))
+	password := r.FormValue("password")
+	role := r.FormValue("role")
+
+	if email == "" {
+		http.Redirect(w, r, "/web/admin/users?error=Email+required", http.StatusSeeOther)
+		return
+	}
+	if role != "admin" && role != "user" {
+		role = "user"
+	}
+
+	// Get existing user to preserve password if not changed
+	existing, err := h.Store.GetUser(userID)
+	if err != nil {
+		log.Printf("web: get user for edit: %v", err)
+		http.Redirect(w, r, "/web/admin/users?error=User+not+found", http.StatusSeeOther)
+		return
+	}
+
+	// If password is empty, keep the existing password
+	if password == "" {
+		password = existing.Password
+	}
+
+	u := &store.User{
+		ID:       userID,
+		Name:     name,
+		Email:    email,
+		Password: password,
+		Role:     role,
+	}
+	if err := h.Store.UpdateUser(u); err != nil {
+		log.Printf("web: update user: %v", err)
+		http.Redirect(w, r, "/web/admin/users?error=Failed+to+update+user", http.StatusSeeOther)
+		return
+	}
+	http.Redirect(w, r, "/web/admin/users?success=User+updated", http.StatusSeeOther)
+}
+
 // PoolStatusDisplay is a display-friendly version of poolmgr.PoolStatus
 type PoolStatusDisplay struct {
 	BackendID     string
@@ -260,6 +308,28 @@ func (h *Handler) AdminBackendsEditHandler(w http.ResponseWriter, r *http.Reques
 	}
 	if envMappings == "" {
 		envMappings = "{}"
+	}
+
+	// Validate JSON fields - reject if already double-encoded or invalid
+	if env != "{}" {
+		if strings.HasPrefix(env, "\"") && strings.HasSuffix(env, "\"") {
+			http.Redirect(w, r, "/web/admin/backends?error=Env+is+double-encoded", http.StatusSeeOther)
+			return
+		}
+		if err := json.Unmarshal([]byte(env), nil); err != nil {
+			http.Redirect(w, r, "/web/admin/backends?error=Invalid+JSON+in+Env", http.StatusSeeOther)
+			return
+		}
+	}
+	if envMappings != "{}" {
+		if strings.HasPrefix(envMappings, "\"") && strings.HasSuffix(envMappings, "\"") {
+			http.Redirect(w, r, "/web/admin/backends?error=Env+mappings+is+double-encoded", http.StatusSeeOther)
+			return
+		}
+		if err := json.Unmarshal([]byte(envMappings), nil); err != nil {
+			http.Redirect(w, r, "/web/admin/backends?error=Invalid+JSON+in+EnvMappings", http.StatusSeeOther)
+			return
+		}
 	}
 
 	// Get existing backend to preserve IsSystem flag

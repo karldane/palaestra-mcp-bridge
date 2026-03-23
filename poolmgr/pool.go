@@ -14,9 +14,9 @@ import (
 
 const (
 	protocolVersion         = "2024-11-05"
-	handshakeTimeout        = 10 * time.Second // Timeout for MCP handshake during process initialization
+	handshakeTimeout        = 30 * time.Second // Timeout for MCP handshake during process initialization (npx downloads can be slow)
 	defaultSpawnChannel     = 10               // Default spawning concurrency per pool
-	defaultMaxSpawnAttempts = 2                // Max failed spawn attempts before marking backend unavailable (0 = unlimited)
+	defaultMaxSpawnAttempts = 3                // Max failed spawn attempts before marking backend unavailable (0 = unlimited)
 )
 
 type Pool struct {
@@ -326,6 +326,13 @@ func (pool *Pool) spawnAndHandshake() {
 
 		// Process didn't exit immediately - handshake timeout (process hanging)
 		proc.Kill()
+
+		// Log stderr for debugging
+		if stderrOutput != "" {
+			shared.Errorf("MCP handshake timeout for backend %s - stderr: %s", pool.BackendID, strings.TrimSpace(stderrOutput))
+		} else {
+			shared.Errorf("MCP handshake timeout for backend %s - no stderr output (process may be downloading or waiting for auth)", pool.BackendID)
+		}
 
 		// Track failed attempts
 		pool.mu.Lock()

@@ -8,37 +8,33 @@
   <div class="card">
     <h2>Users</h2>
     {{if .Data}}
-    <table>
-      <thead>
-        <tr>
-          <th>Email</th>
-          <th>Name</th>
-          <th>Role</th>
-          <th>Created</th>
-          <th></th>
-        </tr>
-      </thead>
-      <tbody>
-        {{range .Data}}
-        <tr>
-          <td>{{.Email}}</td>
-          <td>{{.Name}}</td>
-          <td><span class="badge {{if eq .Role "admin"}}badge-admin{{else}}badge-user{{end}}">{{.Role}}</span></td>
-          <td class="text-muted">{{.CreatedAt.Format "2006-01-02"}}</td>
-          <td>
-            {{if ne .ID $.User.ID}}
+    <div class="user-list">
+      {{range .Data}}
+      <div class="item-card" data-id="{{.ID}}" data-name="{{.Name}}" data-email="{{.Email}}" data-role="{{.Role}}">
+        <div class="item-info">
+          <strong>{{.Email}}</strong>
+          <div class="item-meta">
+            {{if .Name}}<span>{{.Name}}</span>{{end}}
+            <span class="badge {{if eq .Role "admin"}}badge-admin{{else}}badge-user{{end}}">{{.Role}}</span>
+            <span class="text-muted">Created {{.CreatedAt.Format "2006-01-02"}}</span>
+          </div>
+        </div>
+        <div class="item-actions">
+          {{if ne .ID $.User.ID}}
+          <div class="btn-group">
+            <button type="button" class="btn btn-sm" onclick="editUser('{{.ID}}')">Edit</button>
             <form method="post" action="/web/admin/users/delete" style="display:inline;">
               <input type="hidden" name="user_id" value="{{.ID}}">
               <button type="submit" class="btn btn-sm btn-danger" onclick="return confirm('Delete user {{.Email}}?')">Delete</button>
             </form>
-            {{else}}
-            <span class="text-muted">you</span>
-            {{end}}
-          </td>
-        </tr>
-        {{end}}
-      </tbody>
-    </table>
+          </div>
+          {{else}}
+          <span class="text-muted">you</span>
+          {{end}}
+        </div>
+      </div>
+      {{end}}
+    </div>
     {{else}}
     <p class="text-muted">No users found.</p>
     {{end}}
@@ -74,5 +70,71 @@
     </form>
   </div>
 </div>
+
+<div id="editModal" class="modal" style="display:none;">
+  <div class="modal-content">
+    <h2>Edit User</h2>
+    <form method="post" action="/web/admin/users/edit">
+      <input type="hidden" id="edit_user_id" name="user_id">
+      <div class="form-row">
+        <label for="edit_email">Email</label>
+        <input type="email" id="edit_email" name="email" required>
+      </div>
+      <div class="form-row">
+        <label for="edit_name">Name</label>
+        <input type="text" id="edit_name" name="name" placeholder="Full name">
+      </div>
+      <div class="form-row">
+        <label for="edit_password">Password <span class="text-muted">(leave blank to keep current)</span></label>
+        <input type="password" id="edit_password" name="password">
+      </div>
+      <div class="form-row">
+        <label for="edit_role">Role</label>
+        <select id="edit_role" name="role">
+          <option value="user">User</option>
+          <option value="admin">Admin</option>
+        </select>
+      </div>
+      <div class="form-actions">
+        <button type="button" class="btn" onclick="closeEditModal()">Cancel</button>
+        <button type="submit" class="btn btn-primary">Save Changes</button>
+      </div>
+    </form>
+  </div>
+</div>
+
+<script>
+function editUser(id) {
+  var card = document.querySelector('.item-card[data-id="' + id + '"]');
+  if (!card) return;
+  
+  document.getElementById('edit_user_id').value = id;
+  document.getElementById('edit_email').value = card.getAttribute('data-email');
+  document.getElementById('edit_name').value = card.getAttribute('data-name');
+  document.getElementById('edit_role').value = card.getAttribute('data-role');
+  document.getElementById('edit_password').value = '';
+  
+  document.getElementById('editModal').style.display = 'flex';
+}
+
+function closeEditModal() {
+  document.getElementById('editModal').style.display = 'none';
+}
+
+// Close modal on escape key
+document.addEventListener('keydown', function(e) {
+  if (e.key === 'Escape') {
+    closeEditModal();
+  }
+});
+
+// Close modal when clicking outside
+document.getElementById('editModal').addEventListener('click', function(e) {
+  if (e.target === this) {
+    closeEditModal();
+  }
+});
+</script>
+
 {{template "foot" .}}
 {{end}}

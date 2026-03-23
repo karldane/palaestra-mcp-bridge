@@ -245,7 +245,7 @@ func (tm *ToolMuxer) BuildEnvForUser(userID, backendID string) []string {
 // buildLegacyEnv handles the fallback path when no backend config is found.
 func (tm *ToolMuxer) buildLegacyEnv(userID, backendID string, envMap map[string]string) {
 	if tm.store != nil {
-		tokens, err := tm.store.GetUserTokens(userID, backendID)
+		tokens, err := tm.store.GetUserTokensDecrypted(userID, backendID)
 		if err == nil {
 			for _, tok := range tokens {
 				envMap[tok.EnvKey] = tok.Value
@@ -377,7 +377,15 @@ func (tm *ToolMuxer) getBackendConfig(backendID string) (command string, poolSiz
 		if err == nil {
 			var envMap map[string]string
 			if b.Env != "" && b.Env != "{}" {
-				if jsonErr := json.Unmarshal([]byte(b.Env), &envMap); jsonErr != nil {
+				envStr := b.Env
+				// Handle double-quoted JSON string format
+				if strings.HasPrefix(envStr, "\"") && strings.HasSuffix(envStr, "\"") {
+					var unquoted string
+					if err := json.Unmarshal([]byte(envStr), &unquoted); err == nil {
+						envStr = unquoted
+					}
+				}
+				if jsonErr := json.Unmarshal([]byte(envStr), &envMap); jsonErr != nil {
 					envMap = nil
 				}
 			}
@@ -387,7 +395,15 @@ func (tm *ToolMuxer) getBackendConfig(backendID string) (command string, poolSiz
 
 			var mappings map[string]string
 			if b.EnvMappings != "" && b.EnvMappings != "{}" {
-				if jsonErr := json.Unmarshal([]byte(b.EnvMappings), &mappings); jsonErr != nil {
+				mappingsStr := b.EnvMappings
+				// Handle double-quoted JSON string format
+				if strings.HasPrefix(mappingsStr, "\"") && strings.HasSuffix(mappingsStr, "\"") {
+					var unquoted string
+					if err := json.Unmarshal([]byte(mappingsStr), &unquoted); err == nil {
+						mappingsStr = unquoted
+					}
+				}
+				if jsonErr := json.Unmarshal([]byte(mappingsStr), &mappings); jsonErr != nil {
 					mappings = nil
 				}
 			}
