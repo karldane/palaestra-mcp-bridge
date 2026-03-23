@@ -39,3 +39,5 @@ TODO.md
 .env
 .env~
 encryption.key
+backups
+mcp-bridge-v*
