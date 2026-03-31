@@ -70,20 +70,20 @@
   <h1>Manage Backends</h1>
   {{template "alerts" .}}
 
-  {{if .Extra.UncachedBackends}}
-  <div class="alert alert-warning" style="background:#fff3cd;border-color:#ffc107;color:#856404;padding:1rem;border-radius:4px;margin-bottom:1rem;">
-    <strong>⚠ Uncached Tooling Detected</strong>
-    <p style="margin:0.5rem 0 0 0;">
-      The following backends do not have cached tools: <strong>{{.Extra.UncachedBackends | join ", "}}</strong>
-    </p>
-    <p style="margin:0.5rem 0 0 0;">
-      Run <code>./mcp-bridge --precache-tooling=USER_EMAIL</code> to cache tools for these backends.
-    </p>
-    <p style="margin:0.5rem 0 0 0;">
-      Without cached tools, the bridge will spawn processes on startup which may cause delays or errors for unavailable backends.
-    </p>
-  </div>
-  {{end}}
+{{if .Extra.UncachedBackends}}
+<div class="alert alert-warning" style="background:#fff3cd;border-color:#ffc107;color:#856404;padding:1rem;border-radius:4px;margin-bottom:1rem;">
+  <strong>⚠ Uncached Tooling Detected</strong>
+  <p style="margin:0.5rem 0 0 0;">
+    The following backends do not have cached tools: <strong>{{.Extra.UncachedBackends}}</strong>
+  </p>
+  <p style="margin:0.5rem 0 0 0;">
+    Run <code>./mcp-bridge --precache-tooling=USER_EMAIL</code> to cache tools for these backends.
+  </p>
+  <p style="margin:0.5rem 0 0 0;">
+    Without cached tools, the bridge will spawn processes on startup which may cause delays or errors for unavailable backends.
+  </p>
+</div>
+{{end}}
 
   <div class="card">
     <h2>Backends</h2>

@@ -12,7 +12,7 @@ import (
 
 // TestEnforcerPolicyEvaluation verifies that policies are actually evaluated during tool calls
 func TestEnforcerPolicyEvaluation(t *testing.T) {
-	a, _, cleanup := testApp(t, "echo test", 2)
+	a, _, cleanup := testApp(t, "cat", 2)
 	defer cleanup()
 
 	// Create enforcer with a test policy
@@ -76,7 +76,7 @@ func TestEnforcerPolicyEvaluation(t *testing.T) {
 // TestEnforcerBlocksBeforeExecution verifies that enforcer blocks tool calls BEFORE backend execution
 // This test ensures that a policy violation returns an error immediately without attempting to execute the tool
 func TestEnforcerBlocksBeforeExecution(t *testing.T) {
-	a, _, cleanup := testApp(t, "echo test", 2)
+	a, _, cleanup := testApp(t, "cat", 2)
 	defer cleanup()
 
 	// Track if backend was ever reached
@@ -152,7 +152,7 @@ func TestEnforcerBlocksBeforeExecution(t *testing.T) {
 
 // TestEnforcerIntegration verifies end-to-end that enforcer is properly wired into the request flow
 func TestEnforcerIntegration(t *testing.T) {
-	a, _, cleanup := testApp(t, "echo test", 2)
+	a, _, cleanup := testApp(t, "cat", 2)
 	defer cleanup()
 
 	// Setup enforcer with seeded policies
@@ -163,8 +163,21 @@ func TestEnforcerIntegration(t *testing.T) {
 	}
 	a.enforcer = enf
 
-	// Seed default policies (including require_mfa_for_destructive)
-	// This simulates real-world scenario where destructive ops require approval
+	// Add a test policy to block delete operations
+	deletePolicy := enforcer.PolicyRow{
+		ID:          "test_block_delete_integration",
+		Name:        "Block Delete Operations",
+		Description: "Block delete operations",
+		Expression:  "tool.contains('delete')",
+		Action:      "DENY",
+		Severity:    "HIGH",
+		Message:     "Delete operations blocked by test policy",
+		Enabled:     true,
+		Priority:    100,
+	}
+	if err := enf.AddPolicy(deletePolicy); err != nil {
+		t.Fatalf("Failed to add test policy: %v", err)
+	}
 
 	// Test: Tool with 'delete' in name should be caught by impact_scope policy
 	t.Run("Destructive tool requires approval", func(t *testing.T) {

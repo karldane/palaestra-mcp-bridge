@@ -557,9 +557,11 @@ func TestIntegration_RootHandler_PostRoutes(t *testing.T) {
 	w := httptest.NewRecorder()
 	a.auth.Middleware(rootHandler(a)).ServeHTTP(w, req)
 
-	// 503 means the handler ran (no warm processes) — not 404.
-	if w.Code != http.StatusServiceUnavailable {
-		t.Errorf("expected 503 from empty pool, got %d", w.Code)
+	// With GetWarmWithRetry, the handler now waits for a process to be spawned
+	// instead of immediately returning 503. For simple commands like "cat",
+	// a process will be spawned and the request succeeds (200).
+	if w.Code != http.StatusOK {
+		t.Errorf("expected 200 (process spawned), got %d", w.Code)
 	}
 }
 
@@ -567,13 +569,23 @@ func TestIntegration_RootHandler_GetRoutes(t *testing.T) {
 	a, token, cleanup := testApp(t, "cat", 0)
 	defer cleanup()
 
+	// Use context with timeout since GetWarmWithRetry now spawns a process
+	// instead of immediately returning 503
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+
 	req := authRequest("GET", "/", "", token)
+	req = req.WithContext(ctx)
+	req.Header.Set("Accept", "text/event-stream")
+
 	w := httptest.NewRecorder()
 	a.auth.Middleware(rootHandler(a)).ServeHTTP(w, req)
 
-	// 503 means the SSE handler ran (no warm processes) — not 404.
-	if w.Code != http.StatusServiceUnavailable {
-		t.Errorf("expected 503 from empty pool, got %d", w.Code)
+	// With GetWarmWithRetry, the SSE handler now waits for a process to be spawned.
+	// For simple commands like "cat", a process will be spawned but cat just waits for input.
+	// We just verify the request was handled (not 404) and that SSE headers are set.
+	if w.Header().Get("Content-Type") != "text/event-stream" {
+		t.Errorf("expected Content-Type text/event-stream, got %s", w.Header().Get("Content-Type"))
 	}
 }
 
@@ -1376,6 +1388,74 @@ func TestIntegration_InlineMCPWithAPIKey(t *testing.T) {
 		}
 		if !strings.Contains(text, "test-backend: configured") {
 			t.Errorf("expected backend to show 'configured', got: %s", text)
+		}
+	})
+
+	// Test 7: Consistency between mcpbridge_list_backends and mcpbridge_capabilities for system backends
+	t.Run("list_backends and capabilities consistent for system backends", func(t *testing.T) {
+		// Create the mcpbridge system backend (simulating seed)
+		mcpbridgeBackend := &store.Backend{
+			ID:            "mcpbridge",
+			Command:       "mcp-bridge-builtin",
+			PoolSize:      1,
+			ToolPrefix:    "",
+			Enabled:       false, // Start with disabled to test
+			IsSystem:      true,
+			SelfReporting: true,
+		}
+		if err := a.store.CreateBackend(mcpbridgeBackend); err != nil {
+			// Might already exist from previous test, try to update instead
+			backends, _ := a.store.ListBackends()
+			for _, b := range backends {
+				if b.ID == "mcpbridge" {
+					b.Enabled = false
+					b.IsSystem = true
+					a.store.UpdateBackend(b)
+					break
+				}
+			}
+		}
+
+		// Get output from list_backends
+		listBody := `{"jsonrpc":"2.0","method":"tools/call","id":6,"params":{"name":"mcpbridge_list_backends"}}`
+		listReq := httptest.NewRequest("POST", "/", strings.NewReader(listBody))
+		listReq.Header.Set("Content-Type", "application/json")
+		listReq.Header.Set("Authorization", "Bearer "+apiKey)
+		listW := httptest.NewRecorder()
+		a.auth.Middleware(rootHandler(a)).ServeHTTP(listW, listReq)
+
+		var listResp map[string]interface{}
+		if err := json.Unmarshal(listW.Body.Bytes(), &listResp); err != nil {
+			t.Fatalf("invalid JSON response: %v", err)
+		}
+		listResult, _ := listResp["result"].(map[string]interface{})
+		listContent, _ := listResult["content"].([]interface{})
+		listTextContent, _ := listContent[0].(map[string]interface{})
+		listText, _ := listTextContent["text"].(string)
+
+		// Get output from capabilities
+		capsBody := `{"jsonrpc":"2.0","method":"tools/call","id":7,"params":{"name":"mcpbridge_capabilities"}}`
+		capsReq := httptest.NewRequest("POST", "/", strings.NewReader(capsBody))
+		capsReq.Header.Set("Content-Type", "application/json")
+		capsReq.Header.Set("Authorization", "Bearer "+apiKey)
+		capsW := httptest.NewRecorder()
+		a.auth.Middleware(rootHandler(a)).ServeHTTP(capsW, capsReq)
+
+		var capsResp map[string]interface{}
+		if err := json.Unmarshal(capsW.Body.Bytes(), &capsResp); err != nil {
+			t.Fatalf("invalid JSON response: %v", err)
+		}
+		capsResult, _ := capsResp["result"].(map[string]interface{})
+		capsContent, _ := capsResult["content"].([]interface{})
+		capsTextContent, _ := capsContent[0].(map[string]interface{})
+		capsText, _ := capsTextContent["text"].(string)
+
+		// Both should show system backends as "always available" regardless of DB Enabled flag
+		if !strings.Contains(listText, "mcpbridge: system (always available)") {
+			t.Errorf("list_backends should show 'mcpbridge: system (always available)', got: %s", listText)
+		}
+		if !strings.Contains(capsText, "mcpbridge: system (always available)") {
+			t.Errorf("capabilities should show 'mcpbridge: system (always available)', got: %s", capsText)
 		}
 	})
 }

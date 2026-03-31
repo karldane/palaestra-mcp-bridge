@@ -404,6 +404,9 @@ func (h *EnforcerHandler) ApproveRequest(w http.ResponseWriter, r *http.Request)
 
 // PoliciesPageHandler displays the list of policies
 func (h *EnforcerHandler) PoliciesPageHandler(w http.ResponseWriter, r *http.Request) {
+	if !h.requireEnforcer(w, r) {
+		return
+	}
 	user := userFromContext(r)
 	policies, err := h.enforcer.ListPolicies()
 	if err != nil {

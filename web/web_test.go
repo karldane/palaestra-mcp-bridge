@@ -3,6 +3,7 @@ package web
 import (
 	"encoding/json"
 	"fmt"
+	"log"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -799,7 +800,10 @@ func TestAdminBackends_ListsBackends(t *testing.T) {
 	if w.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d", w.Code)
 	}
-	if !strings.Contains(w.Body.String(), "be-alpha") {
+	body := w.Body.String()
+	t.Logf("Response body length: %d", len(body))
+	t.Logf("Response body preview: %s", body[:min(len(body), 2000)])
+	if !strings.Contains(body, "be-alpha") {
 		t.Error("expected backend in list")
 	}
 }
@@ -909,7 +913,7 @@ func TestAdminBackends_Create_DefaultValues(t *testing.T) {
 	}
 }
 
-func TestAdminBackends_Edit(t *testing.T) {
+func TestAdminBackends_Edit_DEBUG(t *testing.T) {
 	h, st := testHandler(t)
 	defer st.Close()
 
@@ -931,15 +935,26 @@ func TestAdminBackends_Edit(t *testing.T) {
 		"env":           {`{"A":"B"}`},
 		"enabled":       {"on"},
 	}
-	req := authedRequest(http.MethodPost, "/web/admin/backends/edit", form.Encode(), cookie)
+	body := form.Encode()
+	log.Printf("web: test form body: %q", body)
+	req := authedRequest(http.MethodPost, "/web/admin/backends/edit", body, cookie)
 	w := httptest.NewRecorder()
 	mux.ServeHTTP(w, req)
 
 	if w.Code != http.StatusSeeOther {
 		t.Fatalf("expected 303, got %d", w.Code)
 	}
+	log.Printf("web: response status: %d", w.Code)
+	log.Printf("web: response headers: %+v", w.Header())
 
-	b, _ := st.GetBackend("edit-be")
+	location := w.Header().Get("Location")
+	log.Printf("web: redirect location: %q", location)
+
+	b, err := st.GetBackend("edit-be")
+	if err != nil {
+		t.Fatalf("failed to get backend: %v", err)
+	}
+	log.Printf("web: backend from store after edit: %+v", b)
 	if b.Command != "new-cmd" || b.MinPoolSize != 5 || b.MaxPoolSize != 10 || b.ToolPrefix != "new-pref" {
 		t.Errorf("unexpected backend after edit: %+v", b)
 	}
@@ -1442,4 +1457,41 @@ func min(a, b int) int {
 		return a
 	}
 	return b
+}
+
+// TestAdminBackends_ListsBackends_DEBUG is a debug version that saves full response
+func TestAdminBackends_ListsBackends_DEBUG(t *testing.T) {
+	h, st := testHandler(t)
+	defer st.Close()
+
+	seedAdmin(t, st)
+	st.CreateBackend(&store.Backend{
+		ID: "be-alpha", Command: "cmd-a", PoolSize: 2, Env: "{}", Enabled: true,
+	})
+	mux := http.NewServeMux()
+	h.Register(mux)
+	cookie := loginCookie(t, h, mux, "admin@test.com", "secret")
+
+	req := authedRequest(http.MethodGet, "/web/admin/backends", "", cookie)
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+	body := w.Body.String()
+
+	// Save full response to file for inspection
+	if err := os.WriteFile("/tmp/response.html", []byte(body), 0644); err != nil {
+		t.Fatalf("Failed to write response file: %v", err)
+	}
+	t.Logf("Full response saved to /tmp/response.html (length: %d)", len(body))
+
+	if !strings.Contains(body, "be-alpha") {
+		t.Error("expected backend in list")
+		// Show some context around where we expect to find it
+		if idx := strings.Index(body, "<!--"); idx >= 0 {
+			t.Logf("Context around first comment: %s", body[idx:idx+200])
+		}
+	}
 }

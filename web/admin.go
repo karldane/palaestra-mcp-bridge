@@ -286,14 +286,18 @@ func (h *Handler) AdminBackendsEditHandler(w http.ResponseWriter, r *http.Reques
 	selfReporting := r.FormValue("self_reporting") == "on"
 
 	// Validate inputs
+	log.Printf("web: validating inputs: id=%q, command=%q", id, command)
 	if id == "" || command == "" {
+		log.Printf("web: validation failed: ID or command empty")
 		http.Redirect(w, r, "/web/admin/backends?error=ID+and+command+required", http.StatusSeeOther)
 		return
 	}
 	if !isValidBackendID(id) {
+		log.Printf("web: validation failed: invalid backend ID: %q", id)
 		http.Redirect(w, r, "/web/admin/backends?error=Invalid+backend+ID", http.StatusSeeOther)
 		return
 	}
+	log.Printf("web: validation passed")
 
 	minPoolSize := 1
 	if n := parseInt(minPoolSizeStr); n > 0 {

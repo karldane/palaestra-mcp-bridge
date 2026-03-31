@@ -207,9 +207,13 @@ func handleToolsCall(a *app, w http.ResponseWriter, r *http.Request, userID stri
 							result = "Error: " + err.Error()
 						} else {
 							for _, b := range backends {
-								status := "disabled"
-								if b.Enabled {
+								var status string
+								if b.IsSystem {
+									status = "system (always available)"
+								} else if b.Enabled {
 									status = "enabled"
+								} else {
+									status = "disabled"
 								}
 								result += "- " + b.ID + ": " + status + "\n"
 							}
@@ -405,58 +409,60 @@ func handleToolsCall(a *app, w http.ResponseWriter, r *http.Request, userID stri
 	pool := router.Pool
 	pool.TouchLastUsed()
 
-	select {
-	case proc := <-pool.Warm:
-		// Ensure we have a valid ID
-		var msg poolmgr.JSONRPCMessage
-		if err := json.Unmarshal(modifiedBody, &msg); err != nil {
-			pool.Warm <- proc
-			http.Error(w, "Invalid JSON-RPC", http.StatusBadRequest)
-			return
-		}
-
-		reqID := fmt.Sprintf("%v", msg.ID)
-		if reqID == "" || reqID == "<nil>" {
-			reqID = fmt.Sprintf("auto-%d", time.Now().UnixNano())
-			msg.ID = reqID
-			modifiedBody, _ = json.Marshal(msg)
-		}
-
-		// Compact and add newline
-		buf := new(bytes.Buffer)
-		if err := json.Compact(buf, modifiedBody); err != nil {
-			buf.Reset()
-			buf.Write(modifiedBody)
-		}
-		buf.WriteByte('\n')
-
-		respCh := pool.RegisterRequest(reqID)
-		proc.Stdin.Write(buf.Bytes())
-
-		select {
-		case response, ok := <-respCh:
-			pool.UnregisterRequest(reqID)
-			if ok && len(response) > 0 {
-				w.Header().Set("Content-Type", "application/json")
-				w.Write(response)
-			} else {
-				w.WriteHeader(http.StatusGatewayTimeout)
-				w.Write([]byte(`{"jsonrpc":"2.0","error":{"code":-32000,"message":"No response received"}}`))
-			}
-		case <-time.After(60 * time.Second):
-			pool.UnregisterRequest(reqID)
-			w.WriteHeader(http.StatusGatewayTimeout)
-			w.Write([]byte(`{"jsonrpc":"2.0","error":{"code":-32000,"message":"Request timeout after 60s"}}`))
-			// Don't return stuck process to pool - kill it and let pool refill
-			proc.Kill()
-			return
-		}
-
-		pool.Warm <- proc
-	default:
+	proc, err := pool.GetWarmWithRetry(poolmgr.DefaultWarmWaitTimeout)
+	if err != nil {
+		shared.Errorf("handleToolsCall: no warm process available: %v", err)
 		w.WriteHeader(http.StatusServiceUnavailable)
-		w.Write([]byte("No warm processes"))
+		w.Write([]byte("No warm processes available"))
+		return
 	}
+
+	// Ensure we have a valid ID
+	var msg poolmgr.JSONRPCMessage
+	if err := json.Unmarshal(modifiedBody, &msg); err != nil {
+		pool.ReleaseWarm(proc)
+		http.Error(w, "Invalid JSON-RPC", http.StatusBadRequest)
+		return
+	}
+
+	reqID := fmt.Sprintf("%v", msg.ID)
+	if reqID == "" || reqID == "<nil>" {
+		reqID = fmt.Sprintf("auto-%d", time.Now().UnixNano())
+		msg.ID = reqID
+		modifiedBody, _ = json.Marshal(msg)
+	}
+
+	// Compact and add newline
+	buf := new(bytes.Buffer)
+	if err := json.Compact(buf, modifiedBody); err != nil {
+		buf.Reset()
+		buf.Write(modifiedBody)
+	}
+	buf.WriteByte('\n')
+
+	respCh := pool.RegisterRequest(reqID)
+	proc.Stdin.Write(buf.Bytes())
+
+	select {
+	case response, ok := <-respCh:
+		pool.UnregisterRequest(reqID)
+		if ok && len(response) > 0 {
+			w.Header().Set("Content-Type", "application/json")
+			w.Write(response)
+		} else {
+			w.WriteHeader(http.StatusGatewayTimeout)
+			w.Write([]byte(`{"jsonrpc":"2.0","error":{"code":-32000,"message":"No response received"}}`))
+		}
+	case <-time.After(60 * time.Second):
+		pool.UnregisterRequest(reqID)
+		w.WriteHeader(http.StatusGatewayTimeout)
+		w.Write([]byte(`{"jsonrpc":"2.0","error":{"code":-32000,"message":"Request timeout after 60s"}}`))
+		// Don't return stuck process to pool - kill it and let pool refill
+		proc.Kill()
+		return
+	}
+
+	pool.ReleaseWarm(proc)
 }
 
 // handleDefaultBackend routes to the default backend (legacy behavior)
@@ -465,54 +471,56 @@ func handleDefaultBackend(a *app, w http.ResponseWriter, r *http.Request, userID
 	pool := a.getPoolForUser(userID, backendID)
 	pool.TouchLastUsed()
 
-	select {
-	case proc := <-pool.Warm:
-		var msg poolmgr.JSONRPCMessage
-		if err := json.Unmarshal(body, &msg); err != nil {
-			pool.Warm <- proc
-			http.Error(w, "Invalid JSON-RPC", http.StatusBadRequest)
-			return
-		}
-
-		reqID := fmt.Sprintf("%v", msg.ID)
-		if reqID == "" || reqID == "<nil>" {
-			reqID = fmt.Sprintf("auto-%d", time.Now().UnixNano())
-			msg.ID = reqID
-			body, _ = json.Marshal(msg)
-		}
-
-		buf := new(bytes.Buffer)
-		if err := json.Compact(buf, body); err != nil {
-			buf.Reset()
-			buf.Write(body)
-		}
-		buf.WriteByte('\n')
-
-		respCh := pool.RegisterRequest(reqID)
-		proc.Stdin.Write(buf.Bytes())
-
-		select {
-		case response, ok := <-respCh:
-			pool.UnregisterRequest(reqID)
-			if ok && len(response) > 0 {
-				w.Header().Set("Content-Type", "application/json")
-				w.Write(response)
-			} else {
-				w.WriteHeader(http.StatusGatewayTimeout)
-				w.Write([]byte(`{"jsonrpc":"2.0","error":{"code":-32000,"message":"No response received"}}`))
-			}
-		case <-time.After(60 * time.Second):
-			pool.UnregisterRequest(reqID)
-			w.WriteHeader(http.StatusGatewayTimeout)
-			w.Write([]byte(`{"jsonrpc":"2.0","error":{"code":-32000,"message":"Request timeout after 60s"}}`))
-			// Don't return stuck process to pool - kill it and let pool refill
-			proc.Kill()
-			return
-		}
-
-		pool.Warm <- proc
-	default:
+	proc, err := pool.GetWarmWithRetry(poolmgr.DefaultWarmWaitTimeout)
+	if err != nil {
+		shared.Errorf("handleDefaultBackend: no warm process available: %v", err)
 		w.WriteHeader(http.StatusServiceUnavailable)
-		w.Write([]byte("No warm processes"))
+		w.Write([]byte("No warm processes available"))
+		return
 	}
+
+	var msg poolmgr.JSONRPCMessage
+	if err := json.Unmarshal(body, &msg); err != nil {
+		pool.ReleaseWarm(proc)
+		http.Error(w, "Invalid JSON-RPC", http.StatusBadRequest)
+		return
+	}
+
+	reqID := fmt.Sprintf("%v", msg.ID)
+	if reqID == "" || reqID == "<nil>" {
+		reqID = fmt.Sprintf("auto-%d", time.Now().UnixNano())
+		msg.ID = reqID
+		body, _ = json.Marshal(msg)
+	}
+
+	buf := new(bytes.Buffer)
+	if err := json.Compact(buf, body); err != nil {
+		buf.Reset()
+		buf.Write(body)
+	}
+	buf.WriteByte('\n')
+
+	respCh := pool.RegisterRequest(reqID)
+	proc.Stdin.Write(buf.Bytes())
+
+	select {
+	case response, ok := <-respCh:
+		pool.UnregisterRequest(reqID)
+		if ok && len(response) > 0 {
+			w.Header().Set("Content-Type", "application/json")
+			w.Write(response)
+		} else {
+			w.WriteHeader(http.StatusGatewayTimeout)
+			w.Write([]byte(`{"jsonrpc":"2.0","error":{"code":-32000,"message":"No response received"}}`))
+		}
+	case <-time.After(60 * time.Second):
+		pool.UnregisterRequest(reqID)
+		w.WriteHeader(http.StatusGatewayTimeout)
+		w.Write([]byte(`{"jsonrpc":"2.0","error":{"code":-32000,"message":"Request timeout after 60s"}}`))
+		// Don't return stuck process to pool - kill it and let pool refill
+		proc.Kill()
+		return
+	}
+
+	pool.ReleaseWarm(proc)
 }

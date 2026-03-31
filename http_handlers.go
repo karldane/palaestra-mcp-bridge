@@ -93,7 +93,7 @@ func sseHandler(a *app) http.HandlerFunc {
 			}
 		}
 
-		// Try to get a warm process with a short timeout
+		// Try to get a warm process immediately (fail fast for SSE)
 		select {
 		case proc := <-pool.Warm:
 			pool.IncrementActive()

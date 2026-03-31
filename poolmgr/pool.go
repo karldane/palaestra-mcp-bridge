@@ -17,6 +17,7 @@ const (
 	handshakeTimeout        = 30 * time.Second // Timeout for MCP handshake during process initialization (npx downloads can be slow)
 	defaultSpawnChannel     = 10               // Default spawning concurrency per pool
 	defaultMaxSpawnAttempts = 3                // Max failed spawn attempts before marking backend unavailable (0 = unlimited)
+	DefaultWarmWaitTimeout  = 30 * time.Second // Default timeout for waiting for warm process when none available
 )
 
 type Pool struct {
@@ -538,6 +539,37 @@ func (pool *Pool) WaitForWarmWithMax(timeout time.Duration) (*ManagedProcess, er
 	return nil, fmt.Errorf("timeout waiting for warm process")
 }
 
+// GetWarmWithRetry attempts to get a warm process, falling back to spawning if none available.
+// This is the preferred method for handling "no warm processes" scenarios - it waits for a
+// process to become ready rather than immediately returning an error.
+// Returns the process, or an error if timeout exceeded or backend is unavailable.
+func (pool *Pool) GetWarmWithRetry(timeout time.Duration) (*ManagedProcess, error) {
+	if timeout == 0 {
+		timeout = DefaultWarmWaitTimeout
+	}
+
+	// Fast path: try to get an available warm process immediately
+	if proc := pool.TryAcquireWarm(); proc != nil {
+		return proc, nil
+	}
+
+	// No warm process available - trigger spawning if we can fit more in the warm channel
+	maxPoolSize := pool.MaxPoolSize
+	currentSize := pool.GetCurrentSize()
+	warmAvailable := len(pool.Warm) < maxPoolSize
+	if maxPoolSize == 0 || (currentSize < maxPoolSize && warmAvailable) {
+		// Trigger a new spawn in the background
+		if !pool.IsSpawning() {
+			shared.Debugf("GetWarmWithRetry: no warm processes, triggering spawn for %s", pool.BackendID)
+			pool.wg.Add(1)
+			go pool.spawnAndHandshake()
+		}
+	}
+
+	// Wait for a warm process to become available
+	return pool.WaitForWarmWithMax(timeout)
+}
+
 func (pool *Pool) WarmCount() int {
 	return len(pool.Warm)
 }
@@ -635,7 +667,13 @@ func (pool *Pool) ReleaseWarm(proc *ManagedProcess) {
 		pool.mu.Lock()
 		pool.CurrentSize++
 		pool.mu.Unlock()
-		pool.Warm <- proc
+		select {
+		case pool.Warm <- proc:
+		default:
+			// Channel full - process is lost, but don't block
+			shared.Debugf("ReleaseWarm: warm channel full, discarding process for %s", pool.BackendID)
+			proc.Kill()
+		}
 	}
 }
 

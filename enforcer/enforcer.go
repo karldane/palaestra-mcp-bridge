@@ -677,6 +677,9 @@ func (e *Enforcer) AddPolicy(policy PolicyRow) error {
 
 // ListPolicies returns all policies from the store
 func (e *Enforcer) ListPolicies() ([]PolicyRow, error) {
+	if e.store == nil {
+		return []PolicyRow{}, nil
+	}
 	return e.store.ListPolicies()
 }
 

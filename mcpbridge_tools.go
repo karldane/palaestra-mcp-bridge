@@ -133,9 +133,13 @@ func (s *MCPBridgeServer) handleListBackendsTool(ctx context.Context, request mc
 
 	var result string
 	for _, b := range backends {
-		status := "disabled"
-		if b.Enabled {
+		var status string
+		if b.IsSystem {
+			status = "system (always available)"
+		} else if b.Enabled {
 			status = "enabled"
+		} else {
+			status = "disabled"
 		}
 		result += "- " + b.ID + ": " + status + "\n"
 	}
