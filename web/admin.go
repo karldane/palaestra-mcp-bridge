@@ -218,6 +218,8 @@ func (h *Handler) AdminBackendsCreateHandler(w http.ResponseWriter, r *http.Requ
 	env := strings.TrimSpace(r.FormValue("env"))
 	envMappings := strings.TrimSpace(r.FormValue("env_mappings"))
 	toolHints := strings.TrimSpace(r.FormValue("tool_hints"))
+	log.Printf("web create: env from form: %q", env)
+	log.Printf("web create: env_mappings from form: %q", envMappings)
 	enabled := r.FormValue("enabled") == "on"
 	selfReporting := r.FormValue("self_reporting") == "on"
 
@@ -282,6 +284,8 @@ func (h *Handler) AdminBackendsEditHandler(w http.ResponseWriter, r *http.Reques
 	env := strings.TrimSpace(r.FormValue("env"))
 	envMappings := strings.TrimSpace(r.FormValue("env_mappings"))
 	toolHints := strings.TrimSpace(r.FormValue("tool_hints"))
+	log.Printf("web: env from form: %q", env)
+	log.Printf("web: env_mappings from form: %q", envMappings)
 	enabled := r.FormValue("enabled") == "on"
 	selfReporting := r.FormValue("self_reporting") == "on"
 
@@ -320,7 +324,8 @@ func (h *Handler) AdminBackendsEditHandler(w http.ResponseWriter, r *http.Reques
 			http.Redirect(w, r, "/web/admin/backends?error=Env+is+double-encoded", http.StatusSeeOther)
 			return
 		}
-		if err := json.Unmarshal([]byte(env), nil); err != nil {
+		var js map[string]interface{}
+		if err := json.Unmarshal([]byte(env), &js); err != nil {
 			http.Redirect(w, r, "/web/admin/backends?error=Invalid+JSON+in+Env", http.StatusSeeOther)
 			return
 		}
@@ -330,7 +335,8 @@ func (h *Handler) AdminBackendsEditHandler(w http.ResponseWriter, r *http.Reques
 			http.Redirect(w, r, "/web/admin/backends?error=Env+mappings+is+double-encoded", http.StatusSeeOther)
 			return
 		}
-		if err := json.Unmarshal([]byte(envMappings), nil); err != nil {
+		var js map[string]interface{}
+		if err := json.Unmarshal([]byte(envMappings), &js); err != nil {
 			http.Redirect(w, r, "/web/admin/backends?error=Invalid+JSON+in+EnvMappings", http.StatusSeeOther)
 			return
 		}

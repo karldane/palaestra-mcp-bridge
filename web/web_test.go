@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/mcp-bridge/mcp-bridge/enforcer"
+	"github.com/mcp-bridge/mcp-bridge/internal/crypto"
 	"github.com/mcp-bridge/mcp-bridge/store"
 )
 
@@ -33,6 +34,37 @@ func testHandler(t *testing.T) (*Handler, *store.Store) {
 	// web/web_test.go -> templates/ (one level up)
 	templateDir := filepath.Join("..", "templates")
 	if _, err := os.Stat(filepath.Join(templateDir, "_base.html")); err != nil {
+		t.Fatalf("cannot find templates dir at %s: %v", templateDir, err)
+	}
+
+	h, err := NewHandler(st, templateDir)
+	if err != nil {
+		st.Close()
+		t.Fatalf("NewHandler: %v", err)
+	}
+	return h, st
+}
+
+// testHandlerWithCrypto creates a Handler backed by a temp SQLite DB with
+// encryption enabled. Returns the handler, store, and cleanup function.
+func testHandlerWithCrypto(t *testing.T) (*Handler, *store.Store) {
+	t.Helper()
+
+	dir := t.TempDir()
+	dbPath := filepath.Join(dir, "test.db")
+
+	os.Setenv("ENCRYPTION_KEY", "0123456789abcdef0123456789abcdef")
+	t.Cleanup(func() { os.Unsetenv("ENCRYPTION_KEY") })
+
+	provider := crypto.NewEnvVarProvider("ENCRYPTION_KEY", "")
+	st, err := store.NewWithProvider(dbPath, provider)
+	if err != nil {
+		t.Fatalf("store.NewWithProvider: %v", err)
+	}
+
+	templateDir := filepath.Join("..", "templates")
+	if _, err := os.Stat(filepath.Join(templateDir, "_base.html")); err != nil {
+		st.Close()
 		t.Fatalf("cannot find templates dir at %s: %v", templateDir, err)
 	}
 
@@ -459,6 +491,327 @@ func TestTokensSave_MethodNotAllowed(t *testing.T) {
 
 	if w.Code != http.StatusMethodNotAllowed {
 		t.Fatalf("expected 405, got %d", w.Code)
+	}
+}
+
+// ---------- Tokens Encryption ----------
+
+func TestTokensSave_WithEncryption(t *testing.T) {
+	h, st := testHandlerWithCrypto(t)
+	defer st.Close()
+
+	user := seedAdmin(t, st)
+	st.CreateBackend(&store.Backend{
+		ID: "enc-be", Command: "echo", PoolSize: 1, Env: "{}", Enabled: true,
+	})
+
+	mux := http.NewServeMux()
+	h.Register(mux)
+	cookie := loginCookie(t, h, mux, "admin@test.com", "secret")
+
+	// Save a token via the web UI
+	form := url.Values{
+		"backend_id": {"enc-be"},
+		"env_key":    {"MY_SECRET"},
+		"value":      {"supersecretvalue"},
+	}
+	req := authedRequest(http.MethodPost, "/web/tokens/save", form.Encode(), cookie)
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, req)
+
+	if w.Code != http.StatusSeeOther {
+		t.Fatalf("expected 303, got %d", w.Code)
+	}
+
+	// Verify token was stored
+	tokens, _ := st.GetUserTokens(user.ID, "enc-be")
+	if len(tokens) != 1 {
+		t.Fatalf("expected 1 token, got %d", len(tokens))
+	}
+	tok := tokens[0]
+
+	// The value column should be empty (encrypted into encrypted_value)
+	if tok.Value != "" {
+		t.Errorf("expected empty value column (should be encrypted), got %q", tok.Value)
+	}
+	// encrypted_value should be non-empty
+	if tok.Encrypted == "" {
+		t.Error("expected non-empty encrypted_value, got empty")
+	}
+
+	// Decrypt and verify
+	decrypted, err := st.GetUserTokenDecrypted(user.ID, "enc-be", "MY_SECRET")
+	if err != nil {
+		t.Fatalf("failed to decrypt token: %v", err)
+	}
+	if decrypted != "supersecretvalue" {
+		t.Errorf("decrypted value mismatch: got %q, want %q", decrypted, "supersecretvalue")
+	}
+}
+
+func TestTokensSave_WithoutEncryption(t *testing.T) {
+	h, st := testHandler(t)
+	defer st.Close()
+
+	user := seedAdmin(t, st)
+	st.CreateBackend(&store.Backend{
+		ID: "no-enc-be", Command: "echo", PoolSize: 1, Env: "{}", Enabled: true,
+	})
+
+	mux := http.NewServeMux()
+	h.Register(mux)
+	cookie := loginCookie(t, h, mux, "admin@test.com", "secret")
+
+	// Save a token via the web UI (no keystore)
+	form := url.Values{
+		"backend_id": {"no-enc-be"},
+		"env_key":    {"PLAIN_SECRET"},
+		"value":      {"plaintextvalue"},
+	}
+	req := authedRequest(http.MethodPost, "/web/tokens/save", form.Encode(), cookie)
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, req)
+
+	if w.Code != http.StatusSeeOther {
+		t.Fatalf("expected 303, got %d", w.Code)
+	}
+
+	// Verify token was stored as plaintext
+	tokens, _ := st.GetUserTokens(user.ID, "no-enc-be")
+	if len(tokens) != 1 {
+		t.Fatalf("expected 1 token, got %d", len(tokens))
+	}
+	tok := tokens[0]
+
+	// value should have the plaintext
+	if tok.Value != "plaintextvalue" {
+		t.Errorf("expected value=%q, got %q", "plaintextvalue", tok.Value)
+	}
+	// encrypted_value should be empty
+	if tok.Encrypted != "" {
+		t.Errorf("expected empty encrypted_value, got %q", tok.Encrypted)
+	}
+}
+
+func TestTokensSave_Encryption_MultipleTokens(t *testing.T) {
+	h, st := testHandlerWithCrypto(t)
+	defer st.Close()
+
+	user := seedAdmin(t, st)
+	st.CreateBackend(&store.Backend{
+		ID: "multi-be", Command: "echo", PoolSize: 1, Env: "{}", Enabled: true,
+	})
+
+	mux := http.NewServeMux()
+	h.Register(mux)
+	cookie := loginCookie(t, h, mux, "admin@test.com", "secret")
+
+	// Save two tokens
+	for _, kv := range []struct{ key, val string }{
+		{"API_KEY", "my-key-id"},
+		{"API_SECRET", "my-key-secret"},
+	} {
+		form := url.Values{
+			"backend_id": {"multi-be"},
+			"env_key":    {kv.key},
+			"value":      {kv.val},
+		}
+		req := authedRequest(http.MethodPost, "/web/tokens/save", form.Encode(), cookie)
+		w := httptest.NewRecorder()
+		mux.ServeHTTP(w, req)
+		if w.Code != http.StatusSeeOther {
+			t.Fatalf("save %s: expected 303, got %d", kv.key, w.Code)
+		}
+	}
+
+	// Verify both are encrypted and decodable
+	for _, kv := range []struct{ key, val string }{
+		{"API_KEY", "my-key-id"},
+		{"API_SECRET", "my-key-secret"},
+	} {
+		decrypted, err := st.GetUserTokenDecrypted(user.ID, "multi-be", kv.key)
+		if err != nil {
+			t.Fatalf("decrypt %s: %v", kv.key, err)
+		}
+		if decrypted != kv.val {
+			t.Errorf("%s: got %q, want %q", kv.key, decrypted, kv.val)
+		}
+	}
+}
+
+func TestTokensSave_Encryption_UpdateOverwrites(t *testing.T) {
+	h, st := testHandlerWithCrypto(t)
+	defer st.Close()
+
+	user := seedAdmin(t, st)
+	st.CreateBackend(&store.Backend{
+		ID: "update-be", Command: "echo", PoolSize: 1, Env: "{}", Enabled: true,
+	})
+
+	mux := http.NewServeMux()
+	h.Register(mux)
+	cookie := loginCookie(t, h, mux, "admin@test.com", "secret")
+
+	// Save initial value
+	form := url.Values{
+		"backend_id": {"update-be"},
+		"env_key":    {"TOKEN"},
+		"value":      {"old-value"},
+	}
+	req := authedRequest(http.MethodPost, "/web/tokens/save", form.Encode(), cookie)
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, req)
+
+	// Update with new value
+	form = url.Values{
+		"backend_id": {"update-be"},
+		"env_key":    {"TOKEN"},
+		"value":      {"new-value"},
+	}
+	req = authedRequest(http.MethodPost, "/web/tokens/save", form.Encode(), cookie)
+	w = httptest.NewRecorder()
+	mux.ServeHTTP(w, req)
+
+	// Verify updated value
+	decrypted, err := st.GetUserTokenDecrypted(user.ID, "update-be", "TOKEN")
+	if err != nil {
+		t.Fatalf("decrypt: %v", err)
+	}
+	if decrypted != "new-value" {
+		t.Errorf("expected 'new-value', got %q", decrypted)
+	}
+
+	// Should still have only one token
+	tokens, _ := st.GetUserTokens(user.ID, "update-be")
+	if len(tokens) != 1 {
+		t.Errorf("expected 1 token after update, got %d", len(tokens))
+	}
+}
+
+func TestTokensSave_Encryption_SpecialCharacters(t *testing.T) {
+	h, st := testHandlerWithCrypto(t)
+	defer st.Close()
+
+	user := seedAdmin(t, st)
+	st.CreateBackend(&store.Backend{
+		ID: "spec-be", Command: "echo", PoolSize: 1, Env: "{}", Enabled: true,
+	})
+
+	mux := http.NewServeMux()
+	h.Register(mux)
+	cookie := loginCookie(t, h, mux, "admin@test.com", "secret")
+
+	// Values with special chars that might break naive encoding
+	testValues := []struct {
+		key string
+		val string
+	}{
+		{"PASS", "p@ss/w+rd=with&special"},
+		{"JSON", `{"nested":"value","num":42}`},
+		{"BINARY", "base64+data/chars=="},
+		{"EMPTY", "has spaces and \"quotes\""},
+	}
+
+	for _, tv := range testValues {
+		form := url.Values{
+			"backend_id": {"spec-be"},
+			"env_key":    {tv.key},
+			"value":      {tv.val},
+		}
+		req := authedRequest(http.MethodPost, "/web/tokens/save", form.Encode(), cookie)
+		w := httptest.NewRecorder()
+		mux.ServeHTTP(w, req)
+
+		decrypted, err := st.GetUserTokenDecrypted(user.ID, "spec-be", tv.key)
+		if err != nil {
+			t.Fatalf("decrypt %s: %v", tv.key, err)
+		}
+		if decrypted != tv.val {
+			t.Errorf("%s: got %q, want %q", tv.key, decrypted, tv.val)
+		}
+	}
+}
+
+func TestTokensSave_Encryption_DeleteRestoredCorrectly(t *testing.T) {
+	h, st := testHandlerWithCrypto(t)
+	defer st.Close()
+
+	user := seedAdmin(t, st)
+	st.CreateBackend(&store.Backend{
+		ID: "del-enc-be", Command: "echo", PoolSize: 1, Env: "{}", Enabled: true,
+	})
+
+	mux := http.NewServeMux()
+	h.Register(mux)
+	cookie := loginCookie(t, h, mux, "admin@test.com", "secret")
+
+	// Save a token
+	form := url.Values{
+		"backend_id": {"del-enc-be"},
+		"env_key":    {"GONE"},
+		"value":      {"should-be-deleted"},
+	}
+	req := authedRequest(http.MethodPost, "/web/tokens/save", form.Encode(), cookie)
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, req)
+
+	// Delete it
+	form = url.Values{
+		"backend_id": {"del-enc-be"},
+		"env_key":    {"GONE"},
+	}
+	req = authedRequest(http.MethodPost, "/web/tokens/delete", form.Encode(), cookie)
+	w = httptest.NewRecorder()
+	mux.ServeHTTP(w, req)
+
+	// Verify deleted
+	tokens, _ := st.GetUserTokens(user.ID, "del-enc-be")
+	if len(tokens) != 0 {
+		t.Fatalf("expected 0 tokens after delete, got %d", len(tokens))
+	}
+}
+
+func TestTokensSave_Encryption_MigrateExistingPlaintext(t *testing.T) {
+	// Simulate: user saved token before encryption fix (plaintext only).
+	// After the fix, saving should encrypt immediately.
+	h, st := testHandlerWithCrypto(t)
+	defer st.Close()
+
+	user := seedAdmin(t, st)
+	st.CreateBackend(&store.Backend{
+		ID: "mig-be", Command: "echo", PoolSize: 1, Env: "{}", Enabled: true,
+	})
+
+	mux := http.NewServeMux()
+	h.Register(mux)
+	cookie := loginCookie(t, h, mux, "admin@test.com", "secret")
+
+	// Save a token — should be encrypted immediately
+	form := url.Values{
+		"backend_id": {"mig-be"},
+		"env_key":    {"OLD_PLAIN"},
+		"value":      {"was-plaintext"},
+	}
+	req := authedRequest(http.MethodPost, "/web/tokens/save", form.Encode(), cookie)
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, req)
+
+	// Verify encrypted
+	tokens, _ := st.GetUserTokens(user.ID, "mig-be")
+	if len(tokens) != 1 {
+		t.Fatalf("expected 1 token, got %d", len(tokens))
+	}
+	if tokens[0].Encrypted == "" {
+		t.Error("expected encrypted_value to be set")
+	}
+
+	// Verify decryption still works
+	decrypted, err := st.GetUserTokenDecrypted(user.ID, "mig-be", "OLD_PLAIN")
+	if err != nil {
+		t.Fatalf("decrypt: %v", err)
+	}
+	if decrypted != "was-plaintext" {
+		t.Errorf("got %q, want %q", decrypted, "was-plaintext")
 	}
 }
 
@@ -957,6 +1310,128 @@ func TestAdminBackends_Edit_DEBUG(t *testing.T) {
 	log.Printf("web: backend from store after edit: %+v", b)
 	if b.Command != "new-cmd" || b.MinPoolSize != 5 || b.MaxPoolSize != 10 || b.ToolPrefix != "new-pref" {
 		t.Errorf("unexpected backend after edit: %+v", b)
+	}
+}
+
+func TestAdminBackends_Create_WithJSONEnv(t *testing.T) {
+	h, st := testHandler(t)
+	defer st.Close()
+
+	seedAdmin(t, st)
+	mux := http.NewServeMux()
+	h.Register(mux)
+	cookie := loginCookie(t, h, mux, "admin@test.com", "secret")
+
+	form := url.Values{
+		"id":           {"json-env-be"},
+		"command":      {"echo test"},
+		"env":          {`{"API_KEY":"secret","API_SECRET":"supersecret"}`},
+		"env_mappings": {`{"USER_KEY":"BACKEND_KEY"}`},
+		"enabled":      {"on"},
+	}
+	req := authedRequest(http.MethodPost, "/web/admin/backends/create", form.Encode(), cookie)
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, req)
+
+	// Check for redirect with error
+	loc := w.Header().Get("Location")
+	if strings.Contains(loc, "error=") {
+		t.Fatalf("create failed: redirect to %s", loc)
+	}
+
+	if w.Code != http.StatusSeeOther {
+		t.Fatalf("expected 303, got %d, body: %s", w.Code, w.Body.String())
+	}
+
+	b, err := st.GetBackend("json-env-be")
+	if err != nil {
+		t.Fatalf("backend not found: %v", err)
+	}
+
+	// Verify env is stored correctly (not double-encoded)
+	if b.Env != `{"API_KEY":"secret","API_SECRET":"supersecret"}` {
+		t.Errorf("env not stored correctly: got %q, want %q", b.Env, `{"API_KEY":"secret","API_SECRET":"supersecret"}`)
+	}
+
+	// Verify env_mappings is stored correctly
+	if b.EnvMappings != `{"USER_KEY":"BACKEND_KEY"}` {
+		t.Errorf("env_mappings not stored correctly: got %q, want %q", b.EnvMappings, `{"USER_KEY":"BACKEND_KEY"}`)
+	}
+}
+
+func TestAdminBackends_Create_WithEmptyEnv(t *testing.T) {
+	h, st := testHandler(t)
+	defer st.Close()
+
+	seedAdmin(t, st)
+	mux := http.NewServeMux()
+	h.Register(mux)
+	cookie := loginCookie(t, h, mux, "admin@test.com", "secret")
+
+	form := url.Values{
+		"id":      {"empty-env-be"},
+		"command": {"echo test"},
+		"env":     {""},
+		"enabled": {"on"},
+	}
+	req := authedRequest(http.MethodPost, "/web/admin/backends/create", form.Encode(), cookie)
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, req)
+
+	if w.Code != http.StatusSeeOther {
+		t.Fatalf("expected 303, got %d, body: %s", w.Code, w.Body.String())
+	}
+
+	b, err := st.GetBackend("empty-env-be")
+	if err != nil {
+		t.Fatalf("backend not found: %v", err)
+	}
+
+	// Empty env should default to "{}"
+	if b.Env != "{}" {
+		t.Errorf("empty env should default to {}, got: %q", b.Env)
+	}
+}
+
+func TestAdminBackends_ListBackends_RoundTripsJSON(t *testing.T) {
+	h, st := testHandler(t)
+	defer st.Close()
+
+	seedAdmin(t, st)
+
+	// Create backend with JSON env directly in DB
+	st.CreateBackend(&store.Backend{
+		ID:          "roundtrip-be",
+		Command:     "echo test",
+		Env:         `{"BASE_URL":"https://api.example.com","TIMEOUT":"30"}`,
+		EnvMappings: `{"MY_KEY":"THEIR_KEY"}`,
+		ToolHints:   "Use this tool for API calls\nExample: GET /users",
+		Enabled:     true,
+	})
+
+	mux := http.NewServeMux()
+	h.Register(mux)
+	cookie := loginCookie(t, h, mux, "admin@test.com", "secret")
+
+	req := authedRequest(http.MethodGet, "/web/admin/backends", "", cookie)
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+
+	// Verify the page contains the JSON env
+	body := w.Body.String()
+
+	// Verify the page contains the JSON env
+	if !strings.Contains(body, "BASE_URL") {
+		t.Errorf("env not in page. Body length: %d", len(body))
+	}
+
+	// Verify tool_hints is not double-encoded
+	if !strings.Contains(body, "Use this tool for API calls") {
+		t.Errorf("tool_hints not rendered correctly in page")
 	}
 }
 

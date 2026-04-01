@@ -156,7 +156,7 @@ func isAllowedCommand(command string) error {
 	allowedPrefixes := []string{
 		"npx ", "npm ", "node ", "github-mcp-server",
 		"github-mcp-server ", "uvx ", "bunx ", "sleep ",
-		"echo ", "env ",
+		"echo ", "env ", "go run ",
 	}
 	for _, prefix := range allowedPrefixes {
 		if strings.HasPrefix(command, prefix) {

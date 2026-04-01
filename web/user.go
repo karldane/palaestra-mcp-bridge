@@ -152,31 +152,30 @@ func (h *Handler) TokensSaveHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Encrypt immediately if keystore is available, otherwise save plaintext
+	// Try to encrypt the token. If encryption is available and succeeds,
+	// store the encrypted value. Otherwise fall back to plaintext.
 	if ks := h.Store.KeyStore(); ks != nil {
-		encrypted, err := ks.EncryptSecret([]byte(value))
-		if err != nil {
-			log.Printf("web: encrypt token: %v", err)
-			http.Redirect(w, r, "/web/tokens?backend="+backendID+"&error=Failed+to+encrypt+token", http.StatusSeeOther)
+		if encrypted, encErr := ks.EncryptSecret([]byte(value)); encErr == nil {
+			if err := h.Store.SetUserTokenEncrypted(user.ID, backendID, envKey, string(encrypted)); err != nil {
+				log.Printf("web: set encrypted token: %v", err)
+				http.Redirect(w, r, "/web/tokens?backend="+backendID+"&error=Failed+to+save+token", http.StatusSeeOther)
+				return
+			}
+			http.Redirect(w, r, "/web/tokens?backend="+backendID+"&success=Token+saved", http.StatusSeeOther)
 			return
 		}
-		if err := h.Store.SetUserTokenEncrypted(user.ID, backendID, envKey, string(encrypted)); err != nil {
-			log.Printf("web: set encrypted token: %v", err)
-			http.Redirect(w, r, "/web/tokens?backend="+backendID+"&error=Failed+to+save+token", http.StatusSeeOther)
-			return
-		}
-	} else {
-		token := &store.UserToken{
-			UserID:    user.ID,
-			BackendID: backendID,
-			EnvKey:    envKey,
-			Value:     value,
-		}
-		if err := h.Store.SetUserToken(token); err != nil {
-			log.Printf("web: set token: %v", err)
-			http.Redirect(w, r, "/web/tokens?backend="+backendID+"&error=Failed+to+save+token", http.StatusSeeOther)
-			return
-		}
+	}
+	// No encryption available — save as plaintext
+	token := &store.UserToken{
+		UserID:    user.ID,
+		BackendID: backendID,
+		EnvKey:    envKey,
+		Value:     value,
+	}
+	if err := h.Store.SetUserToken(token); err != nil {
+		log.Printf("web: set token: %v", err)
+		http.Redirect(w, r, "/web/tokens?backend="+backendID+"&error=Failed+to+save+token", http.StatusSeeOther)
+		return
 	}
 
 	http.Redirect(w, r, "/web/tokens?backend="+backendID+"&success=Token+saved", http.StatusSeeOther)

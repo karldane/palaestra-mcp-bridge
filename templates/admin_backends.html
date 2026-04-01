@@ -74,7 +74,7 @@
 <div class="alert alert-warning" style="background:#fff3cd;border-color:#ffc107;color:#856404;padding:1rem;border-radius:4px;margin-bottom:1rem;">
   <strong>⚠ Uncached Tooling Detected</strong>
   <p style="margin:0.5rem 0 0 0;">
-    The following backends do not have cached tools: <strong>{{.Extra.UncachedBackends}}</strong>
+    The following backends do not have cached tools: <strong>{{.Extra.UncachedBackends | join ", "}}</strong>
   </p>
   <p style="margin:0.5rem 0 0 0;">
     Run <code>./mcp-bridge --precache-tooling=USER_EMAIL</code> to cache tools for these backends.
@@ -89,7 +89,7 @@
     <h2>Backends</h2>
     {{if .Data}}
     {{range .Data}}
-    <div class="backend-card" data-env='{{.Env | json}}' data-env-mappings='{{.EnvMappings | json}}' data-tool-hints='{{.ToolHints | json}}' data-is-system="{{.IsSystem}}" data-min-pool="{{.MinPoolSize}}" data-max-pool="{{.MaxPoolSize}}" data-self-reporting="{{.SelfReporting}}" data-id="{{.ID}}" data-command="{{.Command | js}}">
+    <div class="backend-card" data-env='{{.Env | rawjson}}' data-env-mappings='{{.EnvMappings | rawjson}}' data-tool-hints='{{.ToolHints | js}}' data-is-system="{{.IsSystem}}" data-min-pool="{{.MinPoolSize}}" data-max-pool="{{.MaxPoolSize}}" data-self-reporting="{{.SelfReporting}}" data-id="{{.ID}}" data-command="{{.Command | js}}">
       <div class="backend-info">
         <div class="backend-title">
           {{.ID}}

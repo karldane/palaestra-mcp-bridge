@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"html"
 	"html/template"
+	"log"
 	"net/http"
 	"path/filepath"
 	"strings"
@@ -54,7 +55,10 @@ func NewHandler(st *store.Store, templateDir string) (*Handler, error) {
 			b, _ := json.Marshal(v)
 			return template.JS(b)
 		},
-		"join": func(elems []string, sep string) string {
+		"rawjson": func(s string) template.JS {
+			return template.JS(s)
+		},
+		"join": func(sep string, elems []string) string {
 			return strings.Join(elems, sep)
 		},
 		"formatBytes": func(bytes uint64) string {
@@ -223,6 +227,7 @@ type pageData struct {
 func (h *Handler) render(w http.ResponseWriter, tmplName string, data pageData) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	if err := h.Templates.ExecuteTemplate(w, tmplName, data); err != nil {
+		log.Printf("template error: %v", err)
 		http.Error(w, "Internal Server Error", http.StatusInternalServerError)
 	}
 }

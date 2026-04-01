@@ -4,11 +4,9 @@ After=network.target
 
 [Service]
 Type=simple
-ExecStart=/home/karld@tusk-watf.tuskerdirect.com/Nextcloud/Tusker/code/mcp-bridge/mcp-bridge
-WorkingDirectory=/home/karld@tusk-watf.tuskerdirect.com/Nextcloud/Tusker/code/mcp-bridge
-Restart=always
-RestartSec=5
-EnvironmentFile=/home/karld@tusk-watf.tuskerdirect.com/Nextcloud/Tusker/code/mcp-bridge/.env
+ExecStart=/home/karld@tusk-watf.tuskerdirect.com/Nextcloud/Tusker/code/mcp/mcp-bridge/mcp-bridge
+WorkingDirectory=/home/karld@tusk-watf.tuskerdirect.com/Nextcloud/Tusker/code/mcp/mcp-bridge
+EnvironmentFile=/home/karld@tusk-watf.tuskerdirect.com/Nextcloud/Tusker/code/mcp/mcp-bridge/.env
 StandardOutput=journal
 StandardError=journal
 
