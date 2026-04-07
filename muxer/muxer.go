@@ -120,7 +120,10 @@ func (tm *ToolMuxer) HandleToolsCall(userID string, body []byte) ([]byte, *PoolR
 	}
 
 	// Build explicit env for this user+backend.
-	env := tm.BuildEnvForUser(userID, backendID)
+	env, err := tm.BuildEnvForUser(userID, backendID)
+	if err != nil {
+		return nil, nil, fmt.Errorf("failed to build env for user %q, backend %q: %w", userID, backendID, err)
+	}
 
 	// Get or create a per-user pool with the user's credentials in the env.
 	pool := tm.poolManager.GetOrCreateUserPool(
@@ -145,11 +148,17 @@ func (tm *ToolMuxer) HandleToolsCall(userID string, body []byte) ([]byte, *PoolR
 }
 
 // BuildEnvForUser constructs a []string of "KEY=VALUE" pairs for the given
-// user and backend. The precedence is (highest to lowest):
+// user and backend. The precedence is (lowest to highest):
 //  1. System environment (PATH, HOME, etc.)
 //  2. User tokens (mapped via env_mappings if configured)
 //  3. Systemwide backend env (can override user values)
-func (tm *ToolMuxer) BuildEnvForUser(userID, backendID string) []string {
+//  4. Dynamic vars — resolved at spawn time from the user record (highest priority,
+//     cannot be overridden by any configured env var). Template expressions in
+//     steps 1–3 values are also resolved here via ResolveEnvTemplates.
+//
+// Returns an error if any template expression in the environment cannot be
+// resolved. The backend must not be spawned when an error is returned.
+func (tm *ToolMuxer) BuildEnvForUser(userID, backendID string) ([]string, error) {
 	shared.Debugf("BuildEnvForUser called for userID: %s, backendID: %s", userID, backendID)
 	// Start with essential system environment variables
 	envMap := make(map[string]string)
@@ -173,7 +182,7 @@ func (tm *ToolMuxer) BuildEnvForUser(userID, backendID string) []string {
 		tm.buildLegacyEnv(userID, backendID, envMap)
 		result := mapToSlice(envMap)
 		shared.Debugf("Legacy env result: %d vars", len(result))
-		return result
+		return result, nil
 	}
 	shared.Debugf("Backend config for %s: %d systemwide vars, %d mappings", backendID, len(systemwideEnv), len(envMappings))
 
@@ -227,7 +236,7 @@ func (tm *ToolMuxer) BuildEnvForUser(userID, backendID string) []string {
 		shared.Debugf("Env after mapping: %d vars", len(envMap))
 	}
 
-	// Step 3: Apply systemwide backend env (highest priority - can override user values).
+	// Step 3: Apply systemwide backend env (higher priority — can override user values).
 	for k, v := range systemwideEnv {
 		if _, wasSet := envMap[k]; wasSet {
 			shared.Debugf("muxer: env override: user value for %q replaced by systemwide default", k)
@@ -237,9 +246,31 @@ func (tm *ToolMuxer) BuildEnvForUser(userID, backendID string) []string {
 		envMap[k] = v
 	}
 
+	// Step 4: Resolve {{template}} expressions and inject dynamic vars.
+	// This step runs after all configured env vars have been merged so that
+	// template expressions in systemwide values are also resolved. Dynamic vars
+	// are then injected at the highest priority — they cannot be overridden by
+	// any configured env var.
+	//
+	// We only fetch the user record when at least one env value actually contains
+	// template syntax, avoiding a DB round-trip for the common case.
+	if tm.store != nil && envMapHasTemplates(envMap) {
+		user, err := tm.store.GetUser(userID)
+		if err != nil {
+			return nil, fmt.Errorf("BuildEnvForUser: failed to fetch user %q: %w", userID, err)
+		}
+
+		// Resolve any {{template}} expressions present in the accumulated env.
+		resolved, err := ResolveEnvTemplates(envMap, user)
+		if err != nil {
+			return nil, fmt.Errorf("BuildEnvForUser: template resolution failed: %w", err)
+		}
+		envMap = resolved
+	}
+
 	result := mapToSlice(envMap)
 	shared.Debugf("Final env for user %s, backend %s: %d vars", userID, backendID, len(result))
-	return result
+	return result, nil
 }
 
 // buildLegacyEnv handles the fallback path when no backend config is found.

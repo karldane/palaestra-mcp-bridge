@@ -996,7 +996,10 @@ func TestIntegration_LiveReload_EditBackendTearsDownPools(t *testing.T) {
 	}
 
 	// Create a user pool for this backend so we can verify it gets torn down.
-	env := a.toolMuxer.BuildEnvForUser("test-user-1", "live-be")
+	env, err := a.toolMuxer.BuildEnvForUser("test-user-1", "live-be")
+	if err != nil {
+		t.Fatalf("BuildEnvForUser: %v", err)
+	}
 	pool := a.poolManager.GetOrCreateUserPool("live-be", "test-user-1", "cat", 1, 1, env)
 	if pool == nil {
 		t.Fatal("expected pool to be created")
@@ -1080,8 +1083,12 @@ func TestIntegration_LiveReload_DeleteBackendTearsDownPools(t *testing.T) {
 	if err := a.store.CreateBackend(b); err != nil {
 		t.Fatalf("CreateBackend: %v", err)
 	}
-	env := a.toolMuxer.BuildEnvForUser("test-user-1", "del-live")
-	a.poolManager.GetOrCreateUserPool("del-live", "test-user-1", "cat", 1, 1, env)
+	var envVars []string
+	envVars, buildErr := a.toolMuxer.BuildEnvForUser("test-user-1", "del-live")
+	if buildErr != nil {
+		t.Fatalf("BuildEnvForUser: %v", buildErr)
+	}
+	a.poolManager.GetOrCreateUserPool("del-live", "test-user-1", "cat", 1, 1, envVars)
 
 	admin := &store.User{
 		Name: "Admin", Email: "admin@del.test", Password: "pw", Role: "admin",

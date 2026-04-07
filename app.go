@@ -23,6 +23,8 @@ type app struct {
 // getPoolForUser returns a per-user pool for the given backend. It builds an
 // explicit environment from the bridge env + backend static env + per-user
 // tokens, then gets or creates a dedicated pool keyed by backendID:userID.
+// Returns nil and logs an error if the environment cannot be built (e.g. a
+// template expression fails to resolve).
 func (a *app) getPoolForUser(userID, backendID string) *poolmgr.Pool {
 	// Look up backend from DB first, fall back to config.
 	var command string
@@ -56,7 +58,11 @@ func (a *app) getPoolForUser(userID, backendID string) *poolmgr.Pool {
 		shared.Debugf("getPoolForUser: backend %s not found, using default echo", backendID)
 	}
 
-	env := a.toolMuxer.BuildEnvForUser(userID, backendID)
+	env, err := a.toolMuxer.BuildEnvForUser(userID, backendID)
+	if err != nil {
+		shared.Debugf("getPoolForUser: failed to build env for user %s, backend %s: %v", userID, backendID, err)
+		return nil
+	}
 	shared.Debugf("getPoolForUser: creating pool for backendID=%s, userID=%s, command=%q, min=%d, max=%d, envCount=%d", backendID, userID, command, minPoolSize, maxPoolSize, len(env))
 	return a.poolManager.GetOrCreateUserPool(
 		backendID, userID, command, minPoolSize, maxPoolSize, env,

@@ -242,6 +242,12 @@
       <div class="form-row">
         <label for="env">Environment Template (JSON)</label>
         <textarea id="env" name="env" placeholder='{"ATLASSIAN_DOMAIN":"","ATLASSIAN_EMAIL":"","ATLASSIAN_API_TOKEN":""}'>{}</textarea>
+        <small class="text-muted">
+          Values may contain template expressions resolved at spawn time from the authenticated user's record.<br>
+          <strong>Fields:</strong> <code>{{"{{"}}users.email{{"}}"}}</code> &nbsp; <code>{{"{{"}}users.username{{"}}"}}</code> &nbsp; <code>{{"{{"}}users.id{{"}}"}}</code> &nbsp; <code>{{"{{"}}users.role{{"}}"}}</code><br>
+          <strong>Functions:</strong> <code>|sanitised</code> &nbsp; <code>|hashed</code> &nbsp; <code>|lower</code> &nbsp; <code>|upper</code> &nbsp; <code>|urlencoded</code><br>
+          <strong>Example:</strong> <code>"MONGO_DATABASE": "{{"{{"}}users.email|sanitised{{"}}"}}"</code>
+        </small>
       </div>
       <div class="form-row">
         <label for="env_mappings">Environment Mappings (JSON)</label>

@@ -372,7 +372,10 @@ func TestToolMuxer_BuildEnvForUser_LegacySecrets(t *testing.T) {
 
 	tm := NewToolMuxer(pm, secrets, cfg)
 
-	env := tm.BuildEnvForUser("user1", "jira")
+	env, err := tm.BuildEnvForUser("user1", "jira")
+	if err != nil {
+		t.Fatalf("BuildEnvForUser returned unexpected error: %v", err)
+	}
 
 	// Should contain the injected token.
 	found := false
@@ -404,7 +407,10 @@ func TestToolMuxer_BuildEnvForUser_StaticEnv(t *testing.T) {
 
 	tm := NewToolMuxer(pm, credential.NewMockSecretStore(), cfg)
 
-	env := tm.BuildEnvForUser("user1", "filesystem")
+	env, err := tm.BuildEnvForUser("user1", "filesystem")
+	if err != nil {
+		t.Fatalf("BuildEnvForUser returned unexpected error: %v", err)
+	}
 
 	found := false
 	for _, e := range env {
@@ -424,7 +430,10 @@ func TestToolMuxer_BuildEnvForUser_InheritsProcessEnv(t *testing.T) {
 
 	tm := NewToolMuxer(pm, credential.NewMockSecretStore(), cfg)
 
-	env := tm.BuildEnvForUser("user1", "echo")
+	env, err := tm.BuildEnvForUser("user1", "echo")
+	if err != nil {
+		t.Fatalf("BuildEnvForUser returned unexpected error: %v", err)
+	}
 
 	// Should contain at least PATH from the bridge's own env.
 	found := false
@@ -519,7 +528,10 @@ func TestBuildEnvForUser_EncryptedTokens(t *testing.T) {
 		Backends: map[string]config.BackendConfig{},
 	})
 
-	env := tm.BuildEnvForUser("user1", "circleci")
+	env, err := tm.BuildEnvForUser("user1", "circleci")
+	if err != nil {
+		t.Fatalf("BuildEnvForUser returned unexpected error: %v", err)
+	}
 
 	// Verify decrypted tokens appear in the environment
 	found := make(map[string]bool)
@@ -571,7 +583,10 @@ func TestBuildEnvForUser_EncryptedTokens_WithEnvMappings(t *testing.T) {
 		Backends: map[string]config.BackendConfig{},
 	})
 
-	env := tm.BuildEnvForUser("user1", "github")
+	env, err := tm.BuildEnvForUser("user1", "github")
+	if err != nil {
+		t.Fatalf("BuildEnvForUser returned unexpected error: %v", err)
+	}
 
 	// The USER_TOKEN should be mapped to GITHUB_TOKEN in the env
 	found := false
@@ -609,7 +624,10 @@ func TestBuildEnvForUser_PlaintextTokens_StillWork(t *testing.T) {
 		Backends: map[string]config.BackendConfig{},
 	})
 
-	env := tm.BuildEnvForUser("user1", "jira")
+	env, err := tm.BuildEnvForUser("user1", "jira")
+	if err != nil {
+		t.Fatalf("BuildEnvForUser returned unexpected error: %v", err)
+	}
 
 	found := false
 	for _, e := range env {
@@ -637,7 +655,10 @@ func TestBuildEnvForUser_NoTokens(t *testing.T) {
 		Backends: map[string]config.BackendConfig{},
 	})
 
-	env := tm.BuildEnvForUser("user1", "empty")
+	env, err := tm.BuildEnvForUser("user1", "empty")
+	if err != nil {
+		t.Fatalf("BuildEnvForUser returned unexpected error: %v", err)
+	}
 
 	// Should still have PATH, HOME, USER from system env
 	for _, e := range env {
