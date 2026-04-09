@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/mcp-bridge/mcp-bridge/internal/crypto"
 	"github.com/mcp-bridge/mcp-bridge/poolmgr"
 	"github.com/mcp-bridge/mcp-bridge/store"
 )
@@ -115,6 +116,31 @@ func (h *Handler) TokensHandler(w http.ResponseWriter, r *http.Request) {
 		tokens, _ = h.Store.GetUserTokens(user.ID, backendID)
 	}
 
+	// Try to decrypt tokens using user DEK from session
+	userDEK := getSessionDEK(r)
+	if userDEK != nil {
+		var decryptedTokens []*store.UserToken
+		for _, t := range tokens {
+			decrypted := *t
+			if t.Encrypted != "" && (t.EncryptionType == "user" || t.EncryptedDEK != "") {
+				// Try user-derived decryption first
+				if val, err := h.Store.GetUserTokenDecryptedWithUserDEK(user.ID, t.BackendID, t.EnvKey, userDEK); err == nil {
+					decrypted.Value = val
+				} else if ks := h.Store.KeyStore(); ks != nil {
+					// Fall back to master key decryption
+					if val, err := h.Store.GetUserTokenDecrypted(user.ID, t.BackendID, t.EnvKey); err == nil {
+						decrypted.Value = val
+					}
+				}
+			}
+			decryptedTokens = append(decryptedTokens, &decrypted)
+		}
+		if len(decryptedTokens) > 0 {
+			tokens = decryptedTokens
+		}
+		defer crypto.Zeroize(userDEK)
+	}
+
 	type tokensData struct {
 		Backends        []*store.Backend
 		SelectedID      string
@@ -152,8 +178,20 @@ func (h *Handler) TokensSaveHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Try to encrypt the token. If encryption is available and succeeds,
-	// store the encrypted value. Otherwise fall back to plaintext.
+	// Try to use user-derived encryption if session has DEK
+	userDEK := getSessionDEK(r)
+	if userDEK != nil {
+		if err := h.Store.SetUserTokenWithUserDEK(user.ID, backendID, envKey, value, userDEK); err != nil {
+			log.Printf("web: set token with user DEK: %v", err)
+			http.Redirect(w, r, "/web/tokens?backend="+backendID+"&error=Failed+to+save+token", http.StatusSeeOther)
+			return
+		}
+		defer crypto.Zeroize(userDEK)
+		http.Redirect(w, r, "/web/tokens?backend="+backendID+"&success=Token+saved", http.StatusSeeOther)
+		return
+	}
+
+	// Fall back to master key encryption
 	if ks := h.Store.KeyStore(); ks != nil {
 		if encrypted, encErr := ks.EncryptSecret([]byte(value)); encErr == nil {
 			if err := h.Store.SetUserTokenEncrypted(user.ID, backendID, envKey, string(encrypted)); err != nil {
@@ -165,6 +203,7 @@ func (h *Handler) TokensSaveHandler(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+
 	// No encryption available — save as plaintext
 	token := &store.UserToken{
 		UserID:    user.ID,
@@ -222,15 +261,85 @@ func (h *Handler) PasswordHandler(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		// Hash the new password (UpdateUser will auto-hash if plaintext,
-		// but we set it explicitly for clarity).
+		// Get user DEK from session to decrypt existing tokens
+		userDEK := getSessionDEK(r)
+		if userDEK == nil {
+			h.render(w, "password.html", pageData{User: user, Title: "Change Password", Error: "Session expired, please log in again"})
+			return
+		}
+
+		// Generate new salt
+		newSalt, saltErr := crypto.GenerateSalt()
+		if saltErr != nil {
+			log.Printf("web: generate salt: %v", saltErr)
+			h.render(w, "password.html", pageData{User: user, Title: "Change Password", Error: "Failed to generate new encryption key"})
+			return
+		}
+
+		// Derive new user DEK from new password
+		newUserDEK, dekErr := crypto.DeriveUserDEK(newPw, newSalt)
+		if dekErr != nil {
+			log.Printf("web: derive new DEK: %v", dekErr)
+			h.render(w, "password.html", pageData{User: user, Title: "Change Password", Error: "Failed to derive new encryption key"})
+			return
+		}
+		defer crypto.Zeroize(newUserDEK)
+
+		// Re-encrypt all user tokens with new key
+		allTokens, err := h.Store.GetAllUserTokens(user.ID)
+		if err != nil {
+			log.Printf("web: get all tokens: %v", err)
+		} else {
+			for _, t := range allTokens {
+				var plaintext string
+
+				// Try to decrypt with old user DEK
+				if t.EncryptedDEK != "" && t.EncryptionType == "user" {
+					if val, err := h.Store.GetUserTokenDecryptedWithUserDEK(user.ID, t.BackendID, t.EnvKey, userDEK); err == nil {
+						plaintext = val
+					}
+				}
+
+				// Fall back to master key
+				if plaintext == "" && t.Encrypted != "" {
+					if val, err := h.Store.GetUserTokenDecrypted(user.ID, t.BackendID, t.EnvKey); err == nil {
+						plaintext = val
+					}
+				}
+
+				// Fall back to plaintext value
+				if plaintext == "" {
+					plaintext = t.Value
+				}
+
+				// Re-encrypt with new user DEK
+				if plaintext != "" {
+					if err := h.Store.SetUserTokenWithUserDEK(user.ID, t.BackendID, t.EnvKey, plaintext, newUserDEK); err != nil {
+						log.Printf("web: re-encrypt token %s/%s: %v", t.BackendID, t.EnvKey, err)
+					}
+				}
+			}
+		}
+
+		// Clear old DEK from session
+		if cookie, err := r.Cookie(sessionCookieName); err == nil {
+			if oldDEK, ok := sessionDEKStore[cookie.Value]; ok {
+				crypto.Zeroize(oldDEK)
+			}
+			sessionDEKStore[cookie.Value] = newUserDEK
+		}
+
+		// Update user's password and salt
 		user.Password = newPw
+		user.PasswordSalt = newSalt
 		if err := h.Store.UpdateUser(user); err != nil {
 			log.Printf("web: update password: %v", err)
 			h.render(w, "password.html", pageData{User: user, Title: "Change Password", Error: "Failed to update password"})
 			return
 		}
-		h.render(w, "password.html", pageData{User: user, Title: "Change Password", Success: "Password updated"})
+
+		defer crypto.Zeroize(userDEK)
+		h.render(w, "password.html", pageData{User: user, Title: "Change Password", Success: "Password updated and tokens re-encrypted"})
 	default:
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 	}

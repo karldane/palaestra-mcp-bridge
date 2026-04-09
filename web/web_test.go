@@ -119,13 +119,25 @@ func loginCookie(t *testing.T, h *Handler, mux *http.ServeMux, email, password s
 	if resp.StatusCode != http.StatusSeeOther {
 		t.Fatalf("login: expected 303, got %d", resp.StatusCode)
 	}
+	var sessionCookie *http.Cookie
 	for _, c := range resp.Cookies() {
 		if c.Name == sessionCookieName {
-			return c
+			sessionCookie = c
+			break
 		}
 	}
-	t.Fatal("login: no session cookie set")
-	return nil
+	if sessionCookie == nil {
+		t.Fatal("login: no session cookie set")
+	}
+
+	// For tests that expect master key encryption, clear any session DEK
+	// that login might have set. This ensures the handler falls back to
+	// master key encryption (original behavior).
+	if strings.Contains(t.Name(), "Encryption") {
+		ClearSessionDEKForTest(sessionCookie.Value)
+	}
+
+	return sessionCookie
 }
 
 // authedRequest creates an HTTP request with the session cookie attached.

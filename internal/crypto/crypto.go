@@ -532,6 +532,13 @@ func zeroize(b []byte) {
 	}
 }
 
+// Zeroize clears a byte slice in place (exported version).
+func Zeroize(b []byte) {
+	for i := range b {
+		b[i] = 0
+	}
+}
+
 func deriveKey(key []byte) []byte {
 	result := make([]byte, keySize)
 	if len(key) == keySize {

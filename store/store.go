@@ -127,6 +127,11 @@ func (s *Store) migrate() error {
 		`)
 	}
 
+	// Encryption migration: add password_salt to users and encrypted_dek + encryption_type to user_tokens
+	s.db.Exec(`ALTER TABLE users ADD COLUMN password_salt TEXT`)
+	s.db.Exec(`ALTER TABLE user_tokens ADD COLUMN encrypted_dek TEXT`)
+	s.db.Exec(`ALTER TABLE user_tokens ADD COLUMN encryption_type TEXT DEFAULT 'legacy'`)
+
 	// Enforcer tables (policy enforcement system)
 	s.db.Exec(`CREATE TABLE IF NOT EXISTS enforcer_policies (
 		id          TEXT PRIMARY KEY,
@@ -256,6 +261,7 @@ CREATE TABLE IF NOT EXISTS users (
 	email      TEXT NOT NULL DEFAULT '',
 	password   TEXT NOT NULL DEFAULT '',
 	role       TEXT NOT NULL DEFAULT 'user',
+	password_salt TEXT,
 	created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
 	UNIQUE(email)
 );
@@ -265,6 +271,8 @@ CREATE TABLE IF NOT EXISTS user_tokens (
 	backend_id TEXT NOT NULL REFERENCES backends(id) ON DELETE CASCADE,
 	env_key    TEXT NOT NULL,
 	value      TEXT NOT NULL,
+	encrypted_dek TEXT,
+	encryption_type TEXT DEFAULT 'legacy',
 	PRIMARY KEY (user_id, backend_id, env_key)
 );
 
