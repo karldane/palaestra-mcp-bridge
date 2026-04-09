@@ -443,6 +443,35 @@ async function cancelRequest(id) {
     btn.textContent = 'Cancel';
   }
 }
+
+// SSE: auto-refresh when queue changes
+(function() {
+  var es = new EventSource('/web/user/enforcer/events');
+  var lastCount = null;
+
+  es.onmessage = function(e) {
+    try {
+      var msg = JSON.parse(e.data);
+      if (msg.type === 'pending_count') {
+        if (lastCount !== null && msg.count !== lastCount) {
+          location.reload();
+        }
+        lastCount = msg.count;
+        // Update badge text
+        var badge = document.getElementById('pending-count');
+        if (badge) badge.textContent = msg.count + ' pending';
+      }
+    } catch (_) {}
+  };
+
+  es.onerror = function() {
+    // Reconnect handled automatically by EventSource; silence errors
+    es.close();
+    setTimeout(function() {
+      es = new EventSource('/web/user/enforcer/events');
+    }, 10000);
+  };
+})();
 </script>
 {{template "foot" .}}
 {{end}}

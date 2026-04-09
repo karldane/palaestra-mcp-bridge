@@ -1164,15 +1164,86 @@ func (h *EnforcerHandler) UserOverrideDeleteHandler(w http.ResponseWriter, r *ht
 		return
 	}
 
-	enforcerStore := store.NewEnforcerStore(h.store.DB())
-	if err := enforcerStore.DeleteOverride(toolName, backendID); err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+	http.Redirect(w, r, "/web/user/enforcer/overrides", http.StatusSeeOther)
+}
+
+// UserSSEHandler streams real-time queue updates for the authenticated user.
+// It sends a "pending_count" event whenever the user's queue changes, and
+// a "ping" keepalive every 5 seconds so clients can detect disconnects.
+func (h *EnforcerHandler) UserSSEHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
 
-	if h.enforcer != nil {
-		h.enforcer.RemoveOverride(toolName, backendID)
+	user := userFromContext(r)
+	if user == nil {
+		http.Error(w, "Unauthorized", http.StatusUnauthorized)
+		return
 	}
 
-	http.Redirect(w, r, "/web/user/enforcer/overrides", http.StatusSeeOther)
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		http.Error(w, "Streaming not supported", http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Connection", "keep-alive")
+	w.Header().Set("X-Accel-Buffering", "no") // disable nginx buffering
+
+	fmt.Fprintf(w, "data: %s\n\n", `{"type":"connected"}`)
+	flusher.Flush()
+
+	ticker := time.NewTicker(5 * time.Second)
+	defer ticker.Stop()
+
+	var lastCount int = -1
+
+	for {
+		select {
+		case <-ticker.C:
+			if h.enforcer == nil {
+				fmt.Fprintf(w, "data: %s\n\n", `{"type":"ping"}`)
+				flusher.Flush()
+				continue
+			}
+
+			approvals, err := h.enforcer.ListUserPendingApprovals()
+			if err != nil {
+				fmt.Fprintf(w, "data: %s\n\n", `{"type":"ping"}`)
+				flusher.Flush()
+				continue
+			}
+
+			// Filter to this user's pending approvals
+			var userApprovals []enforcer.ApprovalRequestRow
+			for _, a := range approvals {
+				if a.UserID == user.ID {
+					userApprovals = append(userApprovals, a)
+				}
+			}
+
+			count := len(userApprovals)
+			if count != lastCount {
+				lastCount = count
+				payload := map[string]interface{}{
+					"type":  "pending_count",
+					"count": count,
+				}
+				if count > 0 {
+					payload["approval_id"] = userApprovals[0].ID
+				}
+				data, _ := json.Marshal(payload)
+				fmt.Fprintf(w, "data: %s\n\n", data)
+			} else {
+				fmt.Fprintf(w, "data: %s\n\n", `{"type":"ping"}`)
+			}
+			flusher.Flush()
+
+		case <-r.Context().Done():
+			return
+		}
+	}
 }

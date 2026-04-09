@@ -157,6 +157,7 @@ func (h *Handler) Register(mux *http.ServeMux) {
 	mux.Handle("/web/user/enforcer/overrides/delete", h.requireAuth(http.HandlerFunc(enforcerHandler.UserOverrideDeleteHandler)))
 	mux.Handle("/web/user/enforcer/api/approve", h.requireAuth(http.HandlerFunc(enforcerHandler.UserApproveRequest)))
 	mux.Handle("/web/user/enforcer/api/deny", h.requireAuth(http.HandlerFunc(enforcerHandler.UserDenyRequest)))
+	mux.Handle("/web/user/enforcer/events", h.requireAuth(http.HandlerFunc(enforcerHandler.UserSSEHandler)))
 
 	// Rate limit admin routes
 	rateLimitHandler := NewRateLimitHandler(h.Enforcer, h.Templates, h.Store)
