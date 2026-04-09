@@ -413,3 +413,35 @@ func (s *EnforcerStore) ListAllToolProfiles() ([]ToolProfileRow, error) {
 	}
 	return profiles, rows.Err()
 }
+
+// UpsertToolProfile inserts or updates a tool's self-reported profile.
+func (s *EnforcerStore) UpsertToolProfile(profile enforcer.ToolProfileRow) error {
+	hitl := 0
+	if profile.RequiresHITL {
+		hitl = 1
+	}
+	pii := 0
+	if profile.PIIExposure {
+		pii = 1
+	}
+	idemp := 0
+	if profile.Idempotent {
+		idemp = 1
+	}
+	_, err := s.db.Exec(`
+		INSERT INTO enforcer_tool_profiles (id, backend_id, tool_name, risk_level, impact_scope, resource_cost, requires_hitl, pii_exposure, idempotent, raw_profile, scanned_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		ON CONFLICT(backend_id, tool_name) DO UPDATE SET
+			risk_level=excluded.risk_level,
+			impact_scope=excluded.impact_scope,
+			resource_cost=excluded.resource_cost,
+			requires_hitl=excluded.requires_hitl,
+			pii_exposure=excluded.pii_exposure,
+			idempotent=excluded.idempotent,
+			raw_profile=excluded.raw_profile,
+			scanned_at=excluded.scanned_at`,
+		profile.ID, profile.BackendID, profile.ToolName, profile.RiskLevel, profile.ImpactScope,
+		profile.ResourceCost, hitl, pii, idemp, profile.RawProfile, profile.ScannedAt,
+	)
+	return err
+}

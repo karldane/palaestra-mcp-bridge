@@ -8,15 +8,19 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+	"time"
 
+	"github.com/google/uuid"
+	"github.com/mcp-bridge/mcp-bridge/enforcer"
 	"github.com/mcp-bridge/mcp-bridge/shared"
 	"github.com/mcp-bridge/mcp-bridge/store"
 )
 
 // PrecacheConfig holds configuration for precaching
 type PrecacheConfig struct {
-	UserEmail string
-	Store     *store.Store
+	UserEmail     string
+	Store         *store.Store
+	EnforcerStore enforcer.EnforcerStore
 }
 
 // RunPrecache scans all enabled backends for a user and caches their tool definitions
@@ -75,6 +79,37 @@ func RunPrecache(ctx context.Context, cfg PrecacheConfig) error {
 			shared.Warnf("Failed to cache tools for %s: %v", backend.ID, err)
 			failed = append(failed, backend.ID)
 			continue
+		}
+
+		// Cache safety profiles from tool metadata
+		if cfg.EnforcerStore != nil {
+			for _, tool := range tools {
+				if meta, ok := tool["_meta"].(map[string]interface{}); ok {
+					if profile, ok := meta["enforcer_profile"].(map[string]interface{}); ok {
+						toolProfile := enforcer.ToolProfileRow{
+							ID:           uuid.NewString(),
+							BackendID:    backend.ID,
+							ToolName:     tool["name"].(string),
+							RiskLevel:    profile["risk_level"].(string),
+							ImpactScope:  profile["impact_scope"].(string),
+							ResourceCost: int(profile["resource_cost"].(float64)),
+							RequiresHITL: profile["requires_hitl"].(bool),
+							PIIExposure:  profile["pii_exposure"].(bool),
+							Idempotent:   profile["idempotent"].(bool),
+							RawProfile:   "", // Will be filled below if needed
+							ScannedAt:    time.Now(),
+						}
+						// Convert raw profile to JSON string if it's a map
+						if profileJSON, err := json.Marshal(profile); err == nil {
+							toolProfile.RawProfile = string(profileJSON)
+						}
+						if err := cfg.EnforcerStore.UpsertToolProfile(toolProfile); err != nil {
+							shared.Warnf("Failed to cache safety profile for %s/%s: %v", backend.ID, tool["name"], err)
+							// Continue anyway - tool cache succeeded
+						}
+					}
+				}
+			}
 		}
 
 		// Mark as available

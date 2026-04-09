@@ -37,32 +37,39 @@
           </div>
         </div>
 
-        <div class="approval-meta">
-          <div class="meta-item">
-            <span class="meta-label">Requested by</span>
-            <span class="meta-value">{{.UserEmail}}</span>
-          </div>
-          <div class="meta-item">
-            <span class="meta-label">Requested at</span>
-            <span class="meta-value">{{.RequestedAt.Format "2006-01-02 15:04:05"}}</span>
-          </div>
-          {{if eq .Status "PENDING"}}
-          <div class="meta-item">
-            <span class="meta-label">Expires</span>
-            <span class="meta-value">{{.ExpiresAt.Format "2006-01-02 15:04:05"}}</span>
-          </div>
-          {{end}}
-          <div class="meta-item">
-            <span class="meta-label">Policy</span>
-            <span class="meta-value">{{.PolicyID}}</span>
-          </div>
-          {{if .ApprovedBy}}
-          <div class="meta-item">
-            <span class="meta-label">{{if eq .Status "DENIED"}}Denied{{else}}Approved{{end}} by</span>
-            <span class="meta-value">{{.ApprovedBy}}</span>
-          </div>
-          {{end}}
-        </div>
+         <div class="approval-meta">
+           <div class="meta-item">
+             <span class="meta-label">Approval ID</span>
+             <span class="meta-value" style="font-family: monospace; background: var(--code-bg); padding: 0.2rem 0.4rem; border-radius: 3px;">{{.ID}}</span>
+             <small style="display: block; color: var(--text-muted); font-size: 0.75rem; margin-top: 0.2rem;">
+               Use this ID with: <code>mcpbridge_approval_status</code> tool
+             </small>
+           </div>
+           <div class="meta-item">
+             <span class="meta-label">Requested by</span>
+             <span class="meta-value">{{.UserEmail}}</span>
+           </div>
+           <div class="meta-item">
+             <span class="meta-label">Requested at</span>
+             <span class="meta-value">{{.RequestedAt.Format "2006-01-02 15:04:05"}}</span>
+           </div>
+           {{if eq .Status "PENDING"}}
+           <div class="meta-item">
+             <span class="meta-label">Expires</span>
+             <span class="meta-value">{{.ExpiresAt.Format "2006-01-02 15:04:05"}}</span>
+           </div>
+           {{end}}
+           <div class="meta-item">
+             <span class="meta-label">Policy</span>
+             <span class="meta-value">{{.PolicyID}}</span>
+           </div>
+           {{if .ApprovedBy}}
+           <div class="meta-item">
+             <span class="meta-label">{{if eq .Status "DENIED"}}Denied{{else}}Approved{{end}} by</span>
+             <span class="meta-value">{{.ApprovedBy}}</span>
+           </div>
+           {{end}}
+         </div>
 
         <div class="approval-message">
           <strong>Reason:</strong> {{.Message}}

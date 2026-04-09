@@ -63,8 +63,9 @@ func main() {
 		defer cancel()
 
 		err = RunPrecache(ctx, PrecacheConfig{
-			UserEmail: *precacheEmail,
-			Store:     st,
+			UserEmail:     *precacheEmail,
+			Store:         st,
+			EnforcerStore: store.NewEnforcerStore(st.DB()),
 		})
 		if err != nil {
 			log.Fatalf("Precache failed: %v", err)

@@ -30,6 +30,10 @@ admin interface.
   levels (debug/info/warn/error), ideal for Kubernetes
 - **Security-first** &mdash; tokens and secrets never logged; clean
   environment (no system env vars) passed to backends
+- **Human-in-the-Loop (HITL) approval workflow** &mdash; administrative
+  approval of tool execution with live feedback and retry capabilities
+- **Enhanced precache tooling** &mdash; `--precache-tooling` flag now caches
+  both tool definitions and safety profiles for faster startup
 
 ## Requirements
 

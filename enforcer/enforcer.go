@@ -41,6 +41,7 @@ type EnforcerStore interface {
 	ListOverrides() ([]EnforcerOverrideRow, error)
 	UpsertOverride(override EnforcerOverrideRow) error
 	DeleteOverride(toolName, backendID string) error
+	UpsertToolProfile(profile ToolProfileRow) error
 	ListRateLimitBucketConfigs() ([]RateLimitBucketConfigRow, error)
 	UpsertRateLimitBucketConfig(config RateLimitBucketConfigRow) error
 	ListRateLimitStates() ([]RateLimitStateRow, error)
@@ -211,31 +212,40 @@ func NewEnforcer(config EnforcerConfig, store EnforcerStore, userStore UserStore
 
 // SetDefaultRateLimits sets the default rate limit configuration for common backends
 func (e *Enforcer) SetDefaultRateLimits() {
-	// Slack: moderate usage
+	// Slack: moderate usage, mostly reads with some writes
 	e.rateLimit.SetDefaultConfig("slack", 100, 20, 200, 40)
 
-	// New Relic: read-heavy
+	// New Relic: read-heavy, queries and logs
 	e.rateLimit.SetDefaultConfig("newrelic", 150, 30, 300, 60)
 
-	// Oracle: conservative
+	// Oracle: conservative, database operations
 	e.rateLimit.SetDefaultConfig("oracle", 50, 10, 100, 20)
 
-	// GitHub: moderate
+	// GitHub: moderate, CI/CD integration, PRs, issues
 	e.rateLimit.SetDefaultConfig("github", 100, 20, 200, 40)
 
-	// CircleCI: conservative
-	e.rateLimit.SetDefaultConfig("circleci", 50, 10, 100, 20)
+	// CircleCI: moderate, pipeline operations
+	e.rateLimit.SetDefaultConfig("circleci", 80, 16, 160, 32)
 
-	// K8s: moderate
+	// K8s: moderate, cluster operations
 	e.rateLimit.SetDefaultConfig("k8s", 100, 20, 200, 40)
 
-	// AWS: moderate
+	// AWS: moderate, cloud operations
 	e.rateLimit.SetDefaultConfig("aws", 100, 20, 200, 40)
 
-	// Atlassian: moderate
+	// Atlassian: moderate, Jira/Confluence operations
 	e.rateLimit.SetDefaultConfig("atlassian", 100, 20, 200, 40)
 
-	// MCP Bridge built-in: generous
+	// Qdrant: agent memory, high write volume expected (remember, save_progress, log_event, etc.)
+	e.rateLimit.SetDefaultConfig("qdrant", 80, 15, 160, 30)
+
+	// MongoDB: disabled by default, conservative if enabled
+	e.rateLimit.SetDefaultConfig("mongodb", 60, 12, 120, 24)
+
+	// AppScan ASoC: very conservative, scans are expensive (cost 10) and slow
+	e.rateLimit.SetDefaultConfig("appscan_asoc", 40, 8, 80, 16)
+
+	// MCP Bridge built-in: generous, system operations
 	e.rateLimit.SetDefaultConfig("mcpbridge", 200, 40, 400, 80)
 }
 

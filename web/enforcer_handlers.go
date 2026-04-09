@@ -387,18 +387,23 @@ func (h *EnforcerHandler) ApproveRequest(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	requestBody, err := h.enforcer.ApproveRequest(req.ApprovalID, "admin", req.Comments)
+	// ExecuteApprovedRequest approves, executes the original tool call, and stores
+	// the result — all in one step. This is the correct path; ApproveRequest (the
+	// old call) only marked the DB record approved and never ran the tool.
+	updatedReq, err := h.enforcer.ExecuteApprovedRequest(req.ApprovalID, "admin", req.Comments)
 	if err != nil {
-		http.Error(w, "Failed to approve: "+err.Error(), http.StatusInternalServerError)
+		http.Error(w, "Failed to approve and execute: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]interface{}{
-		"success":      true,
-		"message":      "Request approved",
-		"request_body": requestBody,
-		"instructions": "The original request body has been approved. Use the 'request_body' field to replay the operation.",
+		"success":         true,
+		"message":         "Request approved and executed",
+		"status":          updatedReq.Status,
+		"response_status": updatedReq.ResponseStatus,
+		"response_body":   updatedReq.ResponseBody,
+		"error_msg":       updatedReq.ErrorMsg,
 	})
 }
 
