@@ -89,7 +89,7 @@
     <h2>Backends</h2>
     {{if .Data}}
     {{range .Data}}
-    <div class="backend-card" data-env='{{.Env | rawjson}}' data-env-mappings='{{.EnvMappings | rawjson}}' data-tool-hints='{{.ToolHints | js}}' data-is-system="{{.IsSystem}}" data-min-pool="{{.MinPoolSize}}" data-max-pool="{{.MaxPoolSize}}" data-self-reporting="{{.SelfReporting}}" data-id="{{.ID}}" data-command="{{.Command | js}}">
+    <div class="backend-card" data-env='{{.Env | rawjson}}' data-env-mappings='{{.EnvMappings | rawjson}}' data-tool-hints='{{.ToolHints | js}}' data-is-system="{{.IsSystem}}" data-min-pool="{{.MinPoolSize}}" data-max-pool="{{.MaxPoolSize}}" data-self-reporting="{{.SelfReporting}}" data-no-keys-required="{{.NoKeysRequired}}" data-id="{{.ID}}" data-command="{{.Command | js}}">
       <div class="backend-info">
         <div class="backend-title">
           {{.ID}}
@@ -99,6 +99,7 @@
         <div class="backend-meta">
           {{if .Enabled}}<span class="badge badge-enabled">enabled</span>{{else}}<span class="badge badge-disabled">disabled</span>{{end}}
           {{if .SelfReporting}}<span class="badge badge-enabled">self-reporting</span>{{end}}
+          {{if .NoKeysRequired}}<span class="badge badge-enabled">no keys</span>{{end}}
           {{if .ToolPrefix}}<span class="badge badge-user">{{.ToolPrefix}}</span>{{end}}
           <span class="text-muted">Pool: {{.MinPoolSize}}-{{.MaxPoolSize}}</span>
         </div>
@@ -238,6 +239,11 @@
           <label for="self_reporting" class="checkbox-label">Self-Reporting</label>
           <small class="text-muted" style="margin-left:0.25rem;">— backend self-reports safety profiles via <code>_meta.enforcer_profile</code></small>
         </div>
+        <div class="form-row" style="display:flex;align-items:center;gap:0.5rem;">
+          <input type="checkbox" id="no_keys_required" name="no_keys_required">
+          <label for="no_keys_required" class="checkbox-label">No Keys Required</label>
+          <small class="text-muted" style="margin-left:0.25rem;">— backend doesn't require user-level tokens (e.g., qdrant-mcp)</small>
+        </div>
       </div>
       <div class="form-row">
         <label for="env">Environment Template (JSON)</label>
@@ -311,6 +317,9 @@ function editBackend(id) {
   var selfReporting = card.getAttribute('data-self-reporting') === 'true';
   document.getElementById('self_reporting').checked = selfReporting;
 
+  var noKeysRequired = card.getAttribute('data-no-keys-required') === 'true';
+  document.getElementById('no_keys_required').checked = noKeysRequired;
+
   // Get env, env_mappings, and tool_hints from data attributes
   var env = card.getAttribute('data-env');
   var envMappings = card.getAttribute('data-env-mappings');
@@ -356,6 +365,7 @@ function cancelEdit() {
   document.getElementById('enabled').checked = true;
   document.getElementById('enabled').disabled = false;
   document.getElementById('self_reporting').checked = false;
+  document.getElementById('no_keys_required').checked = false;
   document.getElementById('env').value = '{}';
   document.getElementById('env_mappings').value = '{}';
   document.getElementById('tool_hints').value = '';

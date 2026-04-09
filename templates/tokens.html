@@ -27,6 +27,22 @@
     <h2>Tokens for <span class="mono">{{.SelectedBackend.ID}}</span></h2>
     <p class="text-muted">Command: <span class="mono">{{.SelectedBackend.Command}}</span></p>
 
+    {{if .SelectedBackend.NoKeysRequired}}
+    <div class="alert alert-info" style="background:#1e1e2e;border:1px solid #313244;color:#cdd6f4;padding:0.75rem;border-radius:4px;margin-bottom:1rem;">
+      <strong>No mandatory keys required</strong> — This backend is dynamically configured. You can still add optional configuration tokens if needed.
+    </div>
+    {{else}}
+    {{if .RequiredKeys}}
+    <div style="margin-bottom:1rem;padding:0.75rem;background:#1e1e2e;border-radius:4px;border:1px solid #313244;">
+      <strong style="color:#cdd6f4;">Required keys:</strong>
+      {{range .RequiredKeys}}
+        <span class="badge badge-user" style="margin-left:0.25rem;background:#45475a;color:#cdd6f4;">{{.}}</span>
+      {{end}}
+      <p class="text-muted" style="margin:0.5rem 0 0 0;font-size:0.85rem;color:#a6adc8;">Enter these keys in the form below. The keys will be mapped to the backend's environment variable names.</p>
+    </div>
+    {{end}}
+    {{end}}
+
     {{if .Tokens}}
     <table>
       <thead>
@@ -72,6 +88,7 @@
       </div>
       <button type="submit" class="btn btn-primary">Save Token</button>
     </form>
+    {{end}}
   </div>
   {{end}}
   {{end}}

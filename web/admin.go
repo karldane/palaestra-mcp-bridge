@@ -222,6 +222,7 @@ func (h *Handler) AdminBackendsCreateHandler(w http.ResponseWriter, r *http.Requ
 	log.Printf("web create: env_mappings from form: %q", envMappings)
 	enabled := r.FormValue("enabled") == "on"
 	selfReporting := r.FormValue("self_reporting") == "on"
+	noKeysRequired := r.FormValue("no_keys_required") == "on"
 
 	// Validate backend ID: alphanumeric, dashes, underscores, max 50 chars
 	if id == "" || command == "" {
@@ -249,17 +250,18 @@ func (h *Handler) AdminBackendsCreateHandler(w http.ResponseWriter, r *http.Requ
 	}
 
 	b := &store.Backend{
-		ID:            id,
-		Command:       command,
-		PoolSize:      minPoolSize,
-		MinPoolSize:   minPoolSize,
-		MaxPoolSize:   maxPoolSize,
-		ToolPrefix:    toolPrefix,
-		Env:           env,
-		EnvMappings:   envMappings,
-		ToolHints:     toolHints,
-		Enabled:       enabled,
-		SelfReporting: selfReporting,
+		ID:             id,
+		Command:        command,
+		PoolSize:       minPoolSize,
+		MinPoolSize:    minPoolSize,
+		MaxPoolSize:    maxPoolSize,
+		ToolPrefix:     toolPrefix,
+		Env:            env,
+		EnvMappings:    envMappings,
+		ToolHints:      toolHints,
+		Enabled:        enabled,
+		SelfReporting:  selfReporting,
+		NoKeysRequired: noKeysRequired,
 	}
 	if err := h.Store.CreateBackend(b); err != nil {
 		log.Printf("web: create backend: %v", err)
@@ -288,6 +290,7 @@ func (h *Handler) AdminBackendsEditHandler(w http.ResponseWriter, r *http.Reques
 	log.Printf("web: env_mappings from form: %q", envMappings)
 	enabled := r.FormValue("enabled") == "on"
 	selfReporting := r.FormValue("self_reporting") == "on"
+	noKeysRequired := r.FormValue("no_keys_required") == "on"
 
 	// Validate inputs
 	log.Printf("web: validating inputs: id=%q, command=%q", id, command)
@@ -350,18 +353,19 @@ func (h *Handler) AdminBackendsEditHandler(w http.ResponseWriter, r *http.Reques
 	}
 
 	b := &store.Backend{
-		ID:            id,
-		Command:       command,
-		PoolSize:      minPoolSize,
-		MinPoolSize:   minPoolSize,
-		MaxPoolSize:   maxPoolSize,
-		ToolPrefix:    toolPrefix,
-		Env:           env,
-		EnvMappings:   envMappings,
-		ToolHints:     toolHints,
-		Enabled:       enabled,
-		IsSystem:      isSystem,
-		SelfReporting: selfReporting,
+		ID:             id,
+		Command:        command,
+		PoolSize:       minPoolSize,
+		MinPoolSize:    minPoolSize,
+		MaxPoolSize:    maxPoolSize,
+		ToolPrefix:     toolPrefix,
+		Env:            env,
+		EnvMappings:    envMappings,
+		ToolHints:      toolHints,
+		Enabled:        enabled,
+		IsSystem:       isSystem,
+		SelfReporting:  selfReporting,
+		NoKeysRequired: noKeysRequired,
 	}
 	if err := h.Store.UpdateBackend(b); err != nil {
 		log.Printf("web: update backend: %v", err)

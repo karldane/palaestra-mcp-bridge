@@ -69,6 +69,7 @@ func (s *Store) migrate() error {
 	s.db.Exec(`ALTER TABLE backends ADD COLUMN tool_hints TEXT NOT NULL DEFAULT ''`)
 	s.db.Exec(`ALTER TABLE backends ADD COLUMN backend_instructions TEXT NOT NULL DEFAULT ''`)
 	s.db.Exec(`ALTER TABLE backends ADD COLUMN self_reporting INTEGER NOT NULL DEFAULT 0`)
+	s.db.Exec(`ALTER TABLE backends ADD COLUMN no_keys_required INTEGER NOT NULL DEFAULT 0`)
 	s.db.Exec(`CREATE TABLE IF NOT EXISTS settings (
 		key TEXT PRIMARY KEY,
 		value TEXT NOT NULL
@@ -132,6 +133,15 @@ func (s *Store) migrate() error {
 	s.db.Exec(`ALTER TABLE user_tokens ADD COLUMN encrypted_dek TEXT`)
 	s.db.Exec(`ALTER TABLE user_tokens ADD COLUMN encryption_type TEXT DEFAULT 'legacy'`)
 
+	// Enforcer enhancements: add columns for user-level HITL, justification, rate limiting
+	s.db.Exec(`ALTER TABLE enforcer_approvals ADD COLUMN queue_type TEXT NOT NULL DEFAULT 'admin'`)
+	s.db.Exec(`ALTER TABLE enforcer_approvals ADD COLUMN justification TEXT NOT NULL DEFAULT ''`)
+	s.db.Exec(`ALTER TABLE enforcer_audit_log ADD COLUMN justification TEXT NOT NULL DEFAULT ''`)
+	s.db.Exec(`ALTER TABLE enforcer_audit_log ADD COLUMN rejection_reason TEXT`)
+	s.db.Exec(`ALTER TABLE enforcer_overrides ADD COLUMN user_id TEXT`)
+	s.db.Exec(`ALTER TABLE enforcer_overrides ADD COLUMN locked INTEGER NOT NULL DEFAULT 0`)
+	s.db.Exec(`ALTER TABLE enforcer_policies ADD COLUMN locked INTEGER NOT NULL DEFAULT 0`)
+
 	// Enforcer tables (policy enforcement system)
 	s.db.Exec(`CREATE TABLE IF NOT EXISTS enforcer_policies (
 		id          TEXT PRIMARY KEY,
@@ -144,6 +154,7 @@ func (s *Store) migrate() error {
 		message     TEXT NOT NULL DEFAULT '',
 		enabled     INTEGER NOT NULL DEFAULT 1,
 		priority    INTEGER NOT NULL DEFAULT 100,
+		locked      INTEGER NOT NULL DEFAULT 0, -- 1 = user overrides blocked for tools resolved by this policy
 		created_at  DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
 		updated_at  DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
 	)`)
@@ -156,6 +167,8 @@ func (s *Store) migrate() error {
 		resource_cost INTEGER NOT NULL DEFAULT 5,
 		requires_hitl INTEGER NOT NULL DEFAULT 0,
 		pii_exposure INTEGER NOT NULL DEFAULT 0,
+		user_id     TEXT, -- NULL = admin-scoped override, non-NULL = personal user override
+		locked      INTEGER NOT NULL DEFAULT 0, -- 1 = user overrides blocked for tools resolved by this policy
 		created_at  DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
 		updated_at  DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
 		UNIQUE(tool_name, backend_id)
@@ -171,6 +184,8 @@ func (s *Store) migrate() error {
 		backend_id      TEXT NOT NULL,
 		safety_profile  TEXT NOT NULL DEFAULT '{}',
 		status          TEXT NOT NULL DEFAULT 'PENDING',
+		queue_type      TEXT NOT NULL DEFAULT 'admin', -- 'user' | 'admin'
+		justification   TEXT NOT NULL DEFAULT '',
 		requested_at    DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
 		expires_at      DATETIME NOT NULL,
 		approved_by     TEXT,
@@ -206,6 +221,8 @@ func (s *Store) migrate() error {
 		policy_id   TEXT,
 		message     TEXT,
 		context     TEXT DEFAULT '{}',
+		justification TEXT NOT NULL DEFAULT '', -- The justification provided by the agent
+		rejection_reason TEXT, -- NULL | 'missing_justification' | 'justification_too_short'
 		created_at  DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
 		updated_at  DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
 	)`)
@@ -222,6 +239,16 @@ func (s *Store) migrate() error {
 		raw_profile     TEXT DEFAULT '{}',
 		scanned_at      DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
 		UNIQUE(backend_id, tool_name)
+	)`)
+
+	// Rate limiting buckets for Tier 2 enforcement
+	s.db.Exec(`CREATE TABLE IF NOT EXISTS enforcer_rate_buckets (
+		id           TEXT PRIMARY KEY,
+		user_id      TEXT NOT NULL,
+		tool_name    TEXT NOT NULL,
+		window_start DATETIME NOT NULL,
+		count        INTEGER NOT NULL DEFAULT 0,
+		UNIQUE(user_id, tool_name, window_start)
 	)`)
 
 	// Backend availability status table

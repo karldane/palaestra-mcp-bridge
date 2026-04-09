@@ -1,6 +1,7 @@
 package web
 
 import (
+	"encoding/json"
 	"fmt"
 	"log"
 	"net/http"
@@ -33,6 +34,22 @@ func (h *Handler) DashboardHandler(w http.ResponseWriter, r *http.Request) {
 		if !b.Enabled {
 			continue
 		}
+
+		// Skip backends that require tokens but user has none configured
+		// (allow NoKeysRequired backends or backends with existing tokens)
+		if !b.NoKeysRequired {
+			hasKeys := false
+			for _, t := range tokens {
+				if t.BackendID == b.ID {
+					hasKeys = true
+					break
+				}
+			}
+			if !hasKeys {
+				continue // Skip - needs keys but user has none
+			}
+		}
+
 		var keys []string
 		for _, t := range tokens {
 			if t.BackendID == b.ID {
@@ -111,6 +128,17 @@ func (h *Handler) TokensHandler(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// Parse required keys from env_mappings for display
+	var requiredKeys []string
+	if backend != nil && backend.EnvMappings != "" && backend.EnvMappings != "{}" {
+		var mappings map[string]string
+		if err := json.Unmarshal([]byte(backend.EnvMappings), &mappings); err == nil {
+			for k := range mappings {
+				requiredKeys = append(requiredKeys, k)
+			}
+		}
+	}
+
 	var tokens []*store.UserToken
 	if backendID != "" {
 		tokens, _ = h.Store.GetUserTokens(user.ID, backendID)
@@ -146,6 +174,7 @@ func (h *Handler) TokensHandler(w http.ResponseWriter, r *http.Request) {
 		SelectedID      string
 		SelectedBackend *store.Backend
 		Tokens          []*store.UserToken
+		RequiredKeys    []string
 	}
 
 	h.render(w, "tokens.html", pageData{
@@ -158,6 +187,7 @@ func (h *Handler) TokensHandler(w http.ResponseWriter, r *http.Request) {
 			SelectedID:      backendID,
 			SelectedBackend: backend,
 			Tokens:          tokens,
+			RequiredKeys:    requiredKeys,
 		},
 	})
 }

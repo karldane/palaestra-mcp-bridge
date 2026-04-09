@@ -19,8 +19,12 @@ const (
 	ActionDeny Action = "DENY"
 	// ActionWarn requires user confirmation before proceeding
 	ActionWarn Action = "WARN"
-	// ActionPendingApproval queues the operation for human approval
+	// ActionPendingApproval queues the operation for admin human approval (legacy alias)
 	ActionPendingApproval Action = "PENDING_APPROVAL"
+	// ActionPendingUserApproval queues the operation for user-level human approval (new Tier 3)
+	ActionPendingUserApproval Action = "PENDING_USER_APPROVAL"
+	// ActionPendingAdminApproval queues the operation for admin human approval (Tier 4)
+	ActionPendingAdminApproval Action = "PENDING_ADMIN_APPROVAL"
 )
 
 // SeverityLevel represents the risk severity for violations
@@ -99,9 +103,10 @@ type DecisionContext struct {
 	TrustLevel int // 0-100
 
 	// Tool information
-	Tool   string
-	Args   map[string]interface{}
-	Safety SafetyProfile
+	Tool          string
+	Args          map[string]interface{}
+	Justification string // NEW - required justification for tool calls
+	Safety        SafetyProfile
 
 	// System context
 	SystemLoad float64
@@ -347,7 +352,17 @@ func IsDenyAction(action Action) bool {
 
 // RequiresApproval checks if the action requires human intervention
 func RequiresApproval(action Action) bool {
-	return action == ActionPendingApproval
+	return action == ActionPendingApproval || action == ActionPendingUserApproval || action == ActionPendingAdminApproval
+}
+
+// RequiresUserApproval checks if the action requires user-level approval
+func RequiresUserApproval(action Action) bool {
+	return action == ActionPendingUserApproval
+}
+
+// RequiresAdminApproval checks if the action requires admin-level approval
+func RequiresAdminApproval(action Action) bool {
+	return action == ActionPendingApproval || action == ActionPendingAdminApproval
 }
 
 // RequiresWarning checks if the action requires user confirmation
