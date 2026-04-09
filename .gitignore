@@ -1,5 +1,6 @@
 # Go
 mcp-bridge
+mcpbridge
 *.exe
 *.test
 *.out
