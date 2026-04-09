@@ -494,6 +494,7 @@ func (h *EnforcerHandler) PoliciesCreateHandler(w http.ResponseWriter, r *http.R
 		Severity:    r.FormValue("severity"),
 		Message:     r.FormValue("message"),
 		Enabled:     r.FormValue("enabled") == "on",
+		Locked:      r.FormValue("locked") == "on",
 		Priority:    priority,
 	}
 
@@ -578,6 +579,7 @@ func (h *EnforcerHandler) PoliciesUpdateHandler(w http.ResponseWriter, r *http.R
 		Severity:    r.FormValue("severity"),
 		Message:     r.FormValue("message"),
 		Enabled:     r.FormValue("enabled") == "on",
+		Locked:      r.FormValue("locked") == "on",
 		Priority:    priority,
 	}
 

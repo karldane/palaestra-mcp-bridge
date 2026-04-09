@@ -53,6 +53,9 @@
             {{else}}
             <span class="badge badge-disabled">Disabled</span>
             {{end}}
+            {{if .Locked}}
+            <span class="badge badge-admin" title="Users cannot create personal overrides for this policy">Locked</span>
+            {{end}}
           </td>
           <td>
             <a href="/web/admin/enforcer/policies/edit?id={{.ID}}" class="btn btn-sm btn-secondary">Edit</a>
