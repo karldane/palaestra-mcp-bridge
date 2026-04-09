@@ -3,6 +3,7 @@ package store
 import (
 	"database/sql"
 	"encoding/json"
+	"fmt"
 	"time"
 
 	"github.com/mcp-bridge/mcp-bridge/enforcer"
@@ -29,9 +30,13 @@ func (s *EnforcerStore) CreatePolicy(policy enforcer.PolicyRow) error {
 	if policy.Enabled {
 		enabledInt = 1
 	}
-	_, err := s.db.Exec(`INSERT INTO enforcer_policies (id, name, description, scope, expression, action, severity, message, enabled, priority, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+	lockedInt := 0
+	if policy.Locked {
+		lockedInt = 1
+	}
+	_, err := s.db.Exec(`INSERT INTO enforcer_policies (id, name, description, scope, expression, action, severity, message, enabled, priority, locked, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		policy.ID, policy.Name, policy.Description, policy.Scope, policy.Expression,
-		policy.Action, policy.Severity, policy.Message, enabledInt, policy.Priority,
+		policy.Action, policy.Severity, policy.Message, enabledInt, policy.Priority, lockedInt,
 		policy.CreatedAt, policy.UpdatedAt)
 	return err
 }
@@ -39,20 +44,21 @@ func (s *EnforcerStore) CreatePolicy(policy enforcer.PolicyRow) error {
 // GetPolicy retrieves a policy by ID
 func (s *EnforcerStore) GetPolicy(id string) (enforcer.PolicyRow, error) {
 	var p enforcer.PolicyRow
-	var enabledInt int
-	err := s.db.QueryRow(`SELECT id, name, description, scope, expression, action, severity, message, enabled, priority, created_at, updated_at FROM enforcer_policies WHERE id = ?`, id).Scan(
+	var enabledInt, lockedInt int
+	err := s.db.QueryRow(`SELECT id, name, description, scope, expression, action, severity, message, enabled, priority, locked, created_at, updated_at FROM enforcer_policies WHERE id = ?`, id).Scan(
 		&p.ID, &p.Name, &p.Description, &p.Scope, &p.Expression, &p.Action,
-		&p.Severity, &p.Message, &enabledInt, &p.Priority, &p.CreatedAt, &p.UpdatedAt)
+		&p.Severity, &p.Message, &enabledInt, &p.Priority, &lockedInt, &p.CreatedAt, &p.UpdatedAt)
 	if err != nil {
 		return p, err
 	}
 	p.Enabled = enabledInt != 0
+	p.Locked = lockedInt != 0
 	return p, nil
 }
 
 // ListPolicies retrieves all enabled policies
 func (s *EnforcerStore) ListPolicies() ([]enforcer.PolicyRow, error) {
-	rows, err := s.db.Query(`SELECT id, name, description, scope, expression, action, severity, message, enabled, priority, created_at, updated_at FROM enforcer_policies WHERE enabled = 1 ORDER BY priority ASC, created_at ASC`)
+	rows, err := s.db.Query(`SELECT id, name, description, scope, expression, action, severity, message, enabled, priority, locked, created_at, updated_at FROM enforcer_policies WHERE enabled = 1 ORDER BY priority ASC, created_at ASC`)
 	if err != nil {
 		return nil, err
 	}
@@ -61,13 +67,14 @@ func (s *EnforcerStore) ListPolicies() ([]enforcer.PolicyRow, error) {
 	var policies []enforcer.PolicyRow
 	for rows.Next() {
 		var p enforcer.PolicyRow
-		var enabledInt int
+		var enabledInt, lockedInt int
 		err := rows.Scan(&p.ID, &p.Name, &p.Description, &p.Scope, &p.Expression, &p.Action,
-			&p.Severity, &p.Message, &enabledInt, &p.Priority, &p.CreatedAt, &p.UpdatedAt)
+			&p.Severity, &p.Message, &enabledInt, &p.Priority, &lockedInt, &p.CreatedAt, &p.UpdatedAt)
 		if err != nil {
 			return nil, err
 		}
 		p.Enabled = enabledInt != 0
+		p.Locked = lockedInt != 0
 		policies = append(policies, p)
 	}
 	return policies, rows.Err()
@@ -85,9 +92,13 @@ func (s *EnforcerStore) UpdatePolicy(policy enforcer.PolicyRow) error {
 	if policy.Enabled {
 		enabledInt = 1
 	}
-	_, err := s.db.Exec(`UPDATE enforcer_policies SET name = ?, description = ?, scope = ?, expression = ?, action = ?, severity = ?, message = ?, enabled = ?, priority = ?, updated_at = ? WHERE id = ?`,
+	lockedInt := 0
+	if policy.Locked {
+		lockedInt = 1
+	}
+	_, err := s.db.Exec(`UPDATE enforcer_policies SET name = ?, description = ?, scope = ?, expression = ?, action = ?, severity = ?, message = ?, enabled = ?, priority = ?, locked = ?, updated_at = ? WHERE id = ?`,
 		policy.Name, policy.Description, policy.Scope, policy.Expression, policy.Action,
-		policy.Severity, policy.Message, enabledInt, policy.Priority, policy.UpdatedAt, policy.ID)
+		policy.Severity, policy.Message, enabledInt, policy.Priority, lockedInt, policy.UpdatedAt, policy.ID)
 	return err
 }
 
@@ -298,6 +309,14 @@ func (s *EnforcerStore) LogAuditEvent(requestID string, userID string, toolName 
 	return err
 }
 
+// LogAuditRejection records a pre-policy justification rejection in the audit log.
+func (s *EnforcerStore) LogAuditRejection(requestID string, userID string, toolName string, justification string, rejectionReason string) error {
+	message := fmt.Sprintf("Tool call rejected before policy evaluation: %s", rejectionReason)
+	_, err := s.db.Exec(`INSERT INTO enforcer_audit_log (id, request_id, user_id, tool_name, action, policy_id, message, context, justification, rejection_reason, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		generateID(), requestID, userID, toolName, "DENY", rejectionReason, message, "{}", justification, rejectionReason, time.Now())
+	return err
+}
+
 // GetToolProfile retrieves a tool's self-reported safety profile.
 func (s *EnforcerStore) GetToolProfile(backendID, toolName string) (enforcer.ToolProfileRow, error) {
 	var p enforcer.ToolProfileRow
@@ -326,18 +345,23 @@ func (s *EnforcerStore) UpsertOverride(override enforcer.EnforcerOverrideRow) er
 	if override.PIIExposure {
 		pii = 1
 	}
+	var userID sql.NullString
+	if override.UserID != "" {
+		userID = sql.NullString{String: override.UserID, Valid: true}
+	}
 	_, err := s.db.Exec(`
-		INSERT INTO enforcer_overrides (id, tool_name, backend_id, risk_level, impact_scope, resource_cost, requires_hitl, pii_exposure, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		INSERT INTO enforcer_overrides (id, tool_name, backend_id, risk_level, impact_scope, resource_cost, requires_hitl, pii_exposure, user_id, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(tool_name, backend_id) DO UPDATE SET
 			risk_level=excluded.risk_level,
 			impact_scope=excluded.impact_scope,
 			resource_cost=excluded.resource_cost,
 			requires_hitl=excluded.requires_hitl,
 			pii_exposure=excluded.pii_exposure,
+			user_id=excluded.user_id,
 			updated_at=excluded.updated_at`,
 		override.ID, override.ToolName, override.BackendID, override.RiskLevel, override.ImpactScope,
-		override.ResourceCost, hitl, pii, override.CreatedAt, override.UpdatedAt,
+		override.ResourceCost, hitl, pii, userID, override.CreatedAt, override.UpdatedAt,
 	)
 	return err
 }
@@ -346,23 +370,27 @@ func (s *EnforcerStore) UpsertOverride(override enforcer.EnforcerOverrideRow) er
 func (s *EnforcerStore) GetOverride(toolName, backendID string) (enforcer.EnforcerOverrideRow, error) {
 	var o enforcer.EnforcerOverrideRow
 	var hitl, pii int
+	var userID sql.NullString
 	err := s.db.QueryRow(`
-		SELECT id, tool_name, backend_id, risk_level, impact_scope, resource_cost, requires_hitl, pii_exposure, created_at, updated_at
+		SELECT id, tool_name, backend_id, risk_level, impact_scope, resource_cost, requires_hitl, pii_exposure, user_id, created_at, updated_at
 		FROM enforcer_overrides WHERE tool_name = ? AND backend_id = ?`,
 		toolName, backendID,
-	).Scan(&o.ID, &o.ToolName, &o.BackendID, &o.RiskLevel, &o.ImpactScope, &o.ResourceCost, &hitl, &pii, &o.CreatedAt, &o.UpdatedAt)
+	).Scan(&o.ID, &o.ToolName, &o.BackendID, &o.RiskLevel, &o.ImpactScope, &o.ResourceCost, &hitl, &pii, &userID, &o.CreatedAt, &o.UpdatedAt)
 	if err != nil {
 		return enforcer.EnforcerOverrideRow{}, err
 	}
 	o.RequiresHITL = hitl != 0
 	o.PIIExposure = pii != 0
+	if userID.Valid {
+		o.UserID = userID.String
+	}
 	return o, nil
 }
 
 // ListOverrides returns all overrides.
 func (s *EnforcerStore) ListOverrides() ([]enforcer.EnforcerOverrideRow, error) {
 	rows, err := s.db.Query(`
-		SELECT id, tool_name, backend_id, risk_level, impact_scope, resource_cost, requires_hitl, pii_exposure, created_at, updated_at
+		SELECT id, tool_name, backend_id, risk_level, impact_scope, resource_cost, requires_hitl, pii_exposure, user_id, created_at, updated_at
 		FROM enforcer_overrides ORDER BY tool_name, backend_id`)
 	if err != nil {
 		return nil, err
@@ -373,11 +401,44 @@ func (s *EnforcerStore) ListOverrides() ([]enforcer.EnforcerOverrideRow, error) 
 	for rows.Next() {
 		var o enforcer.EnforcerOverrideRow
 		var hitl, pii int
-		if err := rows.Scan(&o.ID, &o.ToolName, &o.BackendID, &o.RiskLevel, &o.ImpactScope, &o.ResourceCost, &hitl, &pii, &o.CreatedAt, &o.UpdatedAt); err != nil {
+		var userID sql.NullString
+		if err := rows.Scan(&o.ID, &o.ToolName, &o.BackendID, &o.RiskLevel, &o.ImpactScope, &o.ResourceCost, &hitl, &pii, &userID, &o.CreatedAt, &o.UpdatedAt); err != nil {
 			return nil, err
 		}
 		o.RequiresHITL = hitl != 0
 		o.PIIExposure = pii != 0
+		if userID.Valid {
+			o.UserID = userID.String
+		}
+		overrides = append(overrides, o)
+	}
+	return overrides, rows.Err()
+}
+
+// ListUserOverrides returns overrides scoped to a specific user (personal overrides).
+func (s *EnforcerStore) ListUserOverrides(userID string) ([]enforcer.EnforcerOverrideRow, error) {
+	rows, err := s.db.Query(`
+		SELECT id, tool_name, backend_id, risk_level, impact_scope, resource_cost, requires_hitl, pii_exposure, user_id, created_at, updated_at
+		FROM enforcer_overrides WHERE user_id = ? ORDER BY tool_name, backend_id`,
+		userID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var overrides []enforcer.EnforcerOverrideRow
+	for rows.Next() {
+		var o enforcer.EnforcerOverrideRow
+		var hitl, pii int
+		var uid sql.NullString
+		if err := rows.Scan(&o.ID, &o.ToolName, &o.BackendID, &o.RiskLevel, &o.ImpactScope, &o.ResourceCost, &hitl, &pii, &uid, &o.CreatedAt, &o.UpdatedAt); err != nil {
+			return nil, err
+		}
+		o.RequiresHITL = hitl != 0
+		o.PIIExposure = pii != 0
+		if uid.Valid {
+			o.UserID = uid.String
+		}
 		overrides = append(overrides, o)
 	}
 	return overrides, rows.Err()
@@ -506,4 +567,43 @@ func (s *EnforcerStore) CountAdminPendingApprovals() (int, error) {
 	var count int
 	err := s.db.QueryRow(`SELECT COUNT(*) FROM enforcer_approvals WHERE status = 'PENDING' AND queue_type = 'admin'`).Scan(&count)
 	return count, err
+}
+
+// IncrementRateBucket increments the call count for (userID, toolName) in the current window.
+// Returns the new count. Creates or updates the window bucket atomically.
+func (s *EnforcerStore) IncrementRateBucket(userID, toolName string, windowDuration time.Duration) (int, error) {
+	windowStart := time.Now().Truncate(windowDuration)
+	id := userID + "|" + toolName + "|" + windowStart.Format(time.RFC3339)
+	_, err := s.db.Exec(`
+		INSERT INTO enforcer_rate_buckets (id, user_id, tool_name, window_start, count)
+		VALUES (?, ?, ?, ?, 1)
+		ON CONFLICT(user_id, tool_name, window_start) DO UPDATE SET count = count + 1`,
+		id, userID, toolName, windowStart)
+	if err != nil {
+		return 0, err
+	}
+	var count int
+	err = s.db.QueryRow(`SELECT count FROM enforcer_rate_buckets WHERE user_id = ? AND tool_name = ? AND window_start = ?`,
+		userID, toolName, windowStart).Scan(&count)
+	return count, err
+}
+
+// GetCallRate returns the current call count for (userID, toolName) in the active window.
+// Returns 0 if no bucket exists for the current window.
+func (s *EnforcerStore) GetCallRate(userID, toolName string, windowDuration time.Duration) (int, error) {
+	windowStart := time.Now().Truncate(windowDuration)
+	var count int
+	err := s.db.QueryRow(`SELECT count FROM enforcer_rate_buckets WHERE user_id = ? AND tool_name = ? AND window_start = ?`,
+		userID, toolName, windowStart).Scan(&count)
+	if err == sql.ErrNoRows {
+		return 0, nil
+	}
+	return count, err
+}
+
+// CleanupExpiredRateBuckets deletes buckets whose window has expired.
+func (s *EnforcerStore) CleanupExpiredRateBuckets(windowDuration time.Duration) error {
+	cutoff := time.Now().Add(-windowDuration)
+	_, err := s.db.Exec(`DELETE FROM enforcer_rate_buckets WHERE window_start < ?`, cutoff)
+	return err
 }

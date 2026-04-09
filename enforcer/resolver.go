@@ -11,6 +11,7 @@ import (
 // ToolProfileStore defines the interface for looking up stored safety profiles.
 type ToolProfileStore interface {
 	GetToolProfile(backendID, toolName string) (ToolProfileRow, error)
+	ListUserOverrides(userID string) ([]EnforcerOverrideRow, error)
 }
 
 // ToolProfileRow represents a stored safety profile for a tool.
@@ -83,6 +84,71 @@ func (r *MetadataResolver) Resolve(toolName string, backendID string) (SafetyPro
 	profile.BackendID = backendID
 	profile.Source = "inferred"
 	return profile, nil
+}
+
+// ResolveForUser determines the final SafetyProfile using a 4-tier priority chain
+// that includes user-scoped personal overrides between admin overrides and self-reported profiles.
+//
+//  1. Admin overrides (in-memory, no user_id)
+//  2. User personal overrides (store query, user_id-scoped)
+//  3. Self-reported stored profiles
+//  4. Inferred defaults (pattern matching)
+func (r *MetadataResolver) ResolveForUser(toolName string, backendID string, userID string) (SafetyProfile, error) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+
+	// Tier 1: Check explicit admin overrides (in-memory, keyed by toolName|backendID)
+	if override, ok := r.overrides[toolName+"|"+backendID]; ok {
+		override.ToolName = toolName
+		override.BackendID = backendID
+		override.Source = "override"
+		return override, nil
+	}
+
+	// Tier 2: Check user personal overrides (store query, user_id-scoped)
+	if r.store != nil && userID != "" {
+		userOverrides, err := r.store.ListUserOverrides(userID)
+		if err == nil {
+			for _, o := range userOverrides {
+				if o.ToolName == toolName && o.BackendID == backendID {
+					return SafetyProfile{
+						ToolName:     toolName,
+						BackendID:    backendID,
+						Risk:         RiskLevel(o.RiskLevel),
+						Impact:       ImpactScope(o.ImpactScope),
+						Cost:         o.ResourceCost,
+						RequiresHITL: o.RequiresHITL,
+						PIIExposure:  o.PIIExposure,
+						Source:       "user_override",
+					}, nil
+				}
+			}
+		}
+	}
+
+	// Tier 3: Check stored self-reported profiles (from startup scan)
+	if r.store != nil {
+		profile, err := r.store.GetToolProfile(backendID, toolName)
+		if err == nil {
+			return SafetyProfile{
+				ToolName:     toolName,
+				BackendID:    backendID,
+				Risk:         RiskLevel(profile.RiskLevel),
+				Impact:       ImpactScope(profile.ImpactScope),
+				Cost:         profile.ResourceCost,
+				RequiresHITL: profile.RequiresHITL,
+				PIIExposure:  profile.PIIExposure,
+				Source:       "self_reported",
+			}, nil
+		}
+	}
+
+	// Tier 4: Infer defaults from tool name patterns
+	inferred := r.inferDefaults(toolName)
+	inferred.ToolName = toolName
+	inferred.BackendID = backendID
+	inferred.Source = "inferred"
+	return inferred, nil
 }
 
 // inferDefaults uses pattern matching to determine safety for 3rd-party tools

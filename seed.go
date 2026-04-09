@@ -131,7 +131,7 @@ func seedDefaultPolicies(st *store.Store) {
 			Description: "Force human approval for any 'delete' or 'admin' impact",
 			Scope:       "global",
 			Expression:  "safety.impact_scope in ['delete', 'admin']",
-			Action:      "PENDING_APPROVAL",
+			Action:      "PENDING_ADMIN_APPROVAL",
 			Severity:    "CRITICAL",
 			Message:     "Destructive operations require human approval. An administrator must approve this request before it can proceed.",
 			Enabled:     true,
@@ -148,6 +148,18 @@ func seedDefaultPolicies(st *store.Store) {
 			Message:     "DROP/TRUNCATE operations are prohibited via AI interface",
 			Enabled:     true,
 			Priority:    25,
+		},
+		{
+			ID:          "require_user_hitl_high_risk",
+			Name:        "Require User Confirmation for High-Risk Writes",
+			Description: "Queue high-risk write operations for user confirmation before execution",
+			Scope:       "global",
+			Expression:  "safety.risk_level == \"high\" && safety.impact_scope == \"write\"",
+			Action:      "PENDING_USER_APPROVAL",
+			Severity:    "HIGH",
+			Message:     "High-risk write operation — please confirm you intended this action.",
+			Enabled:     true,
+			Priority:    45,
 		},
 	}
 

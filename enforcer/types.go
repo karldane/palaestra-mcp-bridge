@@ -110,6 +110,7 @@ type DecisionContext struct {
 
 	// System context
 	SystemLoad float64
+	CallRate   int // Number of calls in the current rate window
 	Timestamp  time.Time
 
 	// Backend context

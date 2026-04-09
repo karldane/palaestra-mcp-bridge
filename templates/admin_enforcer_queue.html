@@ -26,6 +26,7 @@
           <div class="approval-info">
             <span class="tool-name">{{.ToolName}}</span>
             <span class="badge badge-{{.StatusClass}}">{{.Status}}</span>
+            {{if .QueueType}}<span class="badge badge-queue-{{.QueueType}}">{{.QueueType}}</span>{{end}}
           </div>
           <div class="approval-actions">
             {{if eq .Status "PENDING"}}
@@ -71,6 +72,12 @@
            {{end}}
          </div>
 
+        {{if .Justification}}
+        <div class="justification-box">
+          <strong>Justification:</strong> {{.Justification}}
+        </div>
+        {{end}}
+
         <div class="approval-message">
           <strong>Reason:</strong> {{.Message}}
         </div>
@@ -113,6 +120,7 @@
           <div class="approval-info">
             <span class="tool-name">{{.ToolName}}</span>
             <span class="badge badge-{{.StatusClass}}">{{.Status}}</span>
+            {{if .QueueType}}<span class="badge badge-queue-{{.QueueType}}">{{.QueueType}}</span>{{end}}
           </div>
           <div class="approval-actions">
             {{if eq .Status "PENDING"}}
@@ -144,6 +152,12 @@
           </div>
           {{end}}
         </div>
+
+        {{if .Justification}}
+        <div class="justification-box">
+          <strong>Justification:</strong> {{.Justification}}
+        </div>
+        {{end}}
 
         <div class="approval-message">
           <strong>Reason:</strong> {{.Message}}
@@ -406,6 +420,16 @@
     background: #95a5a6;
     color: white;
   }
+  .justification-box {
+    background: rgba(52, 152, 219, 0.1);
+    border-left: 3px solid #3498db;
+    padding: 0.75rem;
+    border-radius: 0 4px 4px 0;
+    font-size: 0.9rem;
+    margin-bottom: 0.75rem;
+  }
+  .badge-queue-user { background: #9b59b6; color: white; }
+  .badge-queue-admin { background: #2c3e50; color: white; }
 </style>
 
 <script>

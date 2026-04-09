@@ -198,7 +198,7 @@ func (e *CELEngine) buildActivation(ctx DecisionContext) (interpreter.Activation
 
 	systemMap := map[string]interface{}{
 		"load_avg":  ctx.SystemLoad,
-		"call_rate": 0, // Will be populated from rate buckets
+		"call_rate": ctx.CallRate,
 	}
 
 	callMap := map[string]interface{}{
@@ -241,7 +241,7 @@ func (e *CELEngine) buildActivation(ctx DecisionContext) (interpreter.Activation
 
 		"system":           systemMap,
 		"system_load":      ctx.SystemLoad,
-		"system_call_rate": 0, // TODO: populate from rate buckets
+		"system_call_rate": ctx.CallRate,
 		"timestamp":        ctx.Timestamp,
 
 		"backend_id":   ctx.BackendID,

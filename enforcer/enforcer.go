@@ -39,8 +39,10 @@ type EnforcerStore interface {
 	CleanupExpiredApprovals() error
 	CleanupOldApprovals(olderThan time.Duration) error
 	LogAuditEvent(requestID string, userID string, toolName string, action string, policyID string, message string, context map[string]interface{}) error
+	LogAuditRejection(requestID, userID, toolName, justification, rejectionReason string) error
 	GetToolProfile(backendID, toolName string) (ToolProfileRow, error)
 	ListOverrides() ([]EnforcerOverrideRow, error)
+	ListUserOverrides(userID string) ([]EnforcerOverrideRow, error)
 	UpsertOverride(override EnforcerOverrideRow) error
 	DeleteOverride(toolName, backendID string) error
 	UpsertToolProfile(profile ToolProfileRow) error
@@ -50,6 +52,9 @@ type EnforcerStore interface {
 	UpsertRateLimitState(state RateLimitStateRow) error
 	CountUserPendingApprovals() (int, error)
 	CountAdminPendingApprovals() (int, error)
+	IncrementRateBucket(userID, toolName string, windowDuration time.Duration) (int, error)
+	GetCallRate(userID, toolName string, windowDuration time.Duration) (int, error)
+	CleanupExpiredRateBuckets(windowDuration time.Duration) error
 }
 
 // EnforcerOverrideRow represents a manual override for a tool's safety profile.
@@ -62,6 +67,7 @@ type EnforcerOverrideRow struct {
 	ResourceCost int
 	RequiresHITL bool
 	PIIExposure  bool
+	UserID       string // empty = admin-scoped override; non-empty = personal user override
 	CreatedAt    time.Time
 	UpdatedAt    time.Time
 }
@@ -105,6 +111,7 @@ type PolicyRow struct {
 	Message     string
 	Enabled     bool
 	Priority    int
+	Locked      bool // if true, user personal overrides are blocked for tools resolved by this policy
 	CreatedAt   time.Time
 	UpdatedAt   time.Time
 }
@@ -441,7 +448,7 @@ func (e *Enforcer) HandleToolCall(ctx context.Context, userID string, toolName s
 	}
 
 	// Resolve safety profile
-	profile, err := e.resolver.Resolve(toolName, backendID)
+	profile, err := e.resolver.ResolveForUser(toolName, backendID, userID)
 	if err != nil {
 		return EnforcerDecision{}, fmt.Errorf("failed to resolve safety profile: %w", err)
 	}
@@ -451,6 +458,7 @@ func (e *Enforcer) HandleToolCall(ctx context.Context, userID string, toolName s
 	// Pre-policy justification validation gate
 	if e.config.MinJustificationLength > 0 {
 		if justification == "" {
+			_ = e.store.LogAuditRejection(generateID(), userID, toolName, justification, "missing_justification")
 			return EnforcerDecision{
 				Action:   ActionDeny,
 				Severity: SeverityMedium,
@@ -459,6 +467,7 @@ func (e *Enforcer) HandleToolCall(ctx context.Context, userID string, toolName s
 			}, ErrPolicyViolation
 		}
 		if len(justification) < e.config.MinJustificationLength {
+			_ = e.store.LogAuditRejection(generateID(), userID, toolName, justification, "justification_too_short")
 			return EnforcerDecision{
 				Action:   ActionDeny,
 				Severity: SeverityMedium,
@@ -492,6 +501,16 @@ func (e *Enforcer) HandleToolCall(ctx context.Context, userID string, toolName s
 			Message:  fmt.Sprintf("Rate limit exceeded: %s bucket exhausted (%d available)", bucketType, available),
 			PolicyID: "rate_limit",
 		}, ErrRateLimitExceeded
+	}
+
+	// Increment the per-tool call rate bucket and wire the count into the decision context
+	if e.config.RateWindowDuration > 0 {
+		callRate, rateErr := e.store.IncrementRateBucket(userID, toolName, e.config.RateWindowDuration)
+		if rateErr != nil {
+			log.Printf("Warning: failed to increment rate bucket for user=%s tool=%s: %v", userID, toolName, rateErr)
+		} else {
+			decisionCtx.CallRate = callRate
+		}
 	}
 
 	// Evaluate

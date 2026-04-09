@@ -143,17 +143,19 @@ func (h *EnforcerHandler) QueuePageHandler(w http.ResponseWriter, r *http.Reques
 			}
 
 			view := map[string]interface{}{
-				"ID":          a.ID,
-				"Status":      a.Status,
-				"StatusClass": getStatusClass(a.Status),
-				"ToolName":    a.ToolName,
-				"UserID":      a.UserID,
-				"UserEmail":   a.UserEmail,
-				"ToolArgs":    prettyArgs,
-				"PolicyID":    a.PolicyID,
-				"Message":     a.ViolationMsg,
-				"RequestedAt": a.RequestedAt,
-				"ExpiresAt":   a.ExpiresAt,
+				"ID":            a.ID,
+				"Status":        a.Status,
+				"StatusClass":   getStatusClass(a.Status),
+				"ToolName":      a.ToolName,
+				"UserID":        a.UserID,
+				"UserEmail":     a.UserEmail,
+				"ToolArgs":      prettyArgs,
+				"PolicyID":      a.PolicyID,
+				"Message":       a.ViolationMsg,
+				"RequestedAt":   a.RequestedAt,
+				"ExpiresAt":     a.ExpiresAt,
+				"QueueType":     a.QueueType,
+				"Justification": a.Justification,
 			}
 
 			if a.ApprovedBy.Valid {
