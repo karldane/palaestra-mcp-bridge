@@ -130,6 +130,8 @@ type ApprovalRequestRow struct {
 	BackendID      string
 	SafetyProfile  string
 	Status         string
+	QueueType      string // "user" or "admin"
+	Justification  string // The justification provided by the agent
 	RequestedAt    time.Time
 	ExpiresAt      time.Time
 	ApprovedBy     sql.NullString
@@ -409,13 +411,14 @@ func (e *Enforcer) Evaluate(ctx context.Context, decisionCtx DecisionContext) (E
 }
 
 // HandleToolCall is the main entry point for enforcing policies on tool calls
-func (e *Enforcer) HandleToolCall(ctx context.Context, userID string, toolName string, args map[string]interface{}, backendID string) (EnforcerDecision, error) {
+func (e *Enforcer) HandleToolCall(ctx context.Context, userID string, toolName string, args map[string]interface{}, backendID string, justification string) (EnforcerDecision, error) {
 	// Build decision context
 	decisionCtx := DecisionContext{
-		UserID:    userID,
-		Tool:      toolName,
-		Args:      args,
-		BackendID: backendID,
+		UserID:        userID,
+		Tool:          toolName,
+		Args:          args,
+		BackendID:     backendID,
+		Justification: justification,
 	}
 
 	// Fetch user info for policy evaluation
@@ -440,6 +443,26 @@ func (e *Enforcer) HandleToolCall(ctx context.Context, userID string, toolName s
 	}
 	decisionCtx.Safety = profile
 	fmt.Printf("DEBUG: HandleToolCall resolved profile - Risk=%s Impact=%s Cost=%d\n", profile.Risk, profile.Impact, profile.Cost)
+
+	// Pre-policy justification validation gate
+	if e.config.MinJustificationLength > 0 {
+		if justification == "" {
+			return EnforcerDecision{
+				Action:   ActionDeny,
+				Severity: SeverityMedium,
+				Message:  "Tool call rejected: justification is required.",
+				PolicyID: "justification_required",
+			}, ErrPolicyViolation
+		}
+		if len(justification) < e.config.MinJustificationLength {
+			return EnforcerDecision{
+				Action:   ActionDeny,
+				Severity: SeverityMedium,
+				Message:  fmt.Sprintf("Tool call rejected: justification must be at least %d characters. Provided: %d characters.", e.config.MinJustificationLength, len(justification)),
+				PolicyID: "justification_too_short",
+			}, ErrPolicyViolation
+		}
+	}
 
 	// Calculate cost
 	riskCost, resourceCost := rl.CalculateCost(profile.Cost, string(profile.Risk), string(profile.Impact))
@@ -477,11 +500,25 @@ func (e *Enforcer) HandleToolCall(ctx context.Context, userID string, toolName s
 }
 
 // RequestApproval creates a new approval request for HITL
-func (e *Enforcer) RequestApproval(ctx context.Context, decisionCtx DecisionContext, policyID string, message string) (string, error) {
+func (e *Enforcer) RequestApproval(ctx context.Context, decisionCtx DecisionContext, policyID string, message string, queueType string) (string, error) {
 	id := generateID()
 
 	safetyJSON, _ := json.Marshal(decisionCtx.Safety)
 	argsJSON, _ := json.Marshal(decisionCtx.Args)
+
+	// Determine timeout based on queue type
+	var timeout time.Duration
+	if queueType == "user" {
+		timeout = e.config.UserApprovalTimeout
+		if timeout == 0 {
+			timeout = 10 * time.Minute // Default
+		}
+	} else {
+		timeout = e.config.AdminApprovalTimeout
+		if timeout == 0 {
+			timeout = e.config.ApprovalTimeout // Default to 24h
+		}
+	}
 
 	req := ApprovalRequestRow{
 		ID:            id,
@@ -494,8 +531,10 @@ func (e *Enforcer) RequestApproval(ctx context.Context, decisionCtx DecisionCont
 		BackendID:     decisionCtx.BackendID,
 		SafetyProfile: string(safetyJSON),
 		Status:        "PENDING",
+		QueueType:     queueType,
+		Justification: decisionCtx.Justification,
 		RequestedAt:   time.Now(),
-		ExpiresAt:     time.Now().Add(e.config.ApprovalTimeout),
+		ExpiresAt:     time.Now().Add(timeout),
 		PolicyID:      policyID,
 		ViolationMsg:  message,
 		RequestBody:   decisionCtx.RequestBody,

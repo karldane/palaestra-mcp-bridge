@@ -305,12 +305,14 @@ func handleToolsCall(a *app, w http.ResponseWriter, r *http.Request, userID stri
 		}
 	}
 
-	// Extract tool name and arguments for enforcer check
+	// Extract tool name, arguments, and justification for enforcer check
 	var toolName string
 	var toolArgs map[string]interface{}
+	var justification string
 	if params, ok := toolReq["params"].(map[string]interface{}); ok {
 		toolName, _ = params["name"].(string)
 		toolArgs, _ = params["arguments"].(map[string]interface{})
+		justification, _ = params["justification"].(string)
 	}
 
 	// Get backend ID from tool name (needed for enforcer)
@@ -325,7 +327,7 @@ func handleToolsCall(a *app, w http.ResponseWriter, r *http.Request, userID stri
 	if a.enforcer != nil && toolName != "" && !strings.HasPrefix(toolName, "mcpbridge_") {
 		ctx := r.Context()
 		shared.Infof("Enforcer: Evaluating tool call - user=%s tool=%s backend=%s", userID, toolName, backendID)
-		decision, err := a.enforcer.HandleToolCall(ctx, userID, toolName, toolArgs, backendID)
+		decision, err := a.enforcer.HandleToolCall(ctx, userID, toolName, toolArgs, backendID, justification)
 		if err != nil {
 			shared.Errorf("Enforcer error: %v", err)
 			// Continue anyway - fail open is safer than blocking everything
@@ -346,15 +348,16 @@ func handleToolsCall(a *app, w http.ResponseWriter, r *http.Request, userID stri
 				})
 				return
 
-			case enforcer.ActionPendingApproval:
+			case enforcer.ActionPendingApproval, enforcer.ActionPendingAdminApproval:
 				shared.Debugf("Enforcer PENDING_APPROVAL for tool: %s", toolName)
-				// Create approval request
+				// Create approval request (admin queue)
 				approvalID, err := a.enforcer.RequestApproval(ctx, enforcer.DecisionContext{
-					UserID:    userID,
-					Tool:      toolName,
-					Args:      toolArgs,
-					BackendID: backendID,
-				}, decision.PolicyID, decision.Message)
+					UserID:        userID,
+					Tool:          toolName,
+					Args:          toolArgs,
+					BackendID:     backendID,
+					Justification: justification,
+				}, decision.PolicyID, decision.Message, "admin")
 				if err != nil {
 					shared.Errorf("Failed to create approval request: %v", err)
 					w.Header().Set("Content-Type", "application/json")
@@ -377,9 +380,48 @@ func handleToolsCall(a *app, w http.ResponseWriter, r *http.Request, userID stri
 					"jsonrpc": "2.0",
 					"id":      id,
 					"result": map[string]interface{}{
-						"status":      "pending_approval",
+						"status":      "pending_admin_approval",
 						"approval_id": approvalID,
-						"message":     "This operation requires human approval. Please wait for an administrator to approve.",
+						"message":     decision.Message,
+					},
+				})
+				return
+
+			case enforcer.ActionPendingUserApproval:
+				shared.Debugf("Enforcer PENDING_USER_APPROVAL for tool: %s", toolName)
+				// Create approval request (user queue)
+				approvalID, err := a.enforcer.RequestApproval(ctx, enforcer.DecisionContext{
+					UserID:        userID,
+					Tool:          toolName,
+					Args:          toolArgs,
+					BackendID:     backendID,
+					Justification: justification,
+				}, decision.PolicyID, decision.Message, "user")
+				if err != nil {
+					shared.Errorf("Failed to create user approval request: %v", err)
+					w.Header().Set("Content-Type", "application/json")
+					w.WriteHeader(http.StatusInternalServerError)
+					json.NewEncoder(w).Encode(map[string]interface{}{
+						"jsonrpc": "2.0",
+						"id":      id,
+						"error": map[string]interface{}{
+							"code":    -32002,
+							"message": "Failed to create approval request",
+						},
+					})
+					return
+				}
+
+				// Return 202 Accepted with approval ID
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusAccepted)
+				json.NewEncoder(w).Encode(map[string]interface{}{
+					"jsonrpc": "2.0",
+					"id":      id,
+					"result": map[string]interface{}{
+						"status":      "pending_user_approval",
+						"approval_id": approvalID,
+						"message":     decision.Message,
 					},
 				})
 				return

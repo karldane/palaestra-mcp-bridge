@@ -314,10 +314,15 @@ type EnforcerConfig struct {
 	DefaultAction               Action
 	PolicyFile                  string
 	ApprovalTimeout             time.Duration // Default: 24 hours
+	AdminApprovalTimeout        time.Duration // Default: 0 (no timeout for admin queue)
+	UserApprovalTimeout         time.Duration // Default: 10 minutes for user queue
 	CleanupInterval             time.Duration // How often to cleanup expired requests
 	RetentionPeriod             time.Duration // How long to keep completed/denied requests
 	EnableDescriptionDecoration bool
 	EnableKillSwitch            bool
+	MinJustificationLength      int           // Default: 40; set to 0 to disable length check
+	RateWindowDuration          time.Duration // Default: 60 seconds
+	RateDefaultThreshold        int           // Default: 10 calls per window
 }
 
 // DefaultEnforcerConfig returns sensible defaults
@@ -326,10 +331,15 @@ func DefaultEnforcerConfig() EnforcerConfig {
 		Enabled:                     true,
 		DefaultAction:               ActionAllow,
 		ApprovalTimeout:             24 * time.Hour,
+		AdminApprovalTimeout:        0,                // No timeout for admin
+		UserApprovalTimeout:         10 * time.Minute, // 10 min for user
 		CleanupInterval:             1 * time.Minute,
 		RetentionPeriod:             7 * 24 * time.Hour, // 7 days
 		EnableDescriptionDecoration: true,
 		EnableKillSwitch:            true,
+		MinJustificationLength:      40,
+		RateWindowDuration:          60 * time.Second,
+		RateDefaultThreshold:        10,
 	}
 }
 

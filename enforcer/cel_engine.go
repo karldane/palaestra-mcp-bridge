@@ -34,6 +34,8 @@ func NewCELEngine() (*CELEngine, error) {
 			decls.NewVar("tool", decls.String),
 			decls.NewVar("tool_name", decls.String),
 			decls.NewVar("args", decls.NewMapType(decls.String, decls.Dyn)),
+			decls.NewVar("call", decls.NewMapType(decls.String, decls.Dyn)),
+			decls.NewVar("justification", decls.String),
 
 			// Safety profile
 			decls.NewVar("safety", decls.NewMapType(decls.String, decls.Dyn)),
@@ -46,6 +48,7 @@ func NewCELEngine() (*CELEngine, error) {
 			// System context
 			decls.NewVar("system", decls.NewMapType(decls.String, decls.Dyn)),
 			decls.NewVar("system_load", decls.Double),
+			decls.NewVar("system_call_rate", decls.Int),
 			decls.NewVar("timestamp", decls.Timestamp),
 
 			// Backend context
@@ -194,7 +197,12 @@ func (e *CELEngine) buildActivation(ctx DecisionContext) (interpreter.Activation
 	}
 
 	systemMap := map[string]interface{}{
-		"load_avg": ctx.SystemLoad,
+		"load_avg":  ctx.SystemLoad,
+		"call_rate": 0, // Will be populated from rate buckets
+	}
+
+	callMap := map[string]interface{}{
+		"justification": ctx.Justification,
 	}
 
 	riskBucketMap := map[string]interface{}{
@@ -221,6 +229,9 @@ func (e *CELEngine) buildActivation(ctx DecisionContext) (interpreter.Activation
 		"tool_name": ctx.Tool,
 		"args":      ctx.Args,
 
+		"call":          callMap,
+		"justification": ctx.Justification,
+
 		"safety":        safetyMap,
 		"risk_level":    string(ctx.Safety.Risk),
 		"impact_scope":  string(ctx.Safety.Impact),
@@ -228,9 +239,10 @@ func (e *CELEngine) buildActivation(ctx DecisionContext) (interpreter.Activation
 		"requires_hitl": ctx.Safety.RequiresHITL,
 		"pii_exposure":  ctx.Safety.PIIExposure,
 
-		"system":      systemMap,
-		"system_load": ctx.SystemLoad,
-		"timestamp":   ctx.Timestamp,
+		"system":           systemMap,
+		"system_load":      ctx.SystemLoad,
+		"system_call_rate": 0, // TODO: populate from rate buckets
+		"timestamp":        ctx.Timestamp,
 
 		"backend_id":   ctx.BackendID,
 		"backend_type": ctx.BackendType,
@@ -248,12 +260,14 @@ func (e *CELEngine) buildActivation(ctx DecisionContext) (interpreter.Activation
 
 // shouldUpdateDecision determines if the new decision should override the current one
 func shouldUpdateDecision(current, new EnforcerDecision, severityPriority map[SeverityLevel]int) bool {
-	// Action priority: DENY > PENDING_APPROVAL > WARN > ALLOW
+	// Action priority: DENY > PENDING_ADMIN_APPROVAL > PENDING_USER_APPROVAL > WARN > ALLOW
 	actionPriority := map[Action]int{
-		ActionDeny:            4,
-		ActionPendingApproval: 3,
-		ActionWarn:            2,
-		ActionAllow:           1,
+		ActionDeny:                 5,
+		ActionPendingAdminApproval: 4,
+		ActionPendingApproval:      4, // Legacy alias
+		ActionPendingUserApproval:  3,
+		ActionWarn:                 2,
+		ActionAllow:                1,
 	}
 
 	// Compare action priority

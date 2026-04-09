@@ -231,14 +231,16 @@ func (s *MCPBridgeServer) handleToolsList(w http.ResponseWriter, r *http.Request
 
 // handleToolsCall routes the call to the correct backend based on tool name prefix
 func (s *MCPBridgeServer) handleToolsCall(w http.ResponseWriter, r *http.Request, userID string, body []byte, id interface{}) {
-	// Extract tool name and arguments for enforcer check
+	// Extract tool name, arguments, and justification for enforcer check
 	var toolName string
 	var toolArgs map[string]interface{}
+	var justification string
 	var toolReq map[string]interface{}
 	if err := json.Unmarshal(body, &toolReq); err == nil {
 		if params, ok := toolReq["params"].(map[string]interface{}); ok {
 			toolName, _ = params["name"].(string)
 			toolArgs, _ = params["arguments"].(map[string]interface{})
+			justification, _ = params["justification"].(string)
 		}
 	}
 
@@ -254,7 +256,7 @@ func (s *MCPBridgeServer) handleToolsCall(w http.ResponseWriter, r *http.Request
 	if s.app.enforcer != nil && toolName != "" && !strings.HasPrefix(toolName, "mcpbridge_") {
 		ctx := r.Context()
 		shared.Infof("Enforcer: Evaluating tool call - user=%s tool=%s backend=%s", userID, toolName, backendID)
-		decision, err := s.app.enforcer.HandleToolCall(ctx, userID, toolName, toolArgs, backendID)
+		decision, err := s.app.enforcer.HandleToolCall(ctx, userID, toolName, toolArgs, backendID, justification)
 		if err != nil {
 			shared.Errorf("Enforcer error: %v", err)
 		} else {
@@ -280,15 +282,16 @@ func (s *MCPBridgeServer) handleToolsCall(w http.ResponseWriter, r *http.Request
 				})
 				return
 
-			case enforcer.ActionPendingApproval:
+			case enforcer.ActionPendingApproval, enforcer.ActionPendingAdminApproval:
 				shared.Debugf("Enforcer PENDING_APPROVAL for tool: %s", toolName)
 				approvalID, err := s.app.enforcer.RequestApproval(ctx, enforcer.DecisionContext{
-					UserID:      userID,
-					Tool:        toolName,
-					Args:        toolArgs,
-					BackendID:   backendID,
-					RequestBody: string(body),
-				}, decision.PolicyID, decision.Message)
+					UserID:        userID,
+					Tool:          toolName,
+					Args:          toolArgs,
+					BackendID:     backendID,
+					Justification: justification,
+					RequestBody:   string(body),
+				}, decision.PolicyID, decision.Message, "admin")
 				if err != nil {
 					shared.Errorf("Failed to create approval request: %v", err)
 					w.Header().Set("Content-Type", "application/json")
@@ -324,6 +327,49 @@ func (s *MCPBridgeServer) handleToolsCall(w http.ResponseWriter, r *http.Request
 						"requires_human": true,
 						"status_url":     "/web/admin/enforcer/api/approval-status?id=" + approvalID,
 						"instructions":   "Use mcpbridge_check_approval_status tool with approval_id: " + approvalID + " to check if this request was approved.",
+					},
+				})
+				return
+
+			case enforcer.ActionPendingUserApproval:
+				shared.Debugf("Enforcer PENDING_USER_APPROVAL for tool: %s", toolName)
+				approvalID, err := s.app.enforcer.RequestApproval(ctx, enforcer.DecisionContext{
+					UserID:        userID,
+					Tool:          toolName,
+					Args:          toolArgs,
+					BackendID:     backendID,
+					Justification: justification,
+					RequestBody:   string(body),
+				}, decision.PolicyID, decision.Message, "user")
+				if err != nil {
+					shared.Errorf("Failed to create user approval request: %v", err)
+					w.Header().Set("Content-Type", "application/json")
+					w.WriteHeader(http.StatusInternalServerError)
+					json.NewEncoder(w).Encode(map[string]interface{}{
+						"jsonrpc": "2.0",
+						"id":      id,
+						"error": map[string]interface{}{
+							"code":    -32002,
+							"message": "Failed to create approval request: " + err.Error(),
+						},
+					})
+					return
+				}
+				// Return 202 Accepted with user approval details
+				respID := id
+				if respID == nil {
+					respID = 1
+				}
+				w.Header().Set("Content-Type", "application/json")
+				w.Header().Set("X-Enforcer-Status", "pending_user_approval")
+				w.WriteHeader(http.StatusAccepted)
+				json.NewEncoder(w).Encode(map[string]interface{}{
+					"jsonrpc": "2.0",
+					"id":      respID,
+					"result": map[string]interface{}{
+						"status":      "pending_user_approval",
+						"approval_id": approvalID,
+						"message":     decision.Message,
 					},
 				})
 				return
