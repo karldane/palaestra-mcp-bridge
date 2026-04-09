@@ -21,7 +21,7 @@ func NewEnforcerStore(db *sql.DB) enforcer.EnforcerStore {
 	return &EnforcerStore{db: db}
 }
 
-const approvalColumns = `id, user_id, user_email, user_role, trust_level, tool_name, tool_args, backend_id, safety_profile, status, requested_at, expires_at, approved_by, approved_at, denial_reason, comments, policy_id, violation_msg, request_body, response_status, response_body, executed_at, error_msg`
+const approvalColumns = `id, user_id, user_email, user_role, trust_level, tool_name, tool_args, backend_id, safety_profile, status, queue_type, justification, requested_at, expires_at, approved_by, approved_at, denial_reason, comments, policy_id, violation_msg, request_body, response_status, response_body, executed_at, error_msg`
 
 // CreatePolicy inserts a new policy
 func (s *EnforcerStore) CreatePolicy(policy enforcer.PolicyRow) error {
@@ -93,10 +93,10 @@ func (s *EnforcerStore) UpdatePolicy(policy enforcer.PolicyRow) error {
 
 // CreateApprovalRequest inserts a new approval request
 func (s *EnforcerStore) CreateApprovalRequest(req enforcer.ApprovalRequestRow) error {
-	_, err := s.db.Exec(`INSERT INTO enforcer_approvals (id, user_id, user_email, user_role, trust_level, tool_name, tool_args, backend_id, safety_profile, status, requested_at, expires_at, policy_id, violation_msg, request_body) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+	_, err := s.db.Exec(`INSERT INTO enforcer_approvals (id, user_id, user_email, user_role, trust_level, tool_name, tool_args, backend_id, safety_profile, status, queue_type, justification, requested_at, expires_at, policy_id, violation_msg, request_body) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		req.ID, req.UserID, req.UserEmail, req.UserRole, req.TrustLevel, req.ToolName,
-		req.ToolArgs, req.BackendID, req.SafetyProfile, req.Status, req.RequestedAt,
-		req.ExpiresAt, req.PolicyID, req.ViolationMsg, req.RequestBody)
+		req.ToolArgs, req.BackendID, req.SafetyProfile, req.Status, req.QueueType,
+		req.Justification, req.RequestedAt, req.ExpiresAt, req.PolicyID, req.ViolationMsg, req.RequestBody)
 	return err
 }
 
@@ -105,10 +105,10 @@ func (s *EnforcerStore) GetApprovalRequest(id string) (enforcer.ApprovalRequestR
 	var req enforcer.ApprovalRequestRow
 	err := s.db.QueryRow(`SELECT `+approvalColumns+` FROM enforcer_approvals WHERE id = ?`, id).Scan(
 		&req.ID, &req.UserID, &req.UserEmail, &req.UserRole, &req.TrustLevel, &req.ToolName,
-		&req.ToolArgs, &req.BackendID, &req.SafetyProfile, &req.Status, &req.RequestedAt,
-		&req.ExpiresAt, &req.ApprovedBy, &req.ApprovedAt, &req.DenialReason, &req.Comments,
-		&req.PolicyID, &req.ViolationMsg, &req.RequestBody, &req.ResponseStatus,
-		&req.ResponseBody, &req.ExecutedAt, &req.ErrorMsg)
+		&req.ToolArgs, &req.BackendID, &req.SafetyProfile, &req.Status, &req.QueueType,
+		&req.Justification, &req.RequestedAt, &req.ExpiresAt, &req.ApprovedBy, &req.ApprovedAt,
+		&req.DenialReason, &req.Comments, &req.PolicyID, &req.ViolationMsg, &req.RequestBody,
+		&req.ResponseStatus, &req.ResponseBody, &req.ExecutedAt, &req.ErrorMsg)
 	return req, err
 }
 
@@ -125,7 +125,7 @@ func (s *EnforcerStore) ListPendingApprovals() ([]enforcer.ApprovalRequestRow, e
 		var req enforcer.ApprovalRequestRow
 		err := rows.Scan(&req.ID, &req.UserID, &req.UserEmail, &req.UserRole, &req.TrustLevel,
 			&req.ToolName, &req.ToolArgs, &req.BackendID, &req.SafetyProfile, &req.Status,
-			&req.RequestedAt, &req.ExpiresAt, &req.ApprovedBy, &req.ApprovedAt,
+			&req.QueueType, &req.Justification, &req.RequestedAt, &req.ExpiresAt, &req.ApprovedBy, &req.ApprovedAt,
 			&req.DenialReason, &req.Comments, &req.PolicyID, &req.ViolationMsg, &req.RequestBody,
 			&req.ResponseStatus, &req.ResponseBody, &req.ExecutedAt, &req.ErrorMsg)
 		if err != nil {
@@ -149,7 +149,7 @@ func (s *EnforcerStore) ListAllApprovals() ([]enforcer.ApprovalRequestRow, error
 		var req enforcer.ApprovalRequestRow
 		err := rows.Scan(&req.ID, &req.UserID, &req.UserEmail, &req.UserRole, &req.TrustLevel,
 			&req.ToolName, &req.ToolArgs, &req.BackendID, &req.SafetyProfile, &req.Status,
-			&req.RequestedAt, &req.ExpiresAt, &req.ApprovedBy, &req.ApprovedAt,
+			&req.QueueType, &req.Justification, &req.RequestedAt, &req.ExpiresAt, &req.ApprovedBy, &req.ApprovedAt,
 			&req.DenialReason, &req.Comments, &req.PolicyID, &req.ViolationMsg, &req.RequestBody,
 			&req.ResponseStatus, &req.ResponseBody, &req.ExecutedAt, &req.ErrorMsg)
 		if err != nil {
@@ -444,4 +444,66 @@ func (s *EnforcerStore) UpsertToolProfile(profile enforcer.ToolProfileRow) error
 		profile.ResourceCost, hitl, pii, idemp, profile.RawProfile, profile.ScannedAt,
 	)
 	return err
+}
+
+// ListUserPendingApprovals retrieves all pending user approval requests
+func (s *EnforcerStore) ListUserPendingApprovals() ([]enforcer.ApprovalRequestRow, error) {
+	rows, err := s.db.Query(`SELECT ` + approvalColumns + ` FROM enforcer_approvals WHERE status = 'PENDING' AND queue_type = 'user' ORDER BY requested_at ASC`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var requests []enforcer.ApprovalRequestRow
+	for rows.Next() {
+		var req enforcer.ApprovalRequestRow
+		err := rows.Scan(&req.ID, &req.UserID, &req.UserEmail, &req.UserRole, &req.TrustLevel,
+			&req.ToolName, &req.ToolArgs, &req.BackendID, &req.SafetyProfile, &req.Status,
+			&req.QueueType, &req.Justification, &req.RequestedAt, &req.ExpiresAt, &req.ApprovedBy, &req.ApprovedAt,
+			&req.DenialReason, &req.Comments, &req.PolicyID, &req.ViolationMsg, &req.RequestBody,
+			&req.ResponseStatus, &req.ResponseBody, &req.ExecutedAt, &req.ErrorMsg)
+		if err != nil {
+			return nil, err
+		}
+		requests = append(requests, req)
+	}
+	return requests, rows.Err()
+}
+
+// ListAdminPendingApprovals retrieves all pending admin approval requests
+func (s *EnforcerStore) ListAdminPendingApprovals() ([]enforcer.ApprovalRequestRow, error) {
+	rows, err := s.db.Query(`SELECT ` + approvalColumns + ` FROM enforcer_approvals WHERE status = 'PENDING' AND queue_type = 'admin' ORDER BY requested_at ASC`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var requests []enforcer.ApprovalRequestRow
+	for rows.Next() {
+		var req enforcer.ApprovalRequestRow
+		err := rows.Scan(&req.ID, &req.UserID, &req.UserEmail, &req.UserRole, &req.TrustLevel,
+			&req.ToolName, &req.ToolArgs, &req.BackendID, &req.SafetyProfile, &req.Status,
+			&req.QueueType, &req.Justification, &req.RequestedAt, &req.ExpiresAt, &req.ApprovedBy, &req.ApprovedAt,
+			&req.DenialReason, &req.Comments, &req.PolicyID, &req.ViolationMsg, &req.RequestBody,
+			&req.ResponseStatus, &req.ResponseBody, &req.ExecutedAt, &req.ErrorMsg)
+		if err != nil {
+			return nil, err
+		}
+		requests = append(requests, req)
+	}
+	return requests, rows.Err()
+}
+
+// CountUserPendingApprovals returns the count of pending user approval requests
+func (s *EnforcerStore) CountUserPendingApprovals() (int, error) {
+	var count int
+	err := s.db.QueryRow(`SELECT COUNT(*) FROM enforcer_approvals WHERE status = 'PENDING' AND queue_type = 'user'`).Scan(&count)
+	return count, err
+}
+
+// CountAdminPendingApprovals returns the count of pending admin approval requests
+func (s *EnforcerStore) CountAdminPendingApprovals() (int, error) {
+	var count int
+	err := s.db.QueryRow(`SELECT COUNT(*) FROM enforcer_approvals WHERE status = 'PENDING' AND queue_type = 'admin'`).Scan(&count)
+	return count, err
 }

@@ -75,7 +75,7 @@ func (h *EnforcerHandler) ListPendingApprovals(w http.ResponseWriter, r *http.Re
 		return
 	}
 
-	approvals, err := h.enforcer.ListPendingApprovals()
+	approvals, err := h.enforcer.ListAdminPendingApprovals()
 	if err != nil {
 		http.Error(w, "Failed to list approvals: "+err.Error(), http.StatusInternalServerError)
 		return
@@ -127,7 +127,7 @@ func (h *EnforcerHandler) QueuePageHandler(w http.ResponseWriter, r *http.Reques
 		"DeniedCount":    0,
 	}
 
-	approvals, err := h.enforcer.ListAllApprovals()
+	approvals, err := h.enforcer.ListAdminPendingApprovals()
 	if err == nil {
 		views := make([]map[string]interface{}, 0, len(approvals))
 		pendingCount := 0
@@ -425,6 +425,31 @@ func (h *EnforcerHandler) PoliciesPageHandler(w http.ResponseWriter, r *http.Req
 	}
 
 	if err := h.templates.ExecuteTemplate(w, "admin_enforcer_policies.html", data); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+	}
+}
+
+// UserPoliciesPageHandler displays a read-only view of policies for regular users
+func (h *EnforcerHandler) UserPoliciesPageHandler(w http.ResponseWriter, r *http.Request) {
+	user := userFromContext(r)
+	if user == nil {
+		http.Error(w, "Unauthorized", http.StatusUnauthorized)
+		return
+	}
+
+	data := map[string]interface{}{
+		"User": user,
+		"Data": []interface{}{},
+	}
+
+	if h.enforcer != nil {
+		policies, err := h.enforcer.ListPolicies()
+		if err == nil {
+			data["Data"] = policies
+		}
+	}
+
+	if err := h.templates.ExecuteTemplate(w, "user_enforcer_policies.html", data); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 	}
 }
@@ -819,4 +844,331 @@ func (h *EnforcerHandler) OverrideDeleteHandler(w http.ResponseWriter, r *http.R
 	}
 
 	http.Redirect(w, r, "/web/admin/enforcer/profiles", http.StatusSeeOther)
+}
+
+// UserQueuePageHandler displays the user's approval queue
+func (h *EnforcerHandler) UserQueuePageHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	user := userFromContext(r)
+	if user == nil {
+		http.Error(w, "Unauthorized", http.StatusUnauthorized)
+		return
+	}
+
+	data := map[string]interface{}{
+		"Title":          "My Approval Requests",
+		"User":           user,
+		"Approvals":      []map[string]interface{}{},
+		"PendingCount":   0,
+		"CompletedCount": 0,
+		"DeniedCount":    0,
+	}
+
+	approvals, err := h.enforcer.ListUserPendingApprovals()
+	if err == nil {
+		views := make([]map[string]interface{}, 0, len(approvals))
+		pendingCount := 0
+		completedCount := 0
+		deniedCount := 0
+
+		for _, a := range approvals {
+			var prettyArgs string
+			if argsJSON, err := json.MarshalIndent(json.RawMessage(a.ToolArgs), "", "  "); err == nil {
+				prettyArgs = string(argsJSON)
+			} else {
+				prettyArgs = a.ToolArgs
+			}
+
+			view := map[string]interface{}{
+				"ID":            a.ID,
+				"Status":        a.Status,
+				"StatusClass":   getStatusClass(a.Status),
+				"ToolName":      a.ToolName,
+				"UserID":        a.UserID,
+				"UserEmail":     a.UserEmail,
+				"ToolArgs":      prettyArgs,
+				"PolicyID":      a.PolicyID,
+				"Message":       a.ViolationMsg,
+				"RequestedAt":   a.RequestedAt,
+				"ExpiresAt":     a.ExpiresAt,
+				"Justification": a.Justification,
+			}
+
+			if a.ApprovedBy.Valid {
+				view["ApprovedBy"] = a.ApprovedBy.String
+			}
+			if a.ApprovedAt.Valid {
+				view["ApprovedAt"] = a.ApprovedAt.Time
+			}
+			if a.ResponseStatus > 0 {
+				view["ResponseStatus"] = a.ResponseStatus
+			}
+			if a.ResponseBody != "" {
+				view["ResponseBody"] = a.ResponseBody
+			}
+			if a.ErrorMsg != "" {
+				view["ErrorMsg"] = a.ErrorMsg
+			}
+			if a.DenialReason != "" {
+				view["DenialReason"] = a.DenialReason
+			}
+			if a.Comments != "" {
+				view["Comments"] = a.Comments
+			}
+
+			switch a.Status {
+			case "PENDING":
+				pendingCount++
+			case "COMPLETED", "EXECUTING":
+				completedCount++
+			case "DENIED", "EXPIRED", "FAILED":
+				deniedCount++
+			}
+
+			views = append(views, view)
+		}
+		data["Approvals"] = views
+		data["PendingCount"] = pendingCount
+		data["CompletedCount"] = completedCount
+		data["DeniedCount"] = deniedCount
+	}
+
+	if err := h.templates.ExecuteTemplate(w, "user_enforcer_queue.html", data); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+	}
+}
+
+// UserApproveRequest approves a user's own pending request
+func (h *EnforcerHandler) UserApproveRequest(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	user := userFromContext(r)
+	if user == nil {
+		http.Error(w, "Unauthorized", http.StatusUnauthorized)
+		return
+	}
+
+	var req struct {
+		ApprovalID string `json:"approval_id"`
+		Comments   string `json:"comments"`
+	}
+
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "Invalid JSON", http.StatusBadRequest)
+		return
+	}
+
+	if req.ApprovalID == "" {
+		http.Error(w, "approval_id is required", http.StatusBadRequest)
+		return
+	}
+
+	// ExecuteApprovedRequest approves, executes the original tool call, and stores
+	// the result — all in one step.
+	updatedReq, err := h.enforcer.ExecuteApprovedRequest(req.ApprovalID, user.ID, req.Comments)
+	if err != nil {
+		http.Error(w, "Failed to approve and execute: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"success":         true,
+		"message":         "Request approved and executed",
+		"status":          updatedReq.Status,
+		"response_status": updatedReq.ResponseStatus,
+		"response_body":   updatedReq.ResponseBody,
+		"error_msg":       updatedReq.ErrorMsg,
+	})
+}
+
+// UserDenyRequest denies a user's own pending request
+func (h *EnforcerHandler) UserDenyRequest(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	user := userFromContext(r)
+	if user == nil {
+		http.Error(w, "Unauthorized", http.StatusUnauthorized)
+		return
+	}
+
+	var req struct {
+		ApprovalID string `json:"approval_id"`
+		Reason     string `json:"reason"`
+	}
+
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "Invalid JSON", http.StatusBadRequest)
+		return
+	}
+
+	if req.ApprovalID == "" {
+		http.Error(w, "approval_id is required", http.StatusBadRequest)
+		return
+	}
+
+	if err := h.enforcer.DenyRequest(req.ApprovalID, user.ID, req.Reason); err != nil {
+		http.Error(w, "Failed to deny: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"success": true,
+		"message": "Request denied",
+	})
+}
+
+// UserOverridesPageHandler displays the user's tool overrides
+func (h *EnforcerHandler) UserOverridesPageHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	user := userFromContext(r)
+	if user == nil {
+		http.Error(w, "Unauthorized", http.StatusUnauthorized)
+		return
+	}
+
+	enforcerStore := store.NewEnforcerStore(h.store.DB())
+	overrides, err := enforcerStore.ListOverrides()
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	// Filter overrides to only show those that require user approval (not admin)
+	var userOverrides []enforcer.EnforcerOverrideRow
+	for _, override := range overrides {
+		// Only show overrides for tools that require user-level HITL
+		if h.enforcer != nil {
+			resolver := h.enforcer.GetResolver()
+			profile, err := resolver.Resolve(override.ToolName, override.BackendID)
+			if err == nil && profile.RequiresHITL {
+				userOverrides = append(userOverrides, override)
+			}
+		} else {
+			// If enforcer is not available, show all overrides
+			userOverrides = append(userOverrides, override)
+		}
+	}
+
+	data := map[string]interface{}{
+		"User":      user,
+		"Overrides": userOverrides,
+		"Prefill": map[string]string{
+			"tool_name":  r.URL.Query().Get("tool_name"),
+			"backend_id": r.URL.Query().Get("backend_id"),
+		},
+	}
+
+	if err := h.templates.ExecuteTemplate(w, "user_enforcer_overrides.html", data); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+	}
+}
+
+// UserOverrideCreateHandler creates or updates a user's tool override
+func (h *EnforcerHandler) UserOverrideCreateHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	user := userFromContext(r)
+	if user == nil {
+		http.Error(w, "Unauthorized", http.StatusUnauthorized)
+		return
+	}
+
+	if err := r.ParseForm(); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	hitl := r.FormValue("requires_hitl") == "on"
+	pii := r.FormValue("pii_exposure") == "on"
+
+	override := enforcer.EnforcerOverrideRow{
+		ID:           r.FormValue("id"),
+		ToolName:     r.FormValue("tool_name"),
+		BackendID:    r.FormValue("backend_id"),
+		RiskLevel:    r.FormValue("risk_level"),
+		ImpactScope:  r.FormValue("impact_scope"),
+		ResourceCost: 5,
+		RequiresHITL: hitl,
+		PIIExposure:  pii,
+		CreatedAt:    time.Now(),
+		UpdatedAt:    time.Now(),
+	}
+
+	if override.ID == "" {
+		override.ID = fmt.Sprintf("override-%s-%s", override.BackendID, override.ToolName)
+	}
+
+	enforcerStore := store.NewEnforcerStore(h.store.DB())
+	if err := enforcerStore.UpsertOverride(override); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	if h.enforcer != nil {
+		profile := enforcer.SafetyProfile{
+			ToolName:     override.ToolName,
+			BackendID:    override.BackendID,
+			Risk:         enforcer.RiskLevel(override.RiskLevel),
+			Impact:       enforcer.ImpactScope(override.ImpactScope),
+			Cost:         override.ResourceCost,
+			RequiresHITL: override.RequiresHITL,
+			PIIExposure:  override.PIIExposure,
+			Source:       "override",
+		}
+		h.enforcer.RegisterOverride(override.ToolName, override.BackendID, profile)
+	}
+
+	http.Redirect(w, r, "/web/user/enforcer/overrides", http.StatusSeeOther)
+}
+
+// UserOverrideDeleteHandler deletes a user's tool override
+func (h *EnforcerHandler) UserOverrideDeleteHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	user := userFromContext(r)
+	if user == nil {
+		http.Error(w, "Unauthorized", http.StatusUnauthorized)
+		return
+	}
+
+	toolName := r.URL.Query().Get("tool_name")
+	backendID := r.URL.Query().Get("backend_id")
+	if toolName == "" || backendID == "" {
+		http.Error(w, "tool_name and backend_id are required", http.StatusBadRequest)
+		return
+	}
+
+	enforcerStore := store.NewEnforcerStore(h.store.DB())
+	if err := enforcerStore.DeleteOverride(toolName, backendID); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	if h.enforcer != nil {
+		h.enforcer.RemoveOverride(toolName, backendID)
+	}
+
+	http.Redirect(w, r, "/web/user/enforcer/overrides", http.StatusSeeOther)
 }

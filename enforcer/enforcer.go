@@ -25,6 +25,8 @@ type EnforcerStore interface {
 	CreateApprovalRequest(req ApprovalRequestRow) error
 	GetApprovalRequest(id string) (ApprovalRequestRow, error)
 	ListPendingApprovals() ([]ApprovalRequestRow, error)
+	ListUserPendingApprovals() ([]ApprovalRequestRow, error)
+	ListAdminPendingApprovals() ([]ApprovalRequestRow, error)
 	ListAllApprovals() ([]ApprovalRequestRow, error)
 	ApproveRequest(id string, approverID string, comments string) error
 	DenyRequest(id string, approverID string, reason string) error
@@ -46,6 +48,8 @@ type EnforcerStore interface {
 	UpsertRateLimitBucketConfig(config RateLimitBucketConfigRow) error
 	ListRateLimitStates() ([]RateLimitStateRow, error)
 	UpsertRateLimitState(state RateLimitStateRow) error
+	CountUserPendingApprovals() (int, error)
+	CountAdminPendingApprovals() (int, error)
 }
 
 // EnforcerOverrideRow represents a manual override for a tool's safety profile.
@@ -552,9 +556,34 @@ func (e *Enforcer) ListPendingApprovals() ([]ApprovalRequestRow, error) {
 	return e.store.ListPendingApprovals()
 }
 
+// ListUserPendingApprovals returns all pending user approval requests
+func (e *Enforcer) ListUserPendingApprovals() ([]ApprovalRequestRow, error) {
+	return e.store.ListUserPendingApprovals()
+}
+
+// ListAdminPendingApprovals returns all pending admin approval requests
+func (e *Enforcer) ListAdminPendingApprovals() ([]ApprovalRequestRow, error) {
+	return e.store.ListAdminPendingApprovals()
+}
+
+// CountUserPendingApprovals returns the count of pending user approval requests
+func (e *Enforcer) CountUserPendingApprovals() (int, error) {
+	return e.store.CountUserPendingApprovals()
+}
+
+// CountAdminPendingApprovals returns the count of pending admin approval requests
+func (e *Enforcer) CountAdminPendingApprovals() (int, error) {
+	return e.store.CountAdminPendingApprovals()
+}
+
 // GetApprovalRequest retrieves an approval request by ID
 func (e *Enforcer) GetApprovalRequest(id string) (ApprovalRequestRow, error) {
 	return e.store.GetApprovalRequest(id)
+}
+
+// GetResolver returns the metadata resolver
+func (e *Enforcer) GetResolver() *MetadataResolver {
+	return e.resolver
 }
 
 // CheckApproval checks if an approval request has been approved
