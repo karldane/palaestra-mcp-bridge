@@ -867,17 +867,17 @@ func (h *EnforcerHandler) UserQueuePageHandler(w http.ResponseWriter, r *http.Re
 		"Title":          "My Approval Requests",
 		"User":           user,
 		"Approvals":      []map[string]interface{}{},
+		"AllApprovals":   []map[string]interface{}{},
 		"PendingCount":   0,
 		"CompletedCount": 0,
 		"DeniedCount":    0,
 	}
 
+	// Pending tab: only PENDING records (used for approve/cancel actions)
 	approvals, err := h.enforcer.ListUserPendingApprovals()
 	if err == nil {
 		views := make([]map[string]interface{}, 0, len(approvals))
 		pendingCount := 0
-		completedCount := 0
-		deniedCount := 0
 
 		for _, a := range approvals {
 			var prettyArgs string
@@ -901,7 +901,45 @@ func (h *EnforcerHandler) UserQueuePageHandler(w http.ResponseWriter, r *http.Re
 				"ExpiresAt":     a.ExpiresAt,
 				"Justification": a.Justification,
 			}
+			if a.ApprovedBy.Valid {
+				view["ApprovedBy"] = a.ApprovedBy.String
+			}
+			pendingCount++
+			views = append(views, view)
+		}
+		data["Approvals"] = views
+		data["PendingCount"] = pendingCount
+	}
 
+	// All Requests tab: all statuses for this user, most recent first
+	allApprovals, err := h.enforcer.ListUserAllApprovals(user.ID)
+	if err == nil {
+		allViews := make([]map[string]interface{}, 0, len(allApprovals))
+		completedCount := 0
+		deniedCount := 0
+
+		for _, a := range allApprovals {
+			var prettyArgs string
+			if argsJSON, err := json.MarshalIndent(json.RawMessage(a.ToolArgs), "", "  "); err == nil {
+				prettyArgs = string(argsJSON)
+			} else {
+				prettyArgs = a.ToolArgs
+			}
+
+			view := map[string]interface{}{
+				"ID":            a.ID,
+				"Status":        a.Status,
+				"StatusClass":   getStatusClass(a.Status),
+				"ToolName":      a.ToolName,
+				"UserID":        a.UserID,
+				"UserEmail":     a.UserEmail,
+				"ToolArgs":      prettyArgs,
+				"PolicyID":      a.PolicyID,
+				"Message":       a.ViolationMsg,
+				"RequestedAt":   a.RequestedAt,
+				"ExpiresAt":     a.ExpiresAt,
+				"Justification": a.Justification,
+			}
 			if a.ApprovedBy.Valid {
 				view["ApprovedBy"] = a.ApprovedBy.String
 			}
@@ -925,18 +963,15 @@ func (h *EnforcerHandler) UserQueuePageHandler(w http.ResponseWriter, r *http.Re
 			}
 
 			switch a.Status {
-			case "PENDING":
-				pendingCount++
 			case "COMPLETED", "EXECUTING":
 				completedCount++
 			case "DENIED", "EXPIRED", "FAILED":
 				deniedCount++
 			}
 
-			views = append(views, view)
+			allViews = append(allViews, view)
 		}
-		data["Approvals"] = views
-		data["PendingCount"] = pendingCount
+		data["AllApprovals"] = allViews
 		data["CompletedCount"] = completedCount
 		data["DeniedCount"] = deniedCount
 	}

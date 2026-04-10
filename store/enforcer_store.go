@@ -535,6 +535,32 @@ func (s *EnforcerStore) ListUserPendingApprovals() ([]enforcer.ApprovalRequestRo
 	return requests, rows.Err()
 }
 
+// ListUserAllApprovals retrieves all approval requests for a specific user
+// across all statuses (PENDING, COMPLETED, DENIED, FAILED, EXPIRED, EXECUTING).
+// Used for the "All Requests" tab in the user queue UI.
+func (s *EnforcerStore) ListUserAllApprovals(userID string) ([]enforcer.ApprovalRequestRow, error) {
+	rows, err := s.db.Query(`SELECT `+approvalColumns+` FROM enforcer_approvals WHERE user_id = ? AND queue_type = 'user' ORDER BY requested_at DESC`, userID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var requests []enforcer.ApprovalRequestRow
+	for rows.Next() {
+		var req enforcer.ApprovalRequestRow
+		err := rows.Scan(&req.ID, &req.UserID, &req.UserEmail, &req.UserRole, &req.TrustLevel,
+			&req.ToolName, &req.ToolArgs, &req.BackendID, &req.SafetyProfile, &req.Status,
+			&req.QueueType, &req.Justification, &req.RequestedAt, &req.ExpiresAt, &req.ApprovedBy, &req.ApprovedAt,
+			&req.DenialReason, &req.Comments, &req.PolicyID, &req.ViolationMsg, &req.RequestBody,
+			&req.ResponseStatus, &req.ResponseBody, &req.ExecutedAt, &req.ErrorMsg)
+		if err != nil {
+			return nil, err
+		}
+		requests = append(requests, req)
+	}
+	return requests, rows.Err()
+}
+
 // ListAdminPendingApprovals retrieves all pending admin approval requests
 func (s *EnforcerStore) ListAdminPendingApprovals() ([]enforcer.ApprovalRequestRow, error) {
 	rows, err := s.db.Query(`SELECT ` + approvalColumns + ` FROM enforcer_approvals WHERE status = 'PENDING' AND queue_type = 'admin' ORDER BY requested_at ASC`)

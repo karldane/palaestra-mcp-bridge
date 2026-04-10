@@ -18,7 +18,7 @@
     <button class="tab-btn" onclick="showTab('all')">All Requests</button>
   </div>
 
-  {{if .Approvals}}
+  {{if or .Approvals .AllApprovals}}
   <div id="pending-tab" class="tab-content active">
     <div class="card-stack">
       {{range .Approvals}}
@@ -84,7 +84,7 @@
 
   <div id="all-tab" class="tab-content">
     <div class="card-stack">
-      {{range .Approvals}}
+      {{range .AllApprovals}}
       <div class="card approval-card status-{{.Status}}" id="approval-all-{{.ID}}">
         <div class="approval-header">
           <div class="approval-info">

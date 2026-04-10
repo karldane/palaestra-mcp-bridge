@@ -26,6 +26,7 @@ type EnforcerStore interface {
 	GetApprovalRequest(id string) (ApprovalRequestRow, error)
 	ListPendingApprovals() ([]ApprovalRequestRow, error)
 	ListUserPendingApprovals() ([]ApprovalRequestRow, error)
+	ListUserAllApprovals(userID string) ([]ApprovalRequestRow, error)
 	ListAdminPendingApprovals() ([]ApprovalRequestRow, error)
 	ListAllApprovals() ([]ApprovalRequestRow, error)
 	ApproveRequest(id string, approverID string, comments string) error
@@ -598,6 +599,11 @@ func (e *Enforcer) ListPendingApprovals() ([]ApprovalRequestRow, error) {
 // ListUserPendingApprovals returns all pending user approval requests
 func (e *Enforcer) ListUserPendingApprovals() ([]ApprovalRequestRow, error) {
 	return e.store.ListUserPendingApprovals()
+}
+
+// ListUserAllApprovals returns all approval requests for a specific user across all statuses
+func (e *Enforcer) ListUserAllApprovals(userID string) ([]ApprovalRequestRow, error) {
+	return e.store.ListUserAllApprovals(userID)
 }
 
 // ListAdminPendingApprovals returns all pending admin approval requests
