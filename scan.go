@@ -29,7 +29,7 @@ func scanSelfReportingBackends(st *store.Store, logf, warnf LogFn) {
 	scanned := 0
 
 	for _, b := range backends {
-		if !b.SelfReporting {
+		if !b.SelfReporting || !b.Enabled {
 			continue
 		}
 
