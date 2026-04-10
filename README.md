@@ -30,8 +30,19 @@ admin interface.
   levels (debug/info/warn/error), ideal for Kubernetes
 - **Security-first** &mdash; tokens and secrets never logged; clean
   environment (no system env vars) passed to backends
-- **Human-in-the-Loop (HITL) approval workflow** &mdash; administrative
-  approval of tool execution with live feedback and retry capabilities
+- **Human-in-the-Loop (HITL) approval workflow** &mdash; tiered escalation
+  model: Safe → Rate-Limited → User HITL → Admin HITL; users can approve
+  their own queue items and configure personal safety overrides
+- **Mandatory justification fields** &mdash; every tool call can require a
+  justification string; gate configurable via `MinJustificationLength`
+- **Rate bucket enforcement** &mdash; per-tool call rate tracking exposed
+  as `system_call_rate` in CEL policy expressions
+- **Locked policies** &mdash; admin-locked policies cannot be overridden by
+  user safety overrides
+- **Personal safety overrides** &mdash; users can escalate specific tools to
+  user-tier HITL without admin intervention
+- **Real-time queue SSE** &mdash; users receive live pending-count updates
+  via `/web/user/enforcer/events`
 - **Enhanced precache tooling** &mdash; `--precache-tooling` flag now caches
   both tool definitions and safety profiles for faster startup
 
@@ -75,6 +86,12 @@ go build -o mcp-bridge .
 │   └── muxer.go         # Tool-prefix routing, env builder (17 tests)
 ├── credential/
 │   └── secret.go        # Legacy secret interface (9 tests)
+├── enforcer/
+│   ├── enforcer.go      # Core enforcer, HandleToolCall, interfaces
+│   ├── cel_engine.go    # CEL policy evaluator, call.justification, system_call_rate
+│   ├── resolver.go      # Tool profile resolution (4-tier chain)
+│   ├── types.go         # DecisionContext, EnforcerConfig, action constants
+│   └── enforcer_test.go # Enforcer unit tests (10)
 ├── web/
 │   └── web.go           # Admin/user web handlers (48 tests)
 ├── templates/           # HTML templates (login, dashboard, admin, etc.)
@@ -82,7 +99,7 @@ go build -o mcp-bridge .
 └── docs/                # Design specs and project docs
 ```
 
-**216 tests** across 8 packages.
+**216+ tests** across 9 packages (including 10 new enforcer unit tests).
 
 ## API Reference
 
@@ -107,14 +124,24 @@ go build -o mcp-bridge .
 
 ### Web UI Endpoints (cookie auth)
 
-| Endpoint              | Description                |
-|-----------------------|----------------------------|
-| `/web/login`          | Login page                 |
-| `/web/dashboard`      | User dashboard             |
-| `/web/tokens`         | Manage API tokens          |
-| `/web/password`       | Change password            |
-| `/web/admin/users`    | Admin: manage users        |
-| `/web/admin/backends` | Admin: manage backends     |
+| Endpoint                                   | Description                                     |
+|--------------------------------------------|-------------------------------------------------|
+| `/web/login`                               | Login page                                      |
+| `/web/dashboard`                           | User dashboard                                  |
+| `/web/tokens`                              | Manage API tokens                               |
+| `/web/password`                            | Change password                                 |
+| `/web/user/enforcer/queue`                 | User: view & act on personal HITL queue         |
+| `/web/user/enforcer/approvals/:id/approve` | User: approve a queued item                     |
+| `/web/user/enforcer/approvals/:id/deny`    | User: deny a queued item                        |
+| `/web/user/enforcer/overrides`             | User: manage personal safety overrides          |
+| `/web/user/enforcer/policies`              | User: read-only policy visibility               |
+| `/web/user/enforcer/events`                | User: SSE stream of pending queue count         |
+| `/web/admin/users`                         | Admin: manage users                             |
+| `/web/admin/backends`                      | Admin: manage backends                          |
+| `/web/admin/enforcer/queue`                | Admin: admin-tier HITL approval queue           |
+| `/web/admin/enforcer/user-queues`          | Admin: read-only view of all user-tier queues   |
+| `/web/admin/enforcer/policies`             | Admin: manage CEL policies (with locked toggle) |
+| `/web/admin/enforcer/overrides`            | Admin: manage global tool profile overrides     |
 
 ## Configuration
 
