@@ -18,7 +18,6 @@
     <button class="tab-btn" onclick="showTab('all')">All Requests</button>
   </div>
 
-  {{if or .Approvals .AllApprovals}}
   <div id="pending-tab" class="tab-content active">
     <div class="card-stack">
       {{range .Approvals}}
@@ -83,6 +82,7 @@
   </div>
 
   <div id="all-tab" class="tab-content">
+    {{if .AllApprovals}}
     <div class="card-stack">
       {{range .AllApprovals}}
       <div class="card approval-card status-{{.Status}}" id="approval-all-{{.ID}}">
@@ -159,12 +159,12 @@
       </div>
       {{end}}
     </div>
+    {{else}}
+    <div class="card">
+      <p class="text-muted">No approval requests yet. When a tool call requires your approval, it will appear here.</p>
+    </div>
+    {{end}}
   </div>
-  {{else}}
-  <div class="card">
-    <p class="text-muted">No approval requests yet. When a tool call requires your approval, it will appear here.</p>
-  </div>
-  {{end}}
 </div>
 
 <style>
