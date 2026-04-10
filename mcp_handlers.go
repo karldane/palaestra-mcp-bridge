@@ -312,7 +312,14 @@ func handleToolsCall(a *app, w http.ResponseWriter, r *http.Request, userID stri
 	if params, ok := toolReq["params"].(map[string]interface{}); ok {
 		toolName, _ = params["name"].(string)
 		toolArgs, _ = params["arguments"].(map[string]interface{})
-		justification, _ = params["justification"].(string)
+		// Extract justification from arguments (standard MCP field), with fallback
+		if toolArgs != nil {
+			justification, _ = toolArgs["justification"].(string)
+			delete(toolArgs, "justification") // strip before forwarding to backend
+		}
+		if justification == "" {
+			justification, _ = params["justification"].(string) // backwards compat
+		}
 	}
 
 	// Get backend ID from tool name (needed for enforcer)
@@ -323,11 +330,19 @@ func handleToolsCall(a *app, w http.ResponseWriter, r *http.Request, userID stri
 		}
 	}
 
+	// Resolve per-backend SkipJustification flag
+	backendSkipJustification := false
+	if backendID != "" {
+		if b, err := a.store.GetBackend(backendID); err == nil {
+			backendSkipJustification = b.SkipJustification
+		}
+	}
+
 	// Enforcer check - policy enforcement
 	if a.enforcer != nil && toolName != "" && !strings.HasPrefix(toolName, "mcpbridge_") {
 		ctx := r.Context()
 		shared.Infof("Enforcer: Evaluating tool call - user=%s tool=%s backend=%s", userID, toolName, backendID)
-		decision, err := a.enforcer.HandleToolCall(ctx, userID, toolName, toolArgs, backendID, justification)
+		decision, err := a.enforcer.HandleToolCall(ctx, userID, toolName, toolArgs, backendID, justification, enforcer.CallOptions{SkipJustification: backendSkipJustification})
 		if err != nil {
 			shared.Errorf("Enforcer error: %v", err)
 			// Continue anyway - fail open is safer than blocking everything

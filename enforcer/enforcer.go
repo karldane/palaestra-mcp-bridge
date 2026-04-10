@@ -38,7 +38,7 @@ type EnforcerStore interface {
 	DisableKillSwitch(scope string) error
 	CleanupExpiredApprovals() error
 	CleanupOldApprovals(olderThan time.Duration) error
-	LogAuditEvent(requestID string, userID string, toolName string, action string, policyID string, message string, context map[string]interface{}) error
+	LogAuditEvent(requestID string, userID string, toolName string, action string, policyID string, message string, context map[string]interface{}, justification string, arguments map[string]interface{}) error
 	LogAuditRejection(requestID, userID, toolName, justification, rejectionReason string) error
 	GetToolProfile(backendID, toolName string) (ToolProfileRow, error)
 	ListOverrides() ([]EnforcerOverrideRow, error)
@@ -422,7 +422,7 @@ func (e *Enforcer) Evaluate(ctx context.Context, decisionCtx DecisionContext) (E
 }
 
 // HandleToolCall is the main entry point for enforcing policies on tool calls
-func (e *Enforcer) HandleToolCall(ctx context.Context, userID string, toolName string, args map[string]interface{}, backendID string, justification string) (EnforcerDecision, error) {
+func (e *Enforcer) HandleToolCall(ctx context.Context, userID string, toolName string, args map[string]interface{}, backendID string, justification string, opts CallOptions) (EnforcerDecision, error) {
 	// Build decision context
 	decisionCtx := DecisionContext{
 		UserID:        userID,
@@ -453,10 +453,9 @@ func (e *Enforcer) HandleToolCall(ctx context.Context, userID string, toolName s
 		return EnforcerDecision{}, fmt.Errorf("failed to resolve safety profile: %w", err)
 	}
 	decisionCtx.Safety = profile
-	fmt.Printf("DEBUG: HandleToolCall resolved profile - Risk=%s Impact=%s Cost=%d\n", profile.Risk, profile.Impact, profile.Cost)
 
 	// Pre-policy justification validation gate
-	if e.config.MinJustificationLength > 0 {
+	if !opts.SkipJustification && e.config.MinJustificationLength > 0 {
 		if justification == "" {
 			_ = e.store.LogAuditRejection(generateID(), userID, toolName, justification, "missing_justification")
 			return EnforcerDecision{
@@ -518,7 +517,6 @@ func (e *Enforcer) HandleToolCall(ctx context.Context, userID string, toolName s
 	if err != nil {
 		return EnforcerDecision{}, err
 	}
-	fmt.Printf("DEBUG: HandleToolCall decision - Action=%s PolicyID=%s\n", decision.Action, decision.PolicyID)
 	return decision, nil
 }
 
@@ -598,6 +596,11 @@ func (e *Enforcer) CountAdminPendingApprovals() (int, error) {
 // GetApprovalRequest retrieves an approval request by ID
 func (e *Enforcer) GetApprovalRequest(id string) (ApprovalRequestRow, error) {
 	return e.store.GetApprovalRequest(id)
+}
+
+// Config returns a copy of the enforcer configuration.
+func (e *Enforcer) Config() EnforcerConfig {
+	return e.config
 }
 
 // GetResolver returns the metadata resolver
@@ -837,6 +840,8 @@ func (e *Enforcer) logDecision(ctx DecisionContext, decision EnforcerDecision) {
 		decision.PolicyID,
 		decision.Message,
 		context,
+		ctx.Justification,
+		ctx.Args,
 	)
 }
 

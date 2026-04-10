@@ -302,10 +302,14 @@ func (s *EnforcerStore) ListKillSwitches() ([]KillSwitchRow, error) {
 }
 
 // LogAuditEvent records a policy decision in the audit log
-func (s *EnforcerStore) LogAuditEvent(requestID string, userID string, toolName string, action string, policyID string, message string, context map[string]interface{}) error {
+func (s *EnforcerStore) LogAuditEvent(requestID string, userID string, toolName string, action string, policyID string, message string, context map[string]interface{}, justification string, arguments map[string]interface{}) error {
 	contextJSON, _ := json.Marshal(context)
-	_, err := s.db.Exec(`INSERT INTO enforcer_audit_log (id, request_id, user_id, tool_name, action, policy_id, message, context, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		generateID(), requestID, userID, toolName, action, policyID, message, string(contextJSON), time.Now())
+	argsJSON, err := json.Marshal(arguments)
+	if err != nil || arguments == nil {
+		argsJSON = []byte("{}")
+	}
+	_, err = s.db.Exec(`INSERT INTO enforcer_audit_log (id, request_id, user_id, tool_name, action, policy_id, message, context, justification, arguments, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		generateID(), requestID, userID, toolName, action, policyID, message, string(contextJSON), justification, string(argsJSON), time.Now())
 	return err
 }
 

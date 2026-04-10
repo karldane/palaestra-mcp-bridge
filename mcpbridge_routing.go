@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/mcp-bridge/mcp-bridge/enforcer"
+	"github.com/mcp-bridge/mcp-bridge/muxer"
 	"github.com/mcp-bridge/mcp-bridge/poolmgr"
 	"github.com/mcp-bridge/mcp-bridge/shared"
 	"github.com/mcp-bridge/mcp-bridge/store"
@@ -34,6 +35,18 @@ func (s *MCPBridgeServer) handleToolsList(w http.ResponseWriter, r *http.Request
 	}
 
 	var allTools []map[string]interface{}
+
+	// Build augmentation specs for justification injection
+	var augmentSpecs []muxer.AugmentSpec
+	if s.app.enforcer != nil && s.app.enforcer.Config().MinJustificationLength > 0 {
+		augmentSpecs = []muxer.AugmentSpec{{
+			Name:        "justification",
+			Type:        "string",
+			Description: fmt.Sprintf("Required: explain why this tool call is necessary. Minimum %d characters.", s.app.enforcer.Config().MinJustificationLength),
+			MinLength:   s.app.enforcer.Config().MinJustificationLength,
+			Required:    true,
+		}}
+	}
 
 	// Load cached capabilities for all backends
 	cachedCaps, _ := s.app.store.GetAllBackendCapabilities()
@@ -68,6 +81,7 @@ func (s *MCPBridgeServer) handleToolsList(w http.ResponseWriter, r *http.Request
 			shared.Debugf("handleToolsList: backend %s circuit breaker open, using cached tools", backend.ID)
 			if caps, ok := cachedCaps[backend.ID]; ok {
 				prefix := s.toolMuxer.GetPrefixForBackend(backend.ID)
+				var toolSlice []map[string]interface{}
 				for _, tool := range caps.Tools {
 					if name, ok := tool["name"].(string); ok && prefix != "" {
 						tool["name"] = prefix + "_" + name
@@ -88,8 +102,12 @@ func (s *MCPBridgeServer) handleToolsList(w http.ResponseWriter, r *http.Request
 					}
 					annotations["unavailable"] = true
 					annotations["unavailable_reason"] = "Backend temporarily unavailable - will retry automatically"
-					allTools = append(allTools, tool)
+					toolSlice = append(toolSlice, tool)
 				}
+				if len(augmentSpecs) > 0 && !backend.SkipJustification {
+					muxer.AugmentToolList(toolSlice, backend.ID, augmentSpecs)
+				}
+				allTools = append(allTools, toolSlice...)
 			}
 			continue
 		}
@@ -98,6 +116,7 @@ func (s *MCPBridgeServer) handleToolsList(w http.ResponseWriter, r *http.Request
 		if caps, ok := cachedCaps[backend.ID]; ok && len(caps.Tools) > 0 {
 			shared.Debugf("handleToolsList: using cached tools for backend %s (%d tools)", backend.ID, len(caps.Tools))
 			prefix := s.toolMuxer.GetPrefixForBackend(backend.ID)
+			var toolSlice []map[string]interface{}
 			for _, tool := range caps.Tools {
 				if name, ok := tool["name"].(string); ok && prefix != "" {
 					tool["name"] = prefix + "_" + name
@@ -110,8 +129,12 @@ func (s *MCPBridgeServer) handleToolsList(w http.ResponseWriter, r *http.Request
 					}
 					annotations["hints"] = backend.ToolHints
 				}
-				allTools = append(allTools, tool)
+				toolSlice = append(toolSlice, tool)
 			}
+			if len(augmentSpecs) > 0 && !backend.SkipJustification {
+				muxer.AugmentToolList(toolSlice, backend.ID, augmentSpecs)
+			}
+			allTools = append(allTools, toolSlice...)
 			// Background refresh: try to update cache asynchronously
 			go s.refreshBackendTools(userID, backend)
 			continue
@@ -178,6 +201,7 @@ func (s *MCPBridgeServer) handleToolsList(w http.ResponseWriter, r *http.Request
 						s.app.store.SetBackendAvailable(backend.ID)
 						prefix := s.toolMuxer.GetPrefixForBackend(backend.ID)
 						shared.Debugf("handleToolsList: prefix for backend %s: %q", backend.ID, prefix)
+						var toolSlice []map[string]interface{}
 						for _, tool := range result.Result.Tools {
 							if name, ok := tool["name"].(string); ok && prefix != "" {
 								tool["name"] = prefix + "_" + name
@@ -190,8 +214,12 @@ func (s *MCPBridgeServer) handleToolsList(w http.ResponseWriter, r *http.Request
 								}
 								annotations["hints"] = backend.ToolHints
 							}
-							allTools = append(allTools, tool)
+							toolSlice = append(toolSlice, tool)
 						}
+						if len(augmentSpecs) > 0 && !backend.SkipJustification {
+							muxer.AugmentToolList(toolSlice, backend.ID, augmentSpecs)
+						}
+						allTools = append(allTools, toolSlice...)
 					}
 				} else {
 					shared.Debugf("handleToolsList: JSON unmarshal error from backend %s: %v", backend.ID, err)
@@ -240,7 +268,14 @@ func (s *MCPBridgeServer) handleToolsCall(w http.ResponseWriter, r *http.Request
 		if params, ok := toolReq["params"].(map[string]interface{}); ok {
 			toolName, _ = params["name"].(string)
 			toolArgs, _ = params["arguments"].(map[string]interface{})
-			justification, _ = params["justification"].(string)
+			// Extract justification from arguments (standard MCP field), with fallback
+			if toolArgs != nil {
+				justification, _ = toolArgs["justification"].(string)
+				delete(toolArgs, "justification") // strip before forwarding to backend
+			}
+			if justification == "" {
+				justification, _ = params["justification"].(string) // backwards compat
+			}
 		}
 	}
 
@@ -252,11 +287,19 @@ func (s *MCPBridgeServer) handleToolsCall(w http.ResponseWriter, r *http.Request
 		}
 	}
 
+	// Resolve per-backend SkipJustification flag
+	backendSkipJustification := false
+	if backendID != "" {
+		if b, err := s.app.store.GetBackend(backendID); err == nil {
+			backendSkipJustification = b.SkipJustification
+		}
+	}
+
 	// Enforcer check - policy enforcement
 	if s.app.enforcer != nil && toolName != "" && !strings.HasPrefix(toolName, "mcpbridge_") {
 		ctx := r.Context()
 		shared.Infof("Enforcer: Evaluating tool call - user=%s tool=%s backend=%s", userID, toolName, backendID)
-		decision, err := s.app.enforcer.HandleToolCall(ctx, userID, toolName, toolArgs, backendID, justification)
+		decision, err := s.app.enforcer.HandleToolCall(ctx, userID, toolName, toolArgs, backendID, justification, enforcer.CallOptions{SkipJustification: backendSkipJustification})
 		if err != nil {
 			shared.Errorf("Enforcer error: %v", err)
 		} else {

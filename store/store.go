@@ -70,6 +70,8 @@ func (s *Store) migrate() error {
 	s.db.Exec(`ALTER TABLE backends ADD COLUMN backend_instructions TEXT NOT NULL DEFAULT ''`)
 	s.db.Exec(`ALTER TABLE backends ADD COLUMN self_reporting INTEGER NOT NULL DEFAULT 0`)
 	s.db.Exec(`ALTER TABLE backends ADD COLUMN no_keys_required INTEGER NOT NULL DEFAULT 0`)
+	s.db.Exec(`ALTER TABLE backends ADD COLUMN skip_justification INTEGER NOT NULL DEFAULT 0`)
+	s.db.Exec(`ALTER TABLE enforcer_audit_log ADD COLUMN arguments TEXT NOT NULL DEFAULT ''`)
 	s.db.Exec(`CREATE TABLE IF NOT EXISTS settings (
 		key TEXT PRIMARY KEY,
 		value TEXT NOT NULL

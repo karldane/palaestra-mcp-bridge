@@ -356,6 +356,12 @@ var ErrKillSwitchActive = fmt.Errorf("emergency kill switch is active")
 // ErrRateLimitExceeded is returned when a rate limit bucket is exhausted
 var ErrRateLimitExceeded = fmt.Errorf("rate limit exceeded")
 
+// CallOptions carries per-call flags into the enforcer.
+// Extend this struct for future per-call requirements without signature churn.
+type CallOptions struct {
+	SkipJustification bool // if true, justification gate is bypassed for this call
+}
+
 // IsDenyAction checks if the action represents a hard block
 func IsDenyAction(action Action) bool {
 	return action == ActionDeny

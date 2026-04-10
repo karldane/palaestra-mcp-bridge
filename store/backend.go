@@ -22,6 +22,7 @@ type Backend struct {
 	MaxPoolSize         int  // Maximum warm processes allowed (0 = unlimited)
 	SelfReporting       bool // true if the backend supports self-reporting EnforcerProfile via Meta
 	NoKeysRequired      bool // true if the backend doesn't require user-level tokens (e.g., qdrant-mcp)
+	SkipJustification   bool // true if tools from this backend do not require a justification field
 }
 
 // CreateBackend inserts a new backend into the database.
@@ -42,6 +43,10 @@ func (s *Store) CreateBackend(b *Backend) error {
 	if b.NoKeysRequired {
 		noKeysRequired = 1
 	}
+	skipJustification := 0
+	if b.SkipJustification {
+		skipJustification = 1
+	}
 	if b.EnvMappings == "" {
 		b.EnvMappings = "{}"
 	}
@@ -49,9 +54,9 @@ func (s *Store) CreateBackend(b *Backend) error {
 		b.MinPoolSize = 1
 	}
 	_, err := s.db.Exec(
-		`INSERT INTO backends (id, command, pool_size, min_pool_size, max_pool_size, tool_prefix, env, env_mappings, tool_hints, backend_instructions, enabled, is_system, self_reporting, no_keys_required)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		b.ID, b.Command, b.PoolSize, b.MinPoolSize, b.MaxPoolSize, b.ToolPrefix, b.Env, b.EnvMappings, b.ToolHints, b.BackendInstructions, enabled, isSystem, selfReporting, noKeysRequired,
+		`INSERT INTO backends (id, command, pool_size, min_pool_size, max_pool_size, tool_prefix, env, env_mappings, tool_hints, backend_instructions, enabled, is_system, self_reporting, no_keys_required, skip_justification)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		b.ID, b.Command, b.PoolSize, b.MinPoolSize, b.MaxPoolSize, b.ToolPrefix, b.Env, b.EnvMappings, b.ToolHints, b.BackendInstructions, enabled, isSystem, selfReporting, noKeysRequired, skipJustification,
 	)
 	return err
 }
@@ -59,10 +64,10 @@ func (s *Store) CreateBackend(b *Backend) error {
 // GetBackend retrieves a backend by ID.
 func (s *Store) GetBackend(id string) (*Backend, error) {
 	b := &Backend{}
-	var enabled, isSystem, selfReporting, noKeysRequired int
+	var enabled, isSystem, selfReporting, noKeysRequired, skipJustification int
 	err := s.db.QueryRow(
-		`SELECT id, command, pool_size, min_pool_size, max_pool_size, tool_prefix, env, env_mappings, tool_hints, backend_instructions, enabled, is_system, self_reporting, no_keys_required FROM backends WHERE id = ?`, id,
-	).Scan(&b.ID, &b.Command, &b.PoolSize, &b.MinPoolSize, &b.MaxPoolSize, &b.ToolPrefix, &b.Env, &b.EnvMappings, &b.ToolHints, &b.BackendInstructions, &enabled, &isSystem, &selfReporting, &noKeysRequired)
+		`SELECT id, command, pool_size, min_pool_size, max_pool_size, tool_prefix, env, env_mappings, tool_hints, backend_instructions, enabled, is_system, self_reporting, no_keys_required, skip_justification FROM backends WHERE id = ?`, id,
+	).Scan(&b.ID, &b.Command, &b.PoolSize, &b.MinPoolSize, &b.MaxPoolSize, &b.ToolPrefix, &b.Env, &b.EnvMappings, &b.ToolHints, &b.BackendInstructions, &enabled, &isSystem, &selfReporting, &noKeysRequired, &skipJustification)
 	if err != nil {
 		return nil, err
 	}
@@ -70,13 +75,14 @@ func (s *Store) GetBackend(id string) (*Backend, error) {
 	b.IsSystem = isSystem != 0
 	b.SelfReporting = selfReporting != 0
 	b.NoKeysRequired = noKeysRequired != 0
+	b.SkipJustification = skipJustification != 0
 	return b, nil
 }
 
 // ListBackends returns all backends ordered by ID.
 func (s *Store) ListBackends() ([]*Backend, error) {
 	rows, err := s.db.Query(
-		`SELECT id, command, pool_size, min_pool_size, max_pool_size, tool_prefix, env, env_mappings, tool_hints, backend_instructions, enabled, is_system, self_reporting, no_keys_required FROM backends ORDER BY id`,
+		`SELECT id, command, pool_size, min_pool_size, max_pool_size, tool_prefix, env, env_mappings, tool_hints, backend_instructions, enabled, is_system, self_reporting, no_keys_required, skip_justification FROM backends ORDER BY id`,
 	)
 	if err != nil {
 		return nil, err
@@ -86,14 +92,15 @@ func (s *Store) ListBackends() ([]*Backend, error) {
 	var backends []*Backend
 	for rows.Next() {
 		b := &Backend{}
-		var enabled, isSystem, selfReporting, noKeysRequired int
-		if err := rows.Scan(&b.ID, &b.Command, &b.PoolSize, &b.MinPoolSize, &b.MaxPoolSize, &b.ToolPrefix, &b.Env, &b.EnvMappings, &b.ToolHints, &b.BackendInstructions, &enabled, &isSystem, &selfReporting, &noKeysRequired); err != nil {
+		var enabled, isSystem, selfReporting, noKeysRequired, skipJustification int
+		if err := rows.Scan(&b.ID, &b.Command, &b.PoolSize, &b.MinPoolSize, &b.MaxPoolSize, &b.ToolPrefix, &b.Env, &b.EnvMappings, &b.ToolHints, &b.BackendInstructions, &enabled, &isSystem, &selfReporting, &noKeysRequired, &skipJustification); err != nil {
 			return nil, err
 		}
 		b.Enabled = enabled != 0
 		b.IsSystem = isSystem != 0
 		b.SelfReporting = selfReporting != 0
 		b.NoKeysRequired = noKeysRequired != 0
+		b.SkipJustification = skipJustification != 0
 		if b.MinPoolSize == 0 {
 			b.MinPoolSize = 1
 		}
@@ -120,6 +127,10 @@ func (s *Store) UpdateBackend(b *Backend) error {
 	if b.NoKeysRequired {
 		noKeysRequired = 1
 	}
+	skipJustification := 0
+	if b.SkipJustification {
+		skipJustification = 1
+	}
 	if b.EnvMappings == "" {
 		b.EnvMappings = "{}"
 	}
@@ -127,8 +138,8 @@ func (s *Store) UpdateBackend(b *Backend) error {
 		b.MinPoolSize = 1
 	}
 	_, err := s.db.Exec(
-		`UPDATE backends SET command=?, pool_size=?, min_pool_size=?, max_pool_size=?, tool_prefix=?, env=?, env_mappings=?, tool_hints=?, backend_instructions=?, enabled=?, is_system=?, self_reporting=?, no_keys_required=? WHERE id=?`,
-		b.Command, b.PoolSize, b.MinPoolSize, b.MaxPoolSize, b.ToolPrefix, b.Env, b.EnvMappings, b.ToolHints, b.BackendInstructions, enabled, isSystem, selfReporting, noKeysRequired, b.ID,
+		`UPDATE backends SET command=?, pool_size=?, min_pool_size=?, max_pool_size=?, tool_prefix=?, env=?, env_mappings=?, tool_hints=?, backend_instructions=?, enabled=?, is_system=?, self_reporting=?, no_keys_required=?, skip_justification=? WHERE id=?`,
+		b.Command, b.PoolSize, b.MinPoolSize, b.MaxPoolSize, b.ToolPrefix, b.Env, b.EnvMappings, b.ToolHints, b.BackendInstructions, enabled, isSystem, selfReporting, noKeysRequired, skipJustification, b.ID,
 	)
 	return err
 }

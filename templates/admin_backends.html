@@ -89,7 +89,7 @@
     <h2>Backends</h2>
     {{if .Data}}
     {{range .Data}}
-    <div class="backend-card" data-env='{{.Env | rawjson}}' data-env-mappings='{{.EnvMappings | rawjson}}' data-tool-hints='{{.ToolHints | js}}' data-is-system="{{.IsSystem}}" data-min-pool="{{.MinPoolSize}}" data-max-pool="{{.MaxPoolSize}}" data-self-reporting="{{.SelfReporting}}" data-no-keys-required="{{.NoKeysRequired}}" data-id="{{.ID}}" data-command="{{.Command | js}}">
+    <div class="backend-card" data-env='{{.Env | rawjson}}' data-env-mappings='{{.EnvMappings | rawjson}}' data-tool-hints='{{.ToolHints | js}}' data-is-system="{{.IsSystem}}" data-min-pool="{{.MinPoolSize}}" data-max-pool="{{.MaxPoolSize}}" data-self-reporting="{{.SelfReporting}}" data-no-keys-required="{{.NoKeysRequired}}" data-skip-justification="{{.SkipJustification}}" data-id="{{.ID}}" data-command="{{.Command | js}}">
       <div class="backend-info">
         <div class="backend-title">
           {{.ID}}
@@ -100,6 +100,7 @@
           {{if .Enabled}}<span class="badge badge-enabled">enabled</span>{{else}}<span class="badge badge-disabled">disabled</span>{{end}}
           {{if .SelfReporting}}<span class="badge badge-enabled">self-reporting</span>{{end}}
           {{if .NoKeysRequired}}<span class="badge badge-enabled">no keys</span>{{end}}
+          {{if .SkipJustification}}<span class="badge badge-enabled">no justification</span>{{end}}
           {{if .ToolPrefix}}<span class="badge badge-user">{{.ToolPrefix}}</span>{{end}}
           <span class="text-muted">Pool: {{.MinPoolSize}}-{{.MaxPoolSize}}</span>
         </div>
@@ -244,6 +245,11 @@
           <label for="no_keys_required" class="checkbox-label">No Keys Required</label>
           <small class="text-muted" style="margin-left:0.25rem;">— backend doesn't require user-level tokens (e.g., qdrant-mcp)</small>
         </div>
+        <div class="form-row" style="display:flex;align-items:center;gap:0.5rem;">
+          <input type="checkbox" id="skip_justification" name="skip_justification">
+          <label for="skip_justification" class="checkbox-label">Exempt from Justification</label>
+          <small class="text-muted" style="margin-left:0.25rem;">— tools from this backend do not require a justification field (e.g., internal memory/utility backends)</small>
+        </div>
       </div>
       <div class="form-row">
         <label for="env">Environment Template (JSON)</label>
@@ -320,6 +326,9 @@ function editBackend(id) {
   var noKeysRequired = card.getAttribute('data-no-keys-required') === 'true';
   document.getElementById('no_keys_required').checked = noKeysRequired;
 
+  var skipJustification = card.getAttribute('data-skip-justification') === 'true';
+  document.getElementById('skip_justification').checked = skipJustification;
+
   // Get env, env_mappings, and tool_hints from data attributes
   var env = card.getAttribute('data-env');
   var envMappings = card.getAttribute('data-env-mappings');
@@ -366,6 +375,7 @@ function cancelEdit() {
   document.getElementById('enabled').disabled = false;
   document.getElementById('self_reporting').checked = false;
   document.getElementById('no_keys_required').checked = false;
+  document.getElementById('skip_justification').checked = false;
   document.getElementById('env').value = '{}';
   document.getElementById('env_mappings').value = '{}';
   document.getElementById('tool_hints').value = '';
