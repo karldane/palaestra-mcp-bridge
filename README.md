@@ -6,8 +6,8 @@ admin interface.
 
 ## Features
 
-- **Multi-backend support** &mdash; route multiple MCP servers (Jira,
-  Confluence, etc.) behind a single endpoint; backends managed via DB
+- **Multi-backend support** &mdash; route multiple MCP servers behind a single
+  endpoint; backends managed via database
 - **OAuth 2.1 + PKCE** &mdash; RFC 8414 discovery, RFC 7591 dynamic client
   registration, authorization code flow with PKCE
 - **Per-user credential injection** &mdash; each user's API tokens are
@@ -30,21 +30,49 @@ admin interface.
   levels (debug/info/warn/error), ideal for Kubernetes
 - **Security-first** &mdash; tokens and secrets never logged; clean
   environment (no system env vars) passed to backends
+
+### Enforcer & HITL Features
+
 - **Human-in-the-Loop (HITL) approval workflow** &mdash; tiered escalation
-  model: Safe → Rate-Limited → User HITL → Admin HITL; users can approve
-  their own queue items and configure personal safety overrides
-- **Mandatory justification fields** &mdash; every tool call can require a
-  justification string; gate configurable via `MinJustificationLength`
-- **Rate bucket enforcement** &mdash; per-tool call rate tracking exposed
-  as `system_call_rate` in CEL policy expressions
-- **Locked policies** &mdash; admin-locked policies cannot be overridden by
-  user safety overrides
-- **Personal safety overrides** &mdash; users can escalate specific tools to
-  user-tier HITL without admin intervention
-- **Real-time queue SSE** &mdash; users receive live pending-count updates
-  via `/web/user/enforcer/events`
-- **Enhanced precache tooling** &mdash; `--precache-tooling` flag now caches
-  both tool definitions and safety profiles for faster startup
+  model: Safe → Rate-Limited → User HITL → Admin HITL
+- **CEL policy engine** &mdash; expressive policies with `risk`, `impact_scope`,
+  `resource_cost`, `requires_hitl`, `pii_exposure`, `system_call_rate` variables
+- **Per-tool safety profiles** &mdash; self-reported from backend metadata or
+  explicit overrides; profiles include risk_level, impact_scope, resource_cost,
+  requires_hitl, pii_exposure, idempotent
+- **Mandatory justification fields** &mdash; configurable minimum length per-tool
+- **Rate bucket enforcement** &mdash; per-tool call rate tracking with risk-based
+  multipliers (low=1, med=2, high=4)
+- **Locked policies** &mdash; admin-locked policies cannot be overridden
+- **Personal safety overrides** &mdash; users can escalate specific tools
+- **User-level HITL UI** &mdash; users can approve their own queue items,
+  view policies (read-only), manage personal overrides
+- **Real-time queue SSE** &mdash; live pending-count updates via
+  `/web/user/enforcer/events`
+- **Admin cross-queue view** &mdash; admins can see all user-tier queues
+
+### Supported Backends
+
+MCP Bridge manages these MCP server backends:
+
+| Backend      | Description                          | Tools |
+|-------------|-------------------------------------|-------|
+| `appscan_asoc` | AppScan on Cloud security scanning     | 21   |
+| `atlassian`  | Jira + Confluence                 | 18   |
+| `aws`       | AWS CLI integration              | 28   |
+| `circleci`  | CircleCI CI/CD                   | 14   |
+| `github`    | GitHub API                     | 22   |
+| `k8s`      | Kubernetes                     | 40   |
+| `newrelic`  | New Relic monitoring             | 18   |
+| `oracle`   | Oracle database                 | 11   |
+| `qdrant`   | Qdrant vector database          | 25   |
+| `slack`    | Slack messaging                | 30   |
+| `mongodb`   | MongoDB (disabled)             | 0    |
+
+Total: 227 self-reported safety profiles from enabled backends.
+
+Backends marked as `no_keys_required` (e.g., qdrant) use system credentials
+instead of per-user tokens.
 
 ## Requirements
 
@@ -73,33 +101,38 @@ go build -o mcp-bridge .
 ```
 .
 ├── main.go              # App struct, HTTP wiring, auth middleware
-├── main_test.go         # Integration tests (29)
+├── main_test.go         # Integration tests
 ├── config/
-│   └── config.go        # YAML config loader (5 tests)
+│   └── config.go        # YAML config loader
 ├── store/
-│   └── store.go         # SQLite store, 7 tables, bcrypt helpers (33 tests)
+│   ├── store.go         # SQLite store, schema migration
+│   ├── backend.go       # Backend definitions
+│   └── enforcer_store.go # Enforcer data (profiles, policies, overrides)
 ├── auth/
-│   └── auth.go          # OAuth 2.1 server (31 tests)
+│   └── auth.go          # OAuth 2.1 server
 ├── poolmgr/
-│   └── pool.go          # Per-user process pools, probe (37 tests)
+│   └── pool.go          # Per-user process pools, probe
 ├── muxer/
-│   └── muxer.go         # Tool-prefix routing, env builder (17 tests)
-├── credential/
-│   └── secret.go        # Legacy secret interface (9 tests)
+│   ├── muxer.go         # Tool-prefix routing
+│   └── augment.go       # Tool augmentation (instructions, justification)
 ├── enforcer/
 │   ├── enforcer.go      # Core enforcer, HandleToolCall, interfaces
-│   ├── cel_engine.go    # CEL policy evaluator, call.justification, system_call_rate
-│   ├── resolver.go      # Tool profile resolution (4-tier chain)
-│   ├── types.go         # DecisionContext, EnforcerConfig, action constants
-│   └── enforcer_test.go # Enforcer unit tests (10)
+│   ├── cel_engine.go    # CEL policy evaluator
+│   ├── resolver.go      # Tool profile resolution (3-tier chain)
+│   ├── types.go        # DecisionContext, EnforcerConfig, CallOptions
+│   └── enforcer_test.go # Unit tests
 ├── web/
-│   └── web.go           # Admin/user web handlers (48 tests)
-├── templates/           # HTML templates (login, dashboard, admin, etc.)
-├── config.yaml.example  # Annotated example configuration
-└── docs/                # Design specs and project docs
+│   └── web.go           # Admin/user web handlers
+├── scan.go             # Self-reporting profile scanner
+├── precache.go          # Tool + profile precaching
+├── templates/           # HTML templates (login, dashboard, admin, enforcer)
+├── Makefile            # Build automation
+├── config.yaml.example  # Annotated example
+├── seed.go            # Default data seeding
+└── devdocs/           # Design specs and specs
 ```
 
-**216+ tests** across 9 packages (including 10 new enforcer unit tests).
+**100+ tests** across packages.
 
 ## API Reference
 
@@ -124,24 +157,35 @@ go build -o mcp-bridge .
 
 ### Web UI Endpoints (cookie auth)
 
-| Endpoint                                   | Description                                     |
-|--------------------------------------------|-------------------------------------------------|
-| `/web/login`                               | Login page                                      |
-| `/web/dashboard`                           | User dashboard                                  |
-| `/web/tokens`                              | Manage API tokens                               |
-| `/web/password`                            | Change password                                 |
-| `/web/user/enforcer/queue`                 | User: view & act on personal HITL queue         |
-| `/web/user/enforcer/approvals/:id/approve` | User: approve a queued item                     |
-| `/web/user/enforcer/approvals/:id/deny`    | User: deny a queued item                        |
-| `/web/user/enforcer/overrides`             | User: manage personal safety overrides          |
-| `/web/user/enforcer/policies`              | User: read-only policy visibility               |
-| `/web/user/enforcer/events`                | User: SSE stream of pending queue count         |
-| `/web/admin/users`                         | Admin: manage users                             |
-| `/web/admin/backends`                      | Admin: manage backends                          |
-| `/web/admin/enforcer/queue`                | Admin: admin-tier HITL approval queue           |
-| `/web/admin/enforcer/user-queues`          | Admin: read-only view of all user-tier queues   |
-| `/web/admin/enforcer/policies`             | Admin: manage CEL policies (with locked toggle) |
-| `/web/admin/enforcer/overrides`            | Admin: manage global tool profile overrides     |
+| Endpoint                         | Description                           |
+|----------------------------------|--------------------------------------|
+| `/web/login`                     | Login page                            |
+| `/web/dashboard`                 | User dashboard                      |
+| `/web/tokens`                    | Manage API tokens                     |
+| `/web/password`                  | Change password                    |
+| `/web/user/enforcer/queue`       | User: view & act on HITL queue  |
+| `/web/user/enforcer/overrides`   | User: manage safety overrides |
+| `/web/user/enforcer/policies`    | User: view policies (read-only) |
+| `/web/user/enforcer/events`   | User: SSE queue updates         |
+| `/web/admin/users`             | Admin: manage users           |
+| `/web/admin/backends`          | Admin: manage backends       |
+| `/web/admin/enforcer/queue`    | Admin: HITL approval queue |
+| `/web/admin/enforcer/user-queues` | Admin: view all user queues |
+| `/web/admin/enforcer/policies`  | Admin: manage CEL policies   |
+| `/web/admin/enforcer/overrides` | Admin: global overrides |
+
+### System Tools (mcpbridge)
+
+The bridge provides built-in system tools:
+
+| Tool                    | Description                          |
+|--------------------------|--------------------------------------|
+| `mcpbridge_ping`         | Check bridge connectivity            |
+| `mcpbridge_version`      | Get version information             |
+| `mcpbridge_list_backends` | List configured backends            |
+| `mcpbridge_refresh_tools`   | Refresh tools from backends          |
+| `mcpbridge_capabilities`  | Get bridge capabilities            |
+| `mcpbridge_approval_status` | Check pending approval status |
 
 ## Configuration
 
