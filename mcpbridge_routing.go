@@ -300,7 +300,7 @@ func (s *MCPBridgeServer) handleToolsCall(w http.ResponseWriter, r *http.Request
 		ctx := r.Context()
 		shared.Infof("Enforcer: Evaluating tool call - user=%s tool=%s backend=%s", userID, toolName, backendID)
 		decision, err := s.app.enforcer.HandleToolCall(ctx, userID, toolName, toolArgs, backendID, justification, enforcer.CallOptions{SkipJustification: backendSkipJustification})
-		if err != nil {
+		if err != nil && decision.Action == "" {
 			shared.Errorf("Enforcer error: %v", err)
 		} else {
 			shared.Infof("Enforcer: Decision for %s - Action=%s", toolName, decision.Action)
