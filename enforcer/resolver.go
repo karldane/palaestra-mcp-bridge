@@ -75,7 +75,13 @@ func (r *MetadataResolver) Resolve(toolName string, backendID string) (SafetyPro
 	if r.store != nil {
 		// Strip namespace prefix: qdrant_list_tasks -> list_tasks for qdrant backend
 		lookupName := stripNamespacePrefix(toolName, backendID)
+		println("DEBUG: ResolveForTool backendID=", backendID, " toolName=", toolName, " lookupName=", lookupName)
 		profile, err := r.store.GetToolProfile(backendID, lookupName)
+		if err != nil {
+			println("DEBUG: GetToolProfile error:", err.Error())
+		} else {
+			println("DEBUG: Got profile for", lookupName, "risk=", profile.RiskLevel)
+		}
 		if err == nil {
 			return SafetyProfile{
 				ToolName:     toolName,
@@ -142,7 +148,13 @@ func (r *MetadataResolver) ResolveForUser(toolName string, backendID string, use
 	if r.store != nil {
 		// Strip namespace prefix: qdrant_list_tasks -> list_tasks for qdrant backend
 		lookupName := stripNamespacePrefix(toolName, backendID)
+		println("DEBUG USER: ResolveForUser backendID=", backendID, " toolName=", toolName, " lookupName=", lookupName)
 		profile, err := r.store.GetToolProfile(backendID, lookupName)
+		if err != nil {
+			println("DEBUG USER: GetToolProfile error:", err.Error())
+		} else {
+			println("DEBUG USER: Got profile for", lookupName, "risk=", profile.RiskLevel)
+		}
 		if err == nil {
 			return SafetyProfile{
 				ToolName:     toolName,
