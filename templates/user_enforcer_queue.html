@@ -189,14 +189,20 @@
   .tab-btn {
     padding: 0.5rem 1rem;
     border: 1px solid var(--border-color);
-    background: var(--bg-secondary);
+    background: var(--btn-secondary);
+    color: var(--text-primary);
     border-radius: 4px;
     cursor: pointer;
     font-size: 0.9rem;
+    font-weight: 500;
+  }
+  .tab-btn:hover {
+    background: var(--btn-secondary-hover);
   }
   .tab-btn.active {
-    background: var(--bg-primary);
-    border-color: var(--text-secondary);
+    background: var(--btn-primary);
+    color: #fff;
+    border-color: var(--btn-primary);
   }
   .tab-content {
     display: none;

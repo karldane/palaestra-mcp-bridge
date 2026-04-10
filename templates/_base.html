@@ -66,6 +66,7 @@
       --btn-danger-hover: #dc2626;
       --btn-secondary: #6b7280;
       --btn-secondary-hover: #4b5563;
+      --btn-secondary-active: #374151;
       --alert-error-bg: #450a0a;
       --alert-error-text: #fca5a5;
       --alert-error-border: #7f1d1d;
@@ -107,6 +108,39 @@
     .navbar a:hover { color: var(--navbar-text); }
     .navbar .spacer { flex: 1; }
     .navbar .user-info { font-size: 0.85rem; color: var(--text-muted); }
+    .dropdown { position: relative; }
+    .dropdown-toggle {
+      color: var(--navbar-text-secondary);
+      cursor: pointer;
+      font-size: 0.9rem;
+      padding: 0.25rem 0.5rem;
+      border-radius: 4px;
+    }
+    .dropdown-toggle:hover { color: var(--navbar-text); background: rgba(255,255,255,0.1); }
+    .dropdown-menu {
+      display: none;
+      position: absolute;
+      top: 100%;
+      left: 0;
+      min-width: 180px;
+      background: var(--bg-secondary);
+      border: 1px solid var(--border-color);
+      border-radius: 4px;
+      box-shadow: 0 4px 12px var(--shadow);
+      z-index: 1000;
+      padding: 0.25rem 0;
+    }
+    .dropdown-menu.show { display: block; }
+    .dropdown-menu a {
+      display: block;
+      padding: 0.5rem 0.75rem;
+      color: var(--text-primary);
+      text-decoration: none;
+      font-size: 0.85rem;
+    }
+    .dropdown-menu a:hover { background: var(--bg-primary); color: var(--text-primary); }
+    .dropdown-divider { height: 1px; background: var(--border-color); margin: 0.25rem 0; }
+    .dropdown-header { padding: 0.5rem 0.75rem; font-size: 0.75rem; color: var(--text-muted); font-weight: 600; text-transform: uppercase; }
     .theme-toggle {
       background: transparent;
       border: 1px solid var(--navbar-text-secondary);
@@ -211,19 +245,34 @@
     <a href="/web/" class="navbar-brand">MCP Bridge</a>
     {{if .User}}
       <a href="/web/">Dashboard</a>
-      <a href="/web/tokens">My Tokens</a>
-      <a href="/web/apikeys">API Keys</a>
-      <a href="/web/user/enforcer/queue">Approvals</a>
-      <a href="/web/user/enforcer/overrides">Safety Overrides</a>
+      <div class="dropdown">
+        <span class="dropdown-toggle" onclick="toggleDropdown(event, this)">My Stuff ▾</span>
+        <div class="dropdown-menu">
+          <a href="/web/tokens">My Tokens</a>
+          <a href="/web/apikeys">API Keys</a>
+          <a href="/web/user/enforcer/queue">Approvals</a>
+          <a href="/web/user/enforcer/overrides">Safety Overrides</a>
+          <div class="dropdown-divider"></div>
+          <a href="/web/password">Password</a>
+        </div>
+      </div>
       {{if eq .User.Role "admin"}}
-        <a href="/web/admin/users">Users</a>
-        <a href="/web/admin/backends">Backends</a>
-        <a href="/web/admin/oauth-clients">OAuth Clients</a>
-        <a href="/web/admin/enforcer/queue">Approval Queue</a>
-        <a href="/web/admin/enforcer/user-queues">User Queues</a>
-        <a href="/web/admin/enforcer/policies">Policies</a>
-        <a href="/web/admin/enforcer/profiles">Profiles</a>
-        <a href="/web/admin/ratelimits">Rate Limits</a>
+        <div class="dropdown">
+          <span class="dropdown-toggle" onclick="toggleDropdown(event, this)">Admin ▾</span>
+          <div class="dropdown-menu">
+            <div class="dropdown-header">System</div>
+            <a href="/web/admin/users">Users</a>
+            <a href="/web/admin/backends">Backends</a>
+            <a href="/web/admin/oauth-clients">OAuth Clients</a>
+            <div class="dropdown-divider"></div>
+            <div class="dropdown-header">Enforcer</div>
+            <a href="/web/admin/enforcer/queue">Approval Queue</a>
+            <a href="/web/admin/enforcer/user-queues">User Queues</a>
+            <a href="/web/admin/enforcer/policies">Policies</a>
+            <a href="/web/admin/enforcer/profiles">Profiles</a>
+            <a href="/web/admin/ratelimits">Rate Limits</a>
+          </div>
+        </div>
       {{end}}
       <span class="spacer"></span>
       <button class="theme-toggle" onclick="toggleTheme()" title="Toggle dark mode">
@@ -231,7 +280,6 @@
         <span id="theme-text">Dark</span>
       </button>
       <span class="user-info">{{.User.Email}} <span class="badge {{if eq .User.Role "admin"}}badge-admin{{else}}badge-user{{end}}">{{.User.Role}}</span></span>
-      <a href="/web/password">Password</a>
       <a href="/web/logout">Sign Out</a>
     {{else}}
       <span class="spacer"></span>
@@ -262,6 +310,19 @@
         text.textContent = 'Dark';
       }
     }
+    function toggleDropdown(event, el) {
+      event.stopPropagation();
+      const menu = el.nextElementSibling;
+      if (menu && menu.classList.contains('dropdown-menu')) {
+        menu.classList.toggle('show');
+      }
+    }
+    // Close dropdowns when clicking outside
+    document.addEventListener('click', function(e) {
+      document.querySelectorAll('.dropdown-menu.show').forEach(function(menu) {
+        menu.classList.remove('show');
+      });
+    });
     // Update button on page load
     (function() {
       const theme = document.documentElement.getAttribute('data-theme') || 'light';
