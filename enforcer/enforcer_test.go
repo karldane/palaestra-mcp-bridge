@@ -468,3 +468,174 @@ func TestDenyUnlessPermitted_SelfReportedNoPolicyIsAllowed(t *testing.T) {
 		t.Errorf("expected ActionAllow for self-reported tool, got %s", decision.Action)
 	}
 }
+
+// TestShouldUpdateDecision_TiebreakByPriority verifies that when two policies
+// produce the same action and severity, the one with the lower DB priority number
+// (i.e., the more specific rule) wins and its PolicyID surfaces in the decision.
+func TestShouldUpdateDecision_TiebreakByPriority(t *testing.T) {
+	s, cleanup := newTestStore(t)
+	defer cleanup()
+
+	cfg := enforcer.DefaultEnforcerConfig()
+	cfg.MinJustificationLength = 0
+	es := store.NewEnforcerStore(s.DB())
+
+	enf, err := enforcer.NewEnforcer(cfg, es, nil)
+	if err != nil {
+		t.Fatalf("NewEnforcer: %v", err)
+	}
+
+	// Generic rule: priority 20 (lower specificity).
+	// backend_id matches so the deny-unless-permitted gate won't fire
+	// (a policy matched → action is not "").
+	if err := enf.AddPolicy(enforcer.PolicyRow{
+		ID:         "generic_delete_rule",
+		Name:       "Generic delete requires approval",
+		Expression: `backend_id == "tiebreak_backend" && safety.impact_scope == "delete"`,
+		Action:     string(enforcer.ActionPendingUserApproval),
+		Severity:   string(enforcer.SeverityMedium),
+		Enabled:    true,
+		Priority:   20,
+	}); err != nil {
+		t.Fatalf("AddPolicy generic: %v", err)
+	}
+
+	// Specific rule: priority 15 (higher specificity — should win on tie)
+	if err := enf.AddPolicy(enforcer.PolicyRow{
+		ID:         "specific_jira_delete_rule",
+		Name:       "Block Jira Issue Deletion",
+		Expression: `tool.contains("jira") && tool.contains("delete") && tool.contains("issue")`,
+		Action:     string(enforcer.ActionPendingUserApproval),
+		Severity:   string(enforcer.SeverityMedium),
+		Enabled:    true,
+		Priority:   15,
+	}); err != nil {
+		t.Fatalf("AddPolicy specific: %v", err)
+	}
+
+	ctx := context.Background()
+	decision, callErr := enf.HandleToolCall(ctx, "user1", "jira_delete_issue",
+		map[string]interface{}{}, "tiebreak_backend", "deleting a test issue for tiebreak test",
+		enforcer.CallOptions{})
+	// PENDING_USER_APPROVAL from HandleToolCall is returned as a non-nil error sentinel;
+	// the decision is still populated. Accept either nil or a non-fatal error.
+	_ = callErr
+	if decision.Action != enforcer.ActionPendingUserApproval {
+		t.Errorf("expected PENDING_USER_APPROVAL, got %s", decision.Action)
+	}
+	// The specific rule (priority 15) must win over the generic one (priority 20).
+	if decision.PolicyID != "specific_jira_delete_rule" {
+		t.Errorf("expected PolicyID=specific_jira_delete_rule (lower priority number wins), got %s", decision.PolicyID)
+	}
+}
+
+// ---------- Backend routing coverage ----------
+
+// productionPolicies returns the full set of backend-scoped policies that are
+// live in production, so routing tests exercise the real policy set.
+func productionBackendPolicies() []enforcer.PolicyRow {
+	return []enforcer.PolicyRow{
+		// AWS
+		{ID: "aws_allow_reads", Name: "AWS Read Operations", Expression: `backend_id == "aws" && safety.impact_scope == "read"`, Action: "ALLOW", Severity: "LOW", Enabled: true, Priority: 10},
+		{ID: "aws_delete_requires_approval", Name: "AWS Delete Operations", Expression: `backend_id == "aws" && safety.impact_scope == "delete"`, Action: "PENDING_ADMIN_APPROVAL", Severity: "HIGH", Enabled: true, Priority: 15},
+		{ID: "aws_write_requires_approval", Name: "AWS Write Operations", Expression: `backend_id == "aws" && safety.impact_scope == "write"`, Action: "ALLOW", Severity: "LOW", Enabled: true, Priority: 20},
+		{ID: "aws_admin_requires_approval", Name: "AWS Admin Operations", Expression: `backend_id == "aws" && safety.impact_scope == "admin"`, Action: "PENDING_USER_APPROVAL", Severity: "MEDIUM", Enabled: true, Priority: 20},
+		// GitHub
+		{ID: "github_allow_reads", Name: "GitHub Read Operations", Expression: `backend_id == "github" && safety.impact_scope == "read"`, Action: "ALLOW", Severity: "LOW", Enabled: true, Priority: 10},
+		{ID: "github_delete_requires_approval", Name: "GitHub Delete Operations", Expression: `backend_id == "github" && safety.impact_scope == "delete"`, Action: "PENDING_USER_APPROVAL", Severity: "HIGH", Enabled: true, Priority: 15},
+		{ID: "github_write_requires_approval", Name: "GitHub Write Operations", Expression: `backend_id == "github" && safety.impact_scope == "write"`, Action: "ALLOW", Severity: "LOW", Enabled: true, Priority: 20},
+		{ID: "github_admin_requires_approval", Name: "GitHub Admin Operations", Expression: `backend_id == "github" && safety.impact_scope == "admin"`, Action: "PENDING_USER_APPROVAL", Severity: "MEDIUM", Enabled: true, Priority: 20},
+		// k8s
+		{ID: "k8s_allow_reads", Name: "Kubernetes Read Operations", Expression: `backend_id == "k8s" && safety.impact_scope == "read"`, Action: "ALLOW", Severity: "LOW", Enabled: true, Priority: 10},
+		{ID: "k8s_delete_requires_approval", Name: "Kubernetes Delete Operations", Expression: `backend_id == "k8s" && safety.impact_scope == "delete"`, Action: "PENDING_ADMIN_APPROVAL", Severity: "HIGH", Enabled: true, Priority: 15},
+		{ID: "k8s_write_requires_approval", Name: "Kubernetes Write Operations", Expression: `backend_id == "k8s" && safety.impact_scope == "write"`, Action: "ALLOW", Severity: "LOW", Enabled: true, Priority: 20},
+		{ID: "k8s_admin_requires_approval", Name: "Kubernetes Admin Operations", Expression: `backend_id == "k8s" && safety.impact_scope == "admin"`, Action: "PENDING_USER_APPROVAL", Severity: "MEDIUM", Enabled: true, Priority: 20},
+		// CircleCI
+		{ID: "circleci_allow_reads", Name: "CircleCI Read Operations", Expression: `backend_id == "circleci" && safety.impact_scope == "read"`, Action: "ALLOW", Severity: "LOW", Enabled: true, Priority: 10},
+		{ID: "circleci_delete_requires_approval", Name: "CircleCI Delete Operations", Expression: `backend_id == "circleci" && safety.impact_scope == "delete"`, Action: "PENDING_USER_APPROVAL", Severity: "HIGH", Enabled: true, Priority: 15},
+		{ID: "circleci_write_requires_approval", Name: "CircleCI Write Operations", Expression: `backend_id == "circleci" && safety.impact_scope == "write"`, Action: "ALLOW", Severity: "LOW", Enabled: true, Priority: 20},
+		{ID: "circleci_admin_requires_approval", Name: "CircleCI Admin Operations", Expression: `backend_id == "circleci" && safety.impact_scope == "admin"`, Action: "PENDING_USER_APPROVAL", Severity: "MEDIUM", Enabled: true, Priority: 20},
+		// Atlassian
+		{ID: "atlassian_allow_reads", Name: "Atlassian Read Operations", Expression: `backend_id == "atlassian" && safety.impact_scope == "read"`, Action: "ALLOW", Severity: "LOW", Enabled: true, Priority: 10},
+		{ID: "atlassian_delete_requires_approval", Name: "Atlassian Delete Operations", Expression: `backend_id == "atlassian" && safety.impact_scope == "delete"`, Action: "PENDING_USER_APPROVAL", Severity: "HIGH", Enabled: true, Priority: 20},
+		{ID: "atlassian_write_requires_approval", Name: "Atlassian Write Operations", Expression: `backend_id == "atlassian" && safety.impact_scope == "write"`, Action: "ALLOW", Severity: "LOW", Enabled: true, Priority: 20},
+		{ID: "atlassian_admin_requires_approval", Name: "Atlassian Admin Operations", Expression: `backend_id == "atlassian" && safety.impact_scope == "admin"`, Action: "PENDING_USER_APPROVAL", Severity: "MEDIUM", Enabled: true, Priority: 20},
+	}
+}
+
+// TestBackendRouting_AllNonSelfReportingBackends is a table-driven routing
+// coverage test. It seeds the production backend policies into a fresh DB and
+// verifies that every backend × impact_scope combination routes to the expected
+// action tier under the deny-unless-permitted regime.
+//
+// Representative tool names are chosen so that inferDefaults() maps them to the
+// correct impact_scope without needing a stored profile.
+func TestBackendRouting_AllNonSelfReportingBackends(t *testing.T) {
+	type testCase struct {
+		backend    string
+		tool       string // tool name whose inferred impact_scope must match
+		wantScope  string // what inferDefaults should produce (informational)
+		wantAction enforcer.Action
+	}
+
+	cases := []testCase{
+		// ── aws ──────────────────────────────────────────────────────
+		{"aws", "aws_list_buckets", "read", enforcer.ActionAllow},
+		{"aws", "aws_put_object", "write", enforcer.ActionAllow},
+		{"aws", "aws_delete_object", "delete", enforcer.ActionPendingAdminApproval},
+		{"aws", "aws_configure_setting", "admin", enforcer.ActionPendingUserApproval},
+		// ── github ───────────────────────────────────────────────────
+		{"github", "github_list_issues", "read", enforcer.ActionAllow},
+		{"github", "github_create_pull_request", "write", enforcer.ActionAllow},
+		{"github", "github_delete_file", "delete", enforcer.ActionPendingUserApproval},
+		{"github", "github_grant_permission", "admin", enforcer.ActionPendingUserApproval},
+		// ── k8s ──────────────────────────────────────────────────────
+		{"k8s", "k8s_pods_list", "read", enforcer.ActionAllow},
+		{"k8s", "k8s_resources_create", "write", enforcer.ActionAllow},
+		{"k8s", "k8s_pods_delete", "delete", enforcer.ActionPendingAdminApproval},
+		{"k8s", "k8s_configure_setting", "admin", enforcer.ActionPendingUserApproval},
+		// ── circleci ─────────────────────────────────────────────────
+		{"circleci", "circleci_list_followed_projects", "read", enforcer.ActionAllow},
+		{"circleci", "circleci_create_branch", "write", enforcer.ActionAllow},
+		{"circleci", "circleci_delete_sprint", "delete", enforcer.ActionPendingUserApproval},
+		{"circleci", "circleci_admin_config", "admin", enforcer.ActionPendingUserApproval},
+		// ── atlassian ────────────────────────────────────────────────
+		{"atlassian", "atlassian_confluence_list_spaces", "read", enforcer.ActionAllow},
+		{"atlassian", "atlassian_jira_update_issue", "write", enforcer.ActionAllow},
+		{"atlassian", "atlassian_confluence_delete_page", "delete", enforcer.ActionPendingUserApproval},
+		{"atlassian", "atlassian_admin_configure", "admin", enforcer.ActionPendingUserApproval},
+	}
+
+	s, cleanup := newTestStore(t)
+	defer cleanup()
+
+	cfg := enforcer.DefaultEnforcerConfig()
+	cfg.MinJustificationLength = 0
+	es := store.NewEnforcerStore(s.DB())
+
+	enf, err := enforcer.NewEnforcer(cfg, es, nil)
+	if err != nil {
+		t.Fatalf("NewEnforcer: %v", err)
+	}
+
+	for _, p := range productionBackendPolicies() {
+		if err := enf.AddPolicy(p); err != nil {
+			t.Fatalf("AddPolicy %s: %v", p.ID, err)
+		}
+	}
+
+	ctx := context.Background()
+	const justification = "routing coverage test — verifying policy tier mapping"
+
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.backend+"/"+tc.tool, func(t *testing.T) {
+			decision, _ := enf.HandleToolCall(ctx, "user1", tc.tool,
+				map[string]interface{}{}, tc.backend, justification, enforcer.CallOptions{})
+			if decision.Action != tc.wantAction {
+				t.Errorf("backend=%s tool=%s (scope≈%s): want action %s, got %s (policy=%s)",
+					tc.backend, tc.tool, tc.wantScope, tc.wantAction, decision.Action, decision.PolicyID)
+			}
+		})
+	}
+}

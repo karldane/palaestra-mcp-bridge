@@ -126,6 +126,7 @@ func (row PolicyRow) ToCELPolicy() CELPolicy {
 		Severity:    SeverityLevel(row.Severity),
 		Message:     row.Message,
 		Enabled:     row.Enabled,
+		Priority:    row.Priority,
 	}
 }
 

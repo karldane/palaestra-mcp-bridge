@@ -161,6 +161,7 @@ func (e *CELEngine) Evaluate(ctx context.Context, context DecisionContext) (Enfo
 				Message:   policy.Message,
 				PolicyID:  policyID,
 				Timestamp: time.Now(),
+				Priority:  policy.Priority,
 			}
 
 			// Update final decision if this is more restrictive
@@ -283,7 +284,15 @@ func shouldUpdateDecision(current, new EnforcerDecision, severityPriority map[Se
 	if newPriority == currentPriority {
 		newSev := severityPriority[new.Severity]
 		currentSev := severityPriority[current.Severity]
-		return newSev > currentSev
+		if newSev > currentSev {
+			return true
+		}
+		// If action and severity are equal, prefer the more specific policy.
+		// DB priority: lower number = higher specificity (e.g. 15 beats 20).
+		// A zero Priority means unset (legacy/test path); don't displace an already-set policy.
+		if newSev == currentSev && new.Priority > 0 && current.Priority > 0 {
+			return new.Priority < current.Priority
+		}
 	}
 
 	return false

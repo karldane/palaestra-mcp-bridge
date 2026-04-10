@@ -92,6 +92,9 @@ type EnforcerDecision struct {
 	PolicyID   string
 	Violations []string
 	Timestamp  time.Time
+	// Priority mirrors the DB priority of the policy that produced this decision.
+	// Lower = more specific. Used for tiebreaking in shouldUpdateDecision.
+	Priority int
 }
 
 // DecisionContext provides all context for CEL evaluation
@@ -162,6 +165,9 @@ type CELPolicy struct {
 	Message     string
 	Severity    SeverityLevel
 	Enabled     bool
+	// Priority mirrors the DB priority column. Lower number = more specific rule.
+	// Used as a tiebreaker when action and severity are equal: lower priority wins.
+	Priority int
 }
 
 // PolicySet represents a collection of policies for a specific scope

@@ -160,31 +160,36 @@ func (r *MetadataResolver) inferDefaults(toolName string) SafetyProfile {
 
 	toolLower := strings.ToLower(toolName)
 
-	// Risk inference based on naming patterns
-	riskPatterns := map[RiskLevel][]string{
-		RiskCritical: {
+	// Risk inference — evaluated in priority order (most restrictive first).
+	// Using ordered slices avoids Go map iteration non-determinism.
+	type riskEntry struct {
+		level    RiskLevel
+		patterns []string
+	}
+	riskOrder := []riskEntry{
+		{RiskCritical, []string{
 			"delete", "drop", "remove", "destroy", "wipe", "purge",
 			"truncate", "kill", "terminate", "shutdown",
-		},
-		RiskHigh: {
+		}},
+		{RiskHigh, []string{
 			"write", "update", "modify", "change", "edit",
 			"create", "insert", "add", "append",
 			"exec", "execute", "run", "call",
-		},
-		RiskMedium: {
+		}},
+		{RiskMedium, []string{
 			"query", "search", "find", "list", "get", "fetch",
 			"read", "describe", "explain", "analyze",
-		},
-		RiskLow: {
+		}},
+		{RiskLow, []string{
 			"ping", "health", "status", "info", "version",
 			"help", "list.*tables", "list.*databases",
-		},
+		}},
 	}
 
-	for risk, patterns := range riskPatterns {
-		for _, pattern := range patterns {
+	for _, entry := range riskOrder {
+		for _, pattern := range entry.patterns {
 			if matched, _ := regexp.MatchString(pattern, toolLower); matched {
-				profile.Risk = risk
+				profile.Risk = entry.level
 				break
 			}
 		}
@@ -197,32 +202,39 @@ func (r *MetadataResolver) inferDefaults(toolName string) SafetyProfile {
 		profile.Risk = RiskMedium
 	}
 
-	// Impact inference
-	impactPatterns := map[ImpactScope][]string{
-		ImpactDelete: {
+	// Impact inference — evaluated in priority order: delete > admin > write > read.
+	// Admin is checked before write so that tool names containing both "set" (write)
+	// and "configure"/"setting"/"admin" (admin) resolve to admin as intended.
+	// Using ordered slices avoids Go map iteration non-determinism.
+	type impactEntry struct {
+		scope    ImpactScope
+		patterns []string
+	}
+	impactOrder := []impactEntry{
+		{ImpactDelete, []string{
 			"delete", "drop", "remove", "destroy", "wipe", "purge",
 			"truncate", "clear", "clean",
-		},
-		ImpactWrite: {
-			"write", "update", "modify", "change", "edit",
-			"create", "insert", "add", "append", "put",
-			"patch", "replace", "set",
-		},
-		ImpactAdmin: {
+		}},
+		{ImpactAdmin, []string{
 			"admin", "config", "configure", "setting",
 			"permission", "grant", "revoke", "role",
 			"user.*manage", "account.*manage",
-		},
-		ImpactRead: {
+		}},
+		{ImpactWrite, []string{
+			"write", "update", "modify", "change", "edit",
+			"create", "insert", "add", "append", "put",
+			"patch", "replace", "set",
+		}},
+		{ImpactRead, []string{
 			"query", "search", "find", "list", "get", "fetch",
 			"read", "describe", "explain", "analyze", "view",
-		},
+		}},
 	}
 
-	for impact, patterns := range impactPatterns {
-		for _, pattern := range patterns {
+	for _, entry := range impactOrder {
+		for _, pattern := range entry.patterns {
 			if matched, _ := regexp.MatchString(pattern, toolLower); matched {
-				profile.Impact = impact
+				profile.Impact = entry.scope
 				break
 			}
 		}
