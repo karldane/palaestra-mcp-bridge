@@ -1247,3 +1247,83 @@ func (h *EnforcerHandler) UserSSEHandler(w http.ResponseWriter, r *http.Request)
 		}
 	}
 }
+
+// UserQueuesPageHandler shows a read-only admin view of all user-tier pending
+// approval requests, grouped by user. Admins can see who has items waiting
+// but cannot approve/deny from this page — those must go through the user
+// themselves or via the main admin queue if an admin-tier escalation occurs.
+func (h *EnforcerHandler) UserQueuesPageHandler(w http.ResponseWriter, r *http.Request) {
+	user := userFromContext(r)
+
+	data := map[string]interface{}{
+		"User":   user,
+		"ByUser": []map[string]interface{}{},
+		"Total":  0,
+	}
+
+	if h.enforcer == nil {
+		if err := h.templates.ExecuteTemplate(w, "admin_enforcer_user_queues.html", data); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+		}
+		return
+	}
+
+	approvals, err := h.enforcer.ListUserPendingApprovals()
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	// Group by UserID
+	byUser := map[string]map[string]interface{}{}
+	order := []string{}
+
+	for _, a := range approvals {
+		if a.Status != "PENDING" {
+			continue
+		}
+		uid := a.UserID
+		if uid == "" {
+			uid = "unknown"
+		}
+		if _, exists := byUser[uid]; !exists {
+			byUser[uid] = map[string]interface{}{
+				"UserID":    uid,
+				"UserEmail": a.UserEmail,
+				"Items":     []map[string]interface{}{},
+			}
+			order = append(order, uid)
+		}
+
+		var prettyArgs string
+		if b, err2 := json.MarshalIndent(json.RawMessage(a.ToolArgs), "", "  "); err2 == nil {
+			prettyArgs = string(b)
+		} else {
+			prettyArgs = a.ToolArgs
+		}
+
+		item := map[string]interface{}{
+			"ID":            a.ID,
+			"ToolName":      a.ToolName,
+			"ToolArgs":      prettyArgs,
+			"Justification": a.Justification,
+			"PolicyID":      a.PolicyID,
+			"Message":       a.ViolationMsg,
+			"RequestedAt":   a.RequestedAt,
+			"ExpiresAt":     a.ExpiresAt,
+		}
+		byUser[uid]["Items"] = append(byUser[uid]["Items"].([]map[string]interface{}), item)
+	}
+
+	rows := make([]map[string]interface{}, 0, len(order))
+	for _, uid := range order {
+		rows = append(rows, byUser[uid])
+	}
+
+	data["ByUser"] = rows
+	data["Total"] = len(approvals)
+
+	if err := h.templates.ExecuteTemplate(w, "admin_enforcer_user_queues.html", data); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+	}
+}

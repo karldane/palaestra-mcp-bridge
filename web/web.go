@@ -159,6 +159,9 @@ func (h *Handler) Register(mux *http.ServeMux) {
 	mux.Handle("/web/user/enforcer/api/deny", h.requireAuth(http.HandlerFunc(enforcerHandler.UserDenyRequest)))
 	mux.Handle("/web/user/enforcer/events", h.requireAuth(http.HandlerFunc(enforcerHandler.UserSSEHandler)))
 
+	// Admin cross-queue view (read-only summary of user-tier queues)
+	mux.Handle("/web/admin/enforcer/user-queues", h.requireAdmin(http.HandlerFunc(enforcerHandler.UserQueuesPageHandler)))
+
 	// Rate limit admin routes
 	rateLimitHandler := NewRateLimitHandler(h.Enforcer, h.Templates, h.Store)
 	mux.Handle("/web/admin/ratelimits", h.requireAdmin(http.HandlerFunc(rateLimitHandler.ListRateLimits)))
