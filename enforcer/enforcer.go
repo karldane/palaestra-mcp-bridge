@@ -517,6 +517,27 @@ func (e *Enforcer) HandleToolCall(ctx context.Context, userID string, toolName s
 	if err != nil {
 		return EnforcerDecision{}, err
 	}
+
+	// Deny-unless-permitted gate.
+	// If no DB policy matched (Action is empty), check whether the tool has an
+	// explicit safety characterisation.  Self-reported, admin-override, and
+	// user-override profiles are implicitly permitted.  Inferred profiles (pattern-
+	// matched defaults — the tool is unknown to us) are hard-denied in code so
+	// that deleting all DB policies cannot open the floodgates.
+	if decision.Action == "" {
+		if profile.Source == "inferred" {
+			_ = e.store.LogAuditRejection(generateID(), userID, toolName, justification, "no_explicit_permit")
+			return EnforcerDecision{
+				Action:   ActionDeny,
+				Severity: SeverityHigh,
+				Message:  "Tool call denied: no policy permits this tool and it has no self-reported safety profile.",
+				PolicyID: "no_explicit_permit",
+			}, ErrPolicyViolation
+		}
+		// self_reported / override / user_override → implicitly permitted
+		decision.Action = ActionAllow
+	}
+
 	return decision, nil
 }
 

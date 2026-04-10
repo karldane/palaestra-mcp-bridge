@@ -124,9 +124,10 @@ func (e *CELEngine) Evaluate(ctx context.Context, context DecisionContext) (Enfo
 		return EnforcerDecision{}, fmt.Errorf("failed to build activation: %w", err)
 	}
 
-	// Track the most restrictive decision
+	// Track the most restrictive decision.
+	// Action is intentionally left empty — "" means "no policy matched".
+	// HandleToolCall applies the implicit-permit check after Evaluate() returns.
 	var finalDecision EnforcerDecision
-	finalDecision.Action = ActionAllow // Default
 	finalDecision.Timestamp = time.Now()
 	finalDecision.Violations = []string{}
 

@@ -69,20 +69,24 @@ func TestJustificationGate_Length(t *testing.T) {
 		}
 	})
 
-	t.Run("sufficient justification passes gate", func(t *testing.T) {
-		// No policies → ALLOW
+	t.Run("sufficient justification passes gate but inferred tool is denied", func(t *testing.T) {
+		// No policies, inferred profile → DENY (no_explicit_permit)
 		decision, err := enf.HandleToolCall(ctx, "user1", "some_tool", map[string]interface{}{}, "backend1", "this is definitely long enough justification", enforcer.CallOptions{})
-		if err != nil {
-			t.Fatalf("unexpected error: %v", err)
+		if err == nil {
+			t.Fatal("expected error for inferred tool with no policy, got nil")
 		}
-		if decision.Action != enforcer.ActionAllow {
-			t.Errorf("expected ALLOW with no policies, got %s", decision.Action)
+		if decision.Action != enforcer.ActionDeny {
+			t.Errorf("expected DENY for inferred tool with no policy, got %s", decision.Action)
+		}
+		if decision.PolicyID != "no_explicit_permit" {
+			t.Errorf("expected PolicyID=no_explicit_permit, got %s", decision.PolicyID)
 		}
 	})
 }
 
 // TestJustificationGate_DisabledWhenZero ensures that setting
-// MinJustificationLength=0 disables the gate entirely.
+// MinJustificationLength=0 disables the gate entirely. An inferred tool with
+// no policies is still hard-denied by the no_explicit_permit gate.
 func TestJustificationGate_DisabledWhenZero(t *testing.T) {
 	s, cleanup := newTestStore(t)
 	defer cleanup()
@@ -96,12 +100,16 @@ func TestJustificationGate_DisabledWhenZero(t *testing.T) {
 	}
 
 	ctx := context.Background()
+	// Justification gate is off, but inferred tool with no policy → DENY (no_explicit_permit)
 	decision, err := enf.HandleToolCall(ctx, "user1", "some_tool", map[string]interface{}{}, "backend1", "", enforcer.CallOptions{})
-	if err != nil {
-		t.Fatalf("unexpected error with gate disabled: %v", err)
+	if err == nil {
+		t.Fatal("expected error for inferred tool with no policy, got nil")
 	}
-	if decision.Action != enforcer.ActionAllow {
-		t.Errorf("expected ALLOW with gate disabled, got %s", decision.Action)
+	if decision.Action != enforcer.ActionDeny {
+		t.Errorf("expected DENY (no_explicit_permit), got %s", decision.Action)
+	}
+	if decision.PolicyID != "no_explicit_permit" {
+		t.Errorf("expected PolicyID=no_explicit_permit, got %s", decision.PolicyID)
 	}
 }
 
@@ -349,5 +357,114 @@ func TestResolveForUser_UserOverrideApplied(t *testing.T) {
 	}
 	if !profileUser.RequiresHITL {
 		t.Error("expected RequiresHITL=true from user override")
+	}
+}
+
+// ---------- Deny-unless-permitted gate ----------
+
+// TestDenyUnlessPermitted_InferredNoPolicyIsDenied verifies that a tool with an
+// inferred safety profile and no matching DB policy is hard-denied with
+// PolicyID="no_explicit_permit".
+func TestDenyUnlessPermitted_InferredNoPolicyIsDenied(t *testing.T) {
+	s, cleanup := newTestStore(t)
+	defer cleanup()
+
+	cfg := enforcer.DefaultEnforcerConfig()
+	cfg.MinJustificationLength = 0 // disable justification gate for simplicity
+
+	enf, err := enforcer.NewEnforcer(cfg, store.NewEnforcerStore(s.DB()), nil)
+	if err != nil {
+		t.Fatalf("NewEnforcer: %v", err)
+	}
+
+	ctx := context.Background()
+	// "unknown_third_party_tool" has no stored profile → inferred source
+	decision, callErr := enf.HandleToolCall(ctx, "user1", "unknown_third_party_tool",
+		map[string]interface{}{}, "third_party_backend", "", enforcer.CallOptions{})
+	if callErr == nil {
+		t.Fatal("expected error for inferred tool with no policy, got nil")
+	}
+	if decision.Action != enforcer.ActionDeny {
+		t.Errorf("expected ActionDeny, got %s", decision.Action)
+	}
+	if decision.PolicyID != "no_explicit_permit" {
+		t.Errorf("expected PolicyID=no_explicit_permit, got %q", decision.PolicyID)
+	}
+}
+
+// TestDenyUnlessPermitted_InferredWithAllowPolicyIsAllowed verifies that a tool
+// with an inferred profile IS allowed when a DB policy explicitly permits it.
+func TestDenyUnlessPermitted_InferredWithAllowPolicyIsAllowed(t *testing.T) {
+	s, cleanup := newTestStore(t)
+	defer cleanup()
+
+	cfg := enforcer.DefaultEnforcerConfig()
+	cfg.MinJustificationLength = 0
+
+	enf, err := enforcer.NewEnforcer(cfg, store.NewEnforcerStore(s.DB()), nil)
+	if err != nil {
+		t.Fatalf("NewEnforcer: %v", err)
+	}
+
+	// Add an ALLOW policy that matches any tool on third_party_backend
+	if err := enf.AddPolicy(enforcer.PolicyRow{
+		ID:         "third_party_allow_all",
+		Name:       "Allow all third party",
+		Expression: `backend_id == "third_party_backend"`,
+		Action:     string(enforcer.ActionAllow),
+		Severity:   string(enforcer.SeverityLow),
+		Enabled:    true,
+		Priority:   10,
+	}); err != nil {
+		t.Fatalf("AddPolicy: %v", err)
+	}
+
+	ctx := context.Background()
+	decision, callErr := enf.HandleToolCall(ctx, "user1", "unknown_third_party_tool",
+		map[string]interface{}{}, "third_party_backend", "", enforcer.CallOptions{})
+	if callErr != nil {
+		t.Fatalf("unexpected error: %v", callErr)
+	}
+	if decision.Action != enforcer.ActionAllow {
+		t.Errorf("expected ActionAllow with explicit policy, got %s", decision.Action)
+	}
+}
+
+// TestDenyUnlessPermitted_SelfReportedNoPolicyIsAllowed verifies that a tool
+// with a self-reported safety profile is implicitly permitted even with no DB
+// policy — the backend's own characterisation is sufficient.
+func TestDenyUnlessPermitted_SelfReportedNoPolicyIsAllowed(t *testing.T) {
+	s, cleanup := newTestStore(t)
+	defer cleanup()
+
+	cfg := enforcer.DefaultEnforcerConfig()
+	cfg.MinJustificationLength = 0
+
+	es := store.NewEnforcerStore(s.DB())
+
+	// Seed a self-reported profile
+	if err := es.UpsertToolProfile(enforcer.ToolProfileRow{
+		ID:          "prof-self-1",
+		BackendID:   "self_reporting_backend",
+		ToolName:    "self_reported_tool",
+		RiskLevel:   "low",
+		ImpactScope: "read",
+	}); err != nil {
+		t.Fatalf("UpsertToolProfile: %v", err)
+	}
+
+	enf, err := enforcer.NewEnforcer(cfg, es, nil)
+	if err != nil {
+		t.Fatalf("NewEnforcer: %v", err)
+	}
+
+	ctx := context.Background()
+	decision, callErr := enf.HandleToolCall(ctx, "user1", "self_reported_tool",
+		map[string]interface{}{}, "self_reporting_backend", "", enforcer.CallOptions{})
+	if callErr != nil {
+		t.Fatalf("unexpected error for self-reported tool: %v", callErr)
+	}
+	if decision.Action != enforcer.ActionAllow {
+		t.Errorf("expected ActionAllow for self-reported tool, got %s", decision.Action)
 	}
 }
