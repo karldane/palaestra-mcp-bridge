@@ -8,6 +8,16 @@ import (
 	"time"
 )
 
+// stripNamespacePrefix removes the backend namespace prefix from toolName.
+// e.g., "qdrant_list_tasks" -> "list_tasks" for backend "qdrant"
+func stripNamespacePrefix(toolName, backendID string) string {
+	prefix := backendID + "_"
+	if strings.HasPrefix(toolName, prefix) {
+		return toolName[len(prefix):]
+	}
+	return toolName
+}
+
 // ToolProfileStore defines the interface for looking up stored safety profiles.
 type ToolProfileStore interface {
 	GetToolProfile(backendID, toolName string) (ToolProfileRow, error)
@@ -63,7 +73,9 @@ func (r *MetadataResolver) Resolve(toolName string, backendID string) (SafetyPro
 
 	// Tier 2: Check stored self-reported profiles (from startup scan)
 	if r.store != nil {
-		profile, err := r.store.GetToolProfile(backendID, toolName)
+		// Strip namespace prefix: qdrant_list_tasks -> list_tasks for qdrant backend
+		lookupName := stripNamespacePrefix(toolName, backendID)
+		profile, err := r.store.GetToolProfile(backendID, lookupName)
 		if err == nil {
 			return SafetyProfile{
 				ToolName:     toolName,
@@ -128,7 +140,9 @@ func (r *MetadataResolver) ResolveForUser(toolName string, backendID string, use
 
 	// Tier 3: Check stored self-reported profiles (from startup scan)
 	if r.store != nil {
-		profile, err := r.store.GetToolProfile(backendID, toolName)
+		// Strip namespace prefix: qdrant_list_tasks -> list_tasks for qdrant backend
+		lookupName := stripNamespacePrefix(toolName, backendID)
+		profile, err := r.store.GetToolProfile(backendID, lookupName)
 		if err == nil {
 			return SafetyProfile{
 				ToolName:     toolName,
