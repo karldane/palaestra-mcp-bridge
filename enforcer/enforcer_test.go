@@ -60,7 +60,7 @@ func TestJustificationGate_Length(t *testing.T) {
 	ctx := context.Background()
 
 	t.Run("short justification is rejected", func(t *testing.T) {
-		decision, err := enf.HandleToolCall(ctx, "user1", "some_tool", map[string]interface{}{}, "backend1", "too short")
+		decision, err := enf.HandleToolCall(ctx, "user1", "some_tool", map[string]interface{}{}, "backend1", "too short", enforcer.CallOptions{})
 		if err == nil {
 			t.Fatal("expected error for short justification, got nil")
 		}
@@ -71,7 +71,7 @@ func TestJustificationGate_Length(t *testing.T) {
 
 	t.Run("sufficient justification passes gate", func(t *testing.T) {
 		// No policies → ALLOW
-		decision, err := enf.HandleToolCall(ctx, "user1", "some_tool", map[string]interface{}{}, "backend1", "this is definitely long enough justification")
+		decision, err := enf.HandleToolCall(ctx, "user1", "some_tool", map[string]interface{}{}, "backend1", "this is definitely long enough justification", enforcer.CallOptions{})
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -96,7 +96,7 @@ func TestJustificationGate_DisabledWhenZero(t *testing.T) {
 	}
 
 	ctx := context.Background()
-	decision, err := enf.HandleToolCall(ctx, "user1", "some_tool", map[string]interface{}{}, "backend1", "")
+	decision, err := enf.HandleToolCall(ctx, "user1", "some_tool", map[string]interface{}{}, "backend1", "", enforcer.CallOptions{})
 	if err != nil {
 		t.Fatalf("unexpected error with gate disabled: %v", err)
 	}
