@@ -1,4 +1,4 @@
-# MCP Bridge
+# Palæstra MCP Bridge
 
 Multi-tenant SSE-to-Stdio bridge for Model Context Protocol (MCP) servers,
 with OAuth 2.1 authentication, per-user credential injection, and a web
