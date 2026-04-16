@@ -180,9 +180,9 @@ func (s *MCPBridgeServer) handleRefreshToolsTool(ctx context.Context, request mc
 				"id":      reqID,
 			}
 			reqBody, _ := json.Marshal(req)
-			reqBody = append(reqBody, '\n')
 
 			respCh := pool.RegisterRequest(reqID)
+			reqBody = append(reqBody, '\n')
 			proc.Stdin.Write(reqBody)
 
 			select {

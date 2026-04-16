@@ -17,7 +17,7 @@ admin interface.
 - **Bcrypt passwords** &mdash; user passwords are stored as bcrypt hashes;
   legacy plaintext is auto-upgraded on login
 - **Process pools** &mdash; per-user, per-backend warm pools with idle
-  garbage collection
+  garbage collection; processes block rather than fail when pool is at capacity
 - **Web admin UI** &mdash; manage users, backends, tokens, and probe backend
   health; cookie-based sessions with role separation (admin / user)
 - **Live reload** &mdash; backend config changes take effect immediately (no
@@ -67,7 +67,6 @@ MCP Bridge manages these MCP server backends:
 | `oracle`   | Oracle database                 | 11   |
 | `qdrant`   | Qdrant vector database          | 25   |
 | `slack`    | Slack messaging                | 30   |
-| `mongodb`   | MongoDB (disabled)             | 0    |
 
 Total: 227 self-reported safety profiles from enabled backends.
 

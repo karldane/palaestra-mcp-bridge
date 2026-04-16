@@ -148,9 +148,9 @@ func (e *ApprovalRequestExecutor) executeWithProcess(pool *poolmgr.Pool, proc *p
 		buf.Reset()
 		buf.WriteString(requestBody)
 	}
-	buf.WriteByte('\n')
 
 	respCh := pool.RegisterRequest(reqID)
+	buf.WriteByte('\n')
 	proc.Stdin.Write(buf.Bytes())
 	shared.Debugf("ExecuteRequest: sent request, waiting for response (timeout=60s)")
 

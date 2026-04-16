@@ -637,3 +637,13 @@ func (s *EnforcerStore) CleanupExpiredRateBuckets(windowDuration time.Duration) 
 	_, err := s.db.Exec(`DELETE FROM enforcer_rate_buckets WHERE window_start < ?`, cutoff)
 	return err
 }
+
+// GetToolPrefix returns the tool_prefix for a backend.
+func (s *EnforcerStore) GetToolPrefix(backendID string) (string, error) {
+	var toolPrefix string
+	err := s.db.QueryRow("SELECT tool_prefix FROM backends WHERE id = ?", backendID).Scan(&toolPrefix)
+	if err != nil {
+		return "", err
+	}
+	return toolPrefix, nil
+}

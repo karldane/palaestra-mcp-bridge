@@ -397,10 +397,10 @@ func (pool *Pool) performMCPHandshake(proc *ManagedProcess) bool {
 	if err := json.Compact(buf, initBody); err != nil {
 		buf.Write(initBody)
 	}
-	buf.WriteByte('\n')
 
 	respCh := pool.RegisterRequest(initID)
 
+	buf.WriteByte('\n')
 	proc.Stdin.Write(buf.Bytes())
 
 	select {
@@ -443,7 +443,6 @@ func (pool *Pool) performMCPHandshake(proc *ManagedProcess) bool {
 		buf.Write(notifBody)
 	}
 	buf.WriteByte('\n')
-
 	proc.Stdin.Write(buf.Bytes())
 
 	return true
@@ -483,45 +482,23 @@ func (pool *Pool) WaitForWarm(timeout time.Duration) bool {
 	return false
 }
 
-// WaitForWarmWithMax tries to acquire a warm process. If MaxPoolSize is set and all
-// processes are currently in use (CurrentSize >= MaxPoolSize), it returns immediately
-// with an error indicating max is reached. Otherwise it waits up to the timeout for
-// a process to become available. If the pool is unavailable (circuit breaker open),
+// WaitForWarmWithMax tries to acquire a warm process, blocking up to the timeout
+// if none is immediately available. If the pool is unavailable (circuit breaker open),
 // it returns immediately with a "backend unavailable" error.
+// Unlike the previous implementation, this method BLOCKS when all processes are in
+// use rather than returning an error — callers should wait for a process returned by
+// another request completing and released back to the warm pool.
 func (pool *Pool) WaitForWarmWithMax(timeout time.Duration) (*ManagedProcess, error) {
-	// Fast path: if backend is unavailable, return immediately
 	if pool.IsUnavailable() {
 		return nil, fmt.Errorf("backend unavailable: %s", pool.BackendID)
 	}
 
-	maxPoolSize := pool.MaxPoolSize
-
-	// If we have a max and we're at or above it, check if there's a process available
-	if maxPoolSize > 0 {
-		currentSize := pool.GetCurrentSize()
-		if currentSize >= maxPoolSize {
-			// All processes are busy - try to get one anyway (may have been released)
-			select {
-			case proc := <-pool.Warm:
-				return proc, nil
-			default:
-				// All processes are definitely busy and we're at max - return error
-				return nil, fmt.Errorf("max_pool_size reached: %d/%d processes busy", currentSize, maxPoolSize)
-			}
-		}
-	}
-
-	// Try to get a process without waiting
-	select {
-	case proc := <-pool.Warm:
+	if proc := pool.TryAcquireWarm(); proc != nil {
 		return proc, nil
-	default:
 	}
 
-	// Wait for a process to become available
 	deadline := time.Now().Add(timeout)
 	for time.Now().Before(deadline) {
-		// Check circuit breaker status during wait
 		if pool.IsUnavailable() {
 			return nil, fmt.Errorf("backend unavailable: %s", pool.BackendID)
 		}
@@ -532,7 +509,7 @@ func (pool *Pool) WaitForWarmWithMax(timeout time.Duration) (*ManagedProcess, er
 		}
 		time.Sleep(50 * time.Millisecond)
 	}
-	// Final check: if backend became unavailable during the wait, return unavailable error
+
 	if pool.IsUnavailable() {
 		return nil, fmt.Errorf("backend unavailable: %s", pool.BackendID)
 	}
@@ -548,25 +525,16 @@ func (pool *Pool) GetWarmWithRetry(timeout time.Duration) (*ManagedProcess, erro
 		timeout = DefaultWarmWaitTimeout
 	}
 
-	// Fast path: try to get an available warm process immediately
 	if proc := pool.TryAcquireWarm(); proc != nil {
 		return proc, nil
 	}
 
-	// No warm process available - trigger spawning if we can fit more in the warm channel
-	maxPoolSize := pool.MaxPoolSize
-	currentSize := pool.GetCurrentSize()
-	warmAvailable := len(pool.Warm) < maxPoolSize
-	if maxPoolSize == 0 || (currentSize < maxPoolSize && warmAvailable) {
-		// Trigger a new spawn in the background
-		if !pool.IsSpawning() {
-			shared.Debugf("GetWarmWithRetry: no warm processes, triggering spawn for %s", pool.BackendID)
-			pool.wg.Add(1)
-			go pool.spawnAndHandshake()
-		}
+	if !pool.IsUnavailable() && !pool.IsSpawning() {
+		shared.Debugf("GetWarmWithRetry: no warm processes, triggering spawn for %s", pool.BackendID)
+		pool.wg.Add(1)
+		go pool.spawnAndHandshake()
 	}
 
-	// Wait for a warm process to become available
 	return pool.WaitForWarmWithMax(timeout)
 }
 

@@ -42,6 +42,7 @@ type EnforcerStore interface {
 	LogAuditEvent(requestID string, userID string, toolName string, action string, policyID string, message string, context map[string]interface{}, justification string, arguments map[string]interface{}) error
 	LogAuditRejection(requestID, userID, toolName, justification, rejectionReason string) error
 	GetToolProfile(backendID, toolName string) (ToolProfileRow, error)
+	GetToolPrefix(backendID string) (string, error)
 	ListOverrides() ([]EnforcerOverrideRow, error)
 	ListUserOverrides(userID string) ([]EnforcerOverrideRow, error)
 	UpsertOverride(override EnforcerOverrideRow) error

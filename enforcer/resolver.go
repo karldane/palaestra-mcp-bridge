@@ -8,12 +8,19 @@ import (
 	"time"
 )
 
-// stripNamespacePrefix removes the backend namespace prefix from toolName.
-// e.g., "qdrant_list_tasks" -> "list_tasks" for backend "qdrant"
-func stripNamespacePrefix(toolName, backendID string) string {
-	prefix := backendID + "_"
+// stripNamespacePrefix removes the backend tool_prefix from toolName.
+// e.g., "backoffice_repo_lsp_search" -> "search" for backend "backoffice" with prefix "backoffice_repo_lsp"
+func stripNamespacePrefix(store ToolProfileStore, toolName, backendID string) string {
+	prefix, err := store.GetToolPrefix(backendID)
+	if err != nil || prefix == "" {
+		prefix = backendID + "_"
+	}
 	if strings.HasPrefix(toolName, prefix) {
-		return toolName[len(prefix):]
+		result := toolName[len(prefix):]
+		if strings.HasPrefix(result, "_") {
+			result = result[1:]
+		}
+		return result
 	}
 	return toolName
 }
@@ -21,6 +28,7 @@ func stripNamespacePrefix(toolName, backendID string) string {
 // ToolProfileStore defines the interface for looking up stored safety profiles.
 type ToolProfileStore interface {
 	GetToolProfile(backendID, toolName string) (ToolProfileRow, error)
+	GetToolPrefix(backendID string) (string, error)
 	ListUserOverrides(userID string) ([]EnforcerOverrideRow, error)
 }
 
@@ -73,15 +81,8 @@ func (r *MetadataResolver) Resolve(toolName string, backendID string) (SafetyPro
 
 	// Tier 2: Check stored self-reported profiles (from startup scan)
 	if r.store != nil {
-		// Strip namespace prefix: qdrant_list_tasks -> list_tasks for qdrant backend
-		lookupName := stripNamespacePrefix(toolName, backendID)
-		println("DEBUG: ResolveForTool backendID=", backendID, " toolName=", toolName, " lookupName=", lookupName)
+		lookupName := stripNamespacePrefix(r.store, toolName, backendID)
 		profile, err := r.store.GetToolProfile(backendID, lookupName)
-		if err != nil {
-			println("DEBUG: GetToolProfile error:", err.Error())
-		} else {
-			println("DEBUG: Got profile for", lookupName, "risk=", profile.RiskLevel)
-		}
 		if err == nil {
 			return SafetyProfile{
 				ToolName:     toolName,
@@ -146,15 +147,8 @@ func (r *MetadataResolver) ResolveForUser(toolName string, backendID string, use
 
 	// Tier 3: Check stored self-reported profiles (from startup scan)
 	if r.store != nil {
-		// Strip namespace prefix: qdrant_list_tasks -> list_tasks for qdrant backend
-		lookupName := stripNamespacePrefix(toolName, backendID)
-		println("DEBUG USER: ResolveForUser backendID=", backendID, " toolName=", toolName, " lookupName=", lookupName)
+		lookupName := stripNamespacePrefix(r.store, toolName, backendID)
 		profile, err := r.store.GetToolProfile(backendID, lookupName)
-		if err != nil {
-			println("DEBUG USER: GetToolProfile error:", err.Error())
-		} else {
-			println("DEBUG USER: Got profile for", lookupName, "risk=", profile.RiskLevel)
-		}
 		if err == nil {
 			return SafetyProfile{
 				ToolName:     toolName,

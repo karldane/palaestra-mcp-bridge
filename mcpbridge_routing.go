@@ -168,10 +168,10 @@ func (s *MCPBridgeServer) handleToolsList(w http.ResponseWriter, r *http.Request
 			"id":      reqID,
 		}
 		reqBody, _ := json.Marshal(req)
-		reqBody = append(reqBody, '\n')
 		shared.Debugf("handleToolsList: sending tools/list to backend %s, reqID=%s", backend.ID, reqID)
 
 		respCh := pool.RegisterRequest(reqID)
+		reqBody = append(reqBody, '\n')
 		proc.Stdin.Write(reqBody)
 
 		select {
@@ -466,9 +466,9 @@ func (s *MCPBridgeServer) handleToolsCall(w http.ResponseWriter, r *http.Request
 		buf.Reset()
 		buf.Write(modifiedBody)
 	}
-	buf.WriteByte('\n')
 
 	respCh := pool.RegisterRequest(reqID)
+	buf.WriteByte('\n')
 	proc.Stdin.Write(buf.Bytes())
 	shared.Debugf("handleToolsCall: sent request to backend, waiting for response (timeout=60s)")
 
@@ -516,9 +516,9 @@ func (s *MCPBridgeServer) refreshBackendTools(userID string, backend *store.Back
 			"id":      reqID,
 		}
 		reqBody, _ := json.Marshal(req)
-		reqBody = append(reqBody, '\n')
 
 		respCh := pool.RegisterRequest(reqID)
+		reqBody = append(reqBody, '\n')
 		proc.Stdin.Write(reqBody)
 
 		select {
@@ -588,9 +588,9 @@ func (s *MCPBridgeServer) handleDefaultBackend(w http.ResponseWriter, r *http.Re
 		buf.Reset()
 		buf.Write(body)
 	}
-	buf.WriteByte('\n')
 
 	respCh := pool.RegisterRequest(reqID)
+	buf.WriteByte('\n')
 	proc.Stdin.Write(buf.Bytes())
 
 	select {

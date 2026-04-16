@@ -265,21 +265,28 @@ func captureStdout(pool *Pool, proc *ManagedProcess) {
 		}
 	}()
 
-	scanner := bufio.NewScanner(proc.Stdout)
-	// Increase buffer size to handle large responses (e.g., listing all users, full PRs)
-	// Go's bufio.Scanner has a max of 64MB, we use 32MB to handle most cases
-	const maxCapacity = 32 * 1024 * 1024 // 32MB
-	buf := make([]byte, maxCapacity)
-	scanner.Buffer(buf, maxCapacity)
+	// Use bufio.Reader instead of Scanner to handle large responses.
+	// Scanner splits on lines which fails when JSON bodies exceed buffer size.
+	reader := bufio.NewReader(proc.Stdout)
 
-	for scanner.Scan() {
-		data := scanner.Bytes()
-		dataCopy := make([]byte, len(data))
-		copy(dataCopy, data)
+	for {
+		line, err := reader.ReadString('\n')
+		if err != nil {
+			if err == io.EOF {
+				break
+			}
+			shared.Debugf("captureStdout read error: %v", err)
+			break
+		}
 
-		// Log truncated version to avoid flooding logs with large responses
+		// Trim trailing newline/CR
+		data := []byte(strings.TrimRight(line, "\r\n"))
+		if len(data) == 0 {
+			continue
+		}
+
 		const maxLogLen = 200
-		logLine := string(dataCopy)
+		logLine := string(data)
 		if len(logLine) > maxLogLen {
 			logLine = logLine[:maxLogLen] + "...[truncated]"
 		}
@@ -287,15 +294,12 @@ func captureStdout(pool *Pool, proc *ManagedProcess) {
 
 		proc.mu.Lock()
 		select {
-		case proc.LineChan <- dataCopy:
+		case proc.LineChan <- data:
 		default:
 		}
 		proc.mu.Unlock()
 
-		pool.BroadcastToSSE(dataCopy)
-	}
-	if err := scanner.Err(); err != nil {
-		shared.Debugf("captureStdout scanner error: %v", err)
+		pool.BroadcastToSSE(data)
 	}
 	shared.Debug("captureStdout exiting")
 }

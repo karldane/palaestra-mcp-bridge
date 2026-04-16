@@ -86,17 +86,45 @@ func RunPrecache(ctx context.Context, cfg PrecacheConfig) error {
 			for _, tool := range tools {
 				if meta, ok := tool["_meta"].(map[string]interface{}); ok {
 					if profile, ok := meta["enforcer_profile"].(map[string]interface{}); ok {
+						getStr := func(k string) string {
+							if v, ok := profile[k]; ok {
+								if s, ok := v.(string); ok {
+									return s
+								}
+							}
+							return ""
+						}
+						getFloat := func(k string) float64 {
+							if v, ok := profile[k]; ok {
+								if f, ok := v.(float64); ok {
+									return f
+								}
+							}
+							return 0
+						}
+						getBool := func(k string) bool {
+							if v, ok := profile[k]; ok {
+								if b, ok := v.(bool); ok {
+									return b
+								}
+							}
+							return false
+						}
+						toolName := ""
+						if n, ok := tool["name"].(string); ok {
+							toolName = n
+						}
 						toolProfile := enforcer.ToolProfileRow{
 							ID:           uuid.NewString(),
 							BackendID:    backend.ID,
-							ToolName:     tool["name"].(string),
-							RiskLevel:    profile["risk_level"].(string),
-							ImpactScope:  profile["impact_scope"].(string),
-							ResourceCost: int(profile["resource_cost"].(float64)),
-							RequiresHITL: profile["requires_hitl"].(bool),
-							PIIExposure:  profile["pii_exposure"].(bool),
-							Idempotent:   profile["idempotent"].(bool),
-							RawProfile:   "", // Will be filled below if needed
+							ToolName:     toolName,
+							RiskLevel:    getStr("risk_level"),
+							ImpactScope:  getStr("impact_scope"),
+							ResourceCost: int(getFloat("resource_cost")),
+							RequiresHITL: getBool("requires_hitl"),
+							PIIExposure:  getBool("pii_exposure"),
+							Idempotent:   getBool("idempotent"),
+							RawProfile:   "",
 							ScannedAt:    time.Now(),
 						}
 						// Convert raw profile to JSON string if it's a map
@@ -136,6 +164,9 @@ func buildEnvForPrecache(backend *store.Backend, tokens []store.UserToken) (map[
 			env[e[:idx]] = e[idx+1:]
 		}
 	}
+
+	// Tell backends we're in precache mode - they can skip heavy initialization
+	env["MCP_PRECACHE"] = "true"
 
 	// Parse system-wide env vars from backend config
 	if backend.Env != "" && backend.Env != "{}" {

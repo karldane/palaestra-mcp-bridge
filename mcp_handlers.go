@@ -102,10 +102,10 @@ func handleToolsList(a *app, w http.ResponseWriter, r *http.Request, userID stri
 				"id":      reqID,
 			}
 			reqBody, _ := json.Marshal(req)
-			reqBody = append(reqBody, '\n')
 			shared.Debugf("Sending tools/list request to backend %s: %s", backend.ID, string(reqBody))
 
 			respCh := pool.RegisterRequest(reqID)
+			reqBody = append(reqBody, '\n')
 			proc.Stdin.Write(reqBody)
 
 			select {
@@ -495,9 +495,9 @@ func handleToolsCall(a *app, w http.ResponseWriter, r *http.Request, userID stri
 		buf.Reset()
 		buf.Write(modifiedBody)
 	}
-	buf.WriteByte('\n')
 
 	respCh := pool.RegisterRequest(reqID)
+	buf.WriteByte('\n')
 	proc.Stdin.Write(buf.Bytes())
 
 	select {
@@ -555,9 +555,9 @@ func handleDefaultBackend(a *app, w http.ResponseWriter, r *http.Request, userID
 		buf.Reset()
 		buf.Write(body)
 	}
-	buf.WriteByte('\n')
 
 	respCh := pool.RegisterRequest(reqID)
+	buf.WriteByte('\n')
 	proc.Stdin.Write(buf.Bytes())
 
 	select {
