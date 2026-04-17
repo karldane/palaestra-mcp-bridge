@@ -504,6 +504,14 @@ func (pool *Pool) WaitForWarmWithMax(timeout time.Duration) (*ManagedProcess, er
 		}
 		select {
 		case proc := <-pool.Warm:
+			if !proc.IsAlive() {
+				shared.Warnf("WaitForWarmWithMax: process %d for %s died unexpectedly, discarding", proc.Cmd.Process.Pid, pool.BackendID)
+				proc.Kill()
+				continue
+			}
+			pool.mu.Lock()
+			pool.CurrentSize--
+			pool.mu.Unlock()
 			return proc, nil
 		default:
 		}
@@ -621,6 +629,11 @@ func (pool *Pool) SpawnAndHandshake() {
 func (pool *Pool) TryAcquireWarm() *ManagedProcess {
 	select {
 	case proc := <-pool.Warm:
+		if !proc.IsAlive() {
+			shared.Warnf("TryAcquireWarm: process %d for %s died unexpectedly, discarding", proc.Cmd.Process.Pid, pool.BackendID)
+			proc.Kill()
+			return nil
+		}
 		pool.mu.Lock()
 		pool.CurrentSize--
 		pool.mu.Unlock()

@@ -44,6 +44,18 @@ func (m *ManagedProcess) Kill() {
 	}
 }
 
+// IsAlive checks if the process is still running
+func (m *ManagedProcess) IsAlive() bool {
+	if m.Cmd.Process == nil {
+		return false
+	}
+	// ProcessState is non-nil once the process has exited
+	if m.Cmd.ProcessState != nil && m.Cmd.ProcessState.Exited() {
+		return false
+	}
+	return true
+}
+
 func (m *ManagedProcess) CleanupSecrets() error {
 	if m.secretInjector != nil {
 		return m.secretInjector.Cleanup()

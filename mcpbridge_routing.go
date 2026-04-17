@@ -441,9 +441,10 @@ func (s *MCPBridgeServer) handleToolsCall(w http.ResponseWriter, r *http.Request
 
 	proc, err := pool.GetWarmWithRetry(poolmgr.DefaultWarmWaitTimeout)
 	if err != nil {
-		shared.Errorf("handleToolsCall: no warm process available: %v", err)
+		shared.Errorf("handleToolsCall: failed to get process for %s: %v", backendID, err)
 		w.WriteHeader(http.StatusServiceUnavailable)
-		w.Write([]byte("No warm processes available"))
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(fmt.Sprintf(`{"jsonrpc":"2.0","error":{"code":-32003,"message":"Backend %s unavailable: %v"}}`, backendID, err)))
 		return
 	}
 
@@ -480,9 +481,14 @@ func (s *MCPBridgeServer) handleToolsCall(w http.ResponseWriter, r *http.Request
 			w.Header().Set("Content-Type", "application/json")
 			w.Write(response)
 		} else {
-			shared.Debugf("handleToolsCall: empty or invalid response")
-			w.WriteHeader(http.StatusGatewayTimeout)
-			w.Write([]byte(`{"jsonrpc":"2.0","error":{"code":-32000,"message":"No response received"}}`))
+			// Channel closed means the backend process died unexpectedly
+			shared.Warnf("handleToolsCall: backend process died unexpectedly for %s", backendID)
+			w.WriteHeader(http.StatusServiceUnavailable)
+			w.Header().Set("Content-Type", "application/json")
+			w.Write([]byte(fmt.Sprintf(`{"jsonrpc":"2.0","error":{"code":-32004,"message":"Backend %s process crashed during request, please retry"}}`, backendID)))
+			// Kill the dead process and let the pool refill
+			proc.Kill()
+			return
 		}
 	case <-time.After(60 * time.Second):
 		pool.UnregisterRequest(reqID)
