@@ -67,8 +67,10 @@ func (h *Handler) tokenTTL() time.Duration {
 // It supports both OAuth access tokens and API keys (prefixed with "mcp_").
 func (h *Handler) Middleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		log.Printf("[auth] checking request: %s %s", r.Method, r.URL.Path)
 		token := extractBearer(r)
 		if token == "" {
+			log.Printf("[auth] no token, rejecting")
 			h.unauthorized(w)
 			return
 		}

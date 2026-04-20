@@ -644,6 +644,8 @@ func TestIntegration_FullOAuthAndOpencodeFlow(t *testing.T) {
 	mux.HandleFunc("/healthz", healthzHandler)
 	mux.HandleFunc("/readyz", readyzHandler(a))
 	mux.Handle("/", a.auth.Middleware(rootHandler(a)))
+	mux.Handle("/mcp/v2", a.auth.Middleware(v2HandleWrapper(a)))
+	mux.Handle("/mcp", a.auth.Middleware(v2HandleWrapper(a)))
 
 	// Update issuer to match the test server URL (set after server starts)
 	ts := httptest.NewServer(mux)
@@ -878,6 +880,102 @@ func TestIntegration_FullOAuthAndOpencodeFlow(t *testing.T) {
 		idStr := fmt.Sprintf("%v", rpc.ID)
 		if idStr != "1" {
 			t.Errorf("expected id=1, got id=%v", rpc.ID)
+		}
+	})
+
+	// ---- Step 7: POST /mcp/v2 initialize with OAuth token ----
+	t.Run("POST /mcp/v2 initialize with OAuth token", func(t *testing.T) {
+		body := `{"jsonrpc":"2.0","method":"initialize","id":0,"params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"opencode","version":"0.1.0"}}}`
+
+		req, _ := http.NewRequest("POST", ts.URL+"/mcp/v2", strings.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Authorization", "Bearer "+accessToken)
+
+		resp, err := client.Do(req)
+		if err != nil {
+			t.Fatalf("POST /mcp/v2 failed: %v", err)
+		}
+		defer resp.Body.Close()
+
+		if resp.StatusCode == http.StatusUnauthorized {
+			t.Fatal("POST /mcp/v2 returned 401 — token not accepted")
+		}
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("POST /mcp/v2 returned %d, not 200", resp.StatusCode)
+		}
+
+		respBody, _ := ioutil.ReadAll(resp.Body)
+		if len(respBody) == 0 {
+			t.Fatal("expected response body from /mcp/v2 initialize, got empty")
+		}
+
+		// Check it's a valid JSON-RPC response
+		var rpcResp map[string]interface{}
+		if err := json.Unmarshal(respBody, &rpcResp); err != nil {
+			t.Fatalf("response is not valid JSON: %v (body: %s)", err, string(respBody))
+		}
+
+		if rpcResp["result"] == nil {
+			t.Fatalf("expected result in response, got: %s", respBody)
+		}
+
+		result := rpcResp["result"].(map[string]interface{})
+		serverInfo := result["serverInfo"].(map[string]interface{})
+		if serverInfo["name"] != "mcp-bridge-v2" {
+			t.Errorf("expected server name mcp-bridge-v2, got %v", serverInfo["name"])
+		}
+	})
+
+	// ---- Step 8: POST /mcp/v2 tools/list with OAuth token ----
+	t.Run("POST /mcp/v2 tools/list with OAuth token", func(t *testing.T) {
+		body := `{"jsonrpc":"2.0","method":"tools/list","id":1}`
+
+		req, _ := http.NewRequest("POST", ts.URL+"/mcp/v2", strings.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Authorization", "Bearer "+accessToken)
+
+		resp, err := client.Do(req)
+		if err != nil {
+			t.Fatalf("POST /mcp/v2 failed: %v", err)
+		}
+		defer resp.Body.Close()
+
+		if resp.StatusCode == http.StatusUnauthorized {
+			t.Fatal("POST /mcp/v2 returned 401")
+		}
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("POST /mcp/v2 returned %d", resp.StatusCode)
+		}
+
+		respBody, _ := ioutil.ReadAll(resp.Body)
+		var rpcResp map[string]interface{}
+		if err := json.Unmarshal(respBody, &rpcResp); err != nil {
+			t.Fatalf("response is not valid JSON: %v", err)
+		}
+
+		result := rpcResp["result"].(map[string]interface{})
+		tools := result["tools"].([]interface{})
+		if len(tools) == 0 {
+			t.Fatal("expected tools in tools/list response")
+		}
+		t.Logf("Got %d tools from /mcp/v2", len(tools))
+	})
+
+	// ---- Step 9: POST /mcp/v2 without token returns 401 ----
+	t.Run("POST /mcp/v2 without token returns 401", func(t *testing.T) {
+		body := `{"jsonrpc":"2.0","method":"initialize","id":0}`
+
+		req, _ := http.NewRequest("POST", ts.URL+"/mcp/v2", strings.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+
+		resp, err := client.Do(req)
+		if err != nil {
+			t.Fatalf("POST /mcp/v2 failed: %v", err)
+		}
+		defer resp.Body.Close()
+
+		if resp.StatusCode != http.StatusUnauthorized {
+			t.Errorf("expected 401 without token, got %d", resp.StatusCode)
 		}
 	})
 }
@@ -1551,4 +1649,294 @@ func testAppNoBackends(t *testing.T) (a *app, apiKey string, cleanup func()) {
 	}
 
 	return a, apiKey, cleanup
+}
+
+// ---------- MCP v2 Endpoint Tests ----------
+
+func TestIntegration_V2Endpoint(t *testing.T) {
+	a, _, cleanup := testApp(t, "cat", 1)
+	defer cleanup()
+
+	// Test 1: initialize on v2 endpoint
+	t.Run("v2 initialize returns capabilities", func(t *testing.T) {
+		body := `{"jsonrpc":"2.0","method":"initialize","id":0,"params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"test","version":"1.0"}}}`
+		req := httptest.NewRequest("POST", "/mcp/v2", strings.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		// Add user context
+		ctx := context.WithValue(req.Context(), auth.UserIDKey, "test-user-1")
+		req = req.WithContext(ctx)
+
+		w := httptest.NewRecorder()
+		v2HandleWrapper(a).ServeHTTP(w, req)
+
+		if w.Code != http.StatusOK {
+			t.Fatalf("expected 200, got %d. Body: %s", w.Code, w.Body.String())
+		}
+
+		var resp map[string]interface{}
+		if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+			t.Fatalf("invalid JSON response: %v", err)
+		}
+
+		result, ok := resp["result"].(map[string]interface{})
+		if !ok {
+			t.Fatal("expected result in response")
+		}
+
+		serverInfo, ok := result["serverInfo"].(map[string]interface{})
+		if !ok {
+			t.Fatal("expected serverInfo in result")
+		}
+		if serverInfo["name"] != "mcp-bridge-v2" {
+			t.Errorf("expected server name mcp-bridge-v2, got %v", serverInfo["name"])
+		}
+	})
+
+	// Test 2: tools/list on v2 endpoint
+	t.Run("v2 tools/list returns namespaces", func(t *testing.T) {
+		body := `{"jsonrpc":"2.0","method":"tools/list","id":1}`
+		req := httptest.NewRequest("POST", "/mcp/v2", strings.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		ctx := context.WithValue(req.Context(), auth.UserIDKey, "test-user-1")
+		req = req.WithContext(ctx)
+
+		w := httptest.NewRecorder()
+		v2HandleWrapper(a).ServeHTTP(w, req)
+
+		if w.Code != http.StatusOK {
+			t.Fatalf("expected 200, got %d. Body: %s", w.Code, w.Body.String())
+		}
+
+		var resp map[string]interface{}
+		if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+			t.Fatalf("invalid JSON response: %v", err)
+		}
+
+		result, ok := resp["result"].(map[string]interface{})
+		if !ok {
+			t.Fatal("expected result in response")
+		}
+
+		tools, ok := result["tools"].([]interface{})
+		if !ok {
+			t.Fatal("expected tools in result")
+		}
+
+		// Should have namespace descriptors + namespace_expand + tool_call
+		t.Logf("Got %d tools", len(tools))
+		for _, tt := range tools {
+			tool := tt.(map[string]interface{})
+			t.Logf("Tool: %s", tool["name"])
+		}
+
+		// Should have at least namespace_expand and tool_call
+		foundExpand := false
+		foundToolCall := false
+		for _, tt := range tools {
+			tool := tt.(map[string]interface{})
+			if tool["name"] == "namespace_expand" {
+				foundExpand = true
+			}
+			if tool["name"] == "tool_call" {
+				foundToolCall = true
+			}
+		}
+		if !foundExpand {
+			t.Error("missing namespace_expand tool")
+		}
+		if !foundToolCall {
+			t.Error("missing tool_call tool")
+		}
+	})
+
+	// Test 3: /mcp alias route exists
+	t.Run("/mcp route exists", func(t *testing.T) {
+		body := `{"jsonrpc":"2.0","method":"initialize","id":0}`
+		req := httptest.NewRequest("POST", "/mcp", strings.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		ctx := context.WithValue(req.Context(), auth.UserIDKey, "test-user-1")
+		req = req.WithContext(ctx)
+
+		w := httptest.NewRecorder()
+		v2HandleWrapper(a).ServeHTTP(w, req)
+
+		if w.Code != http.StatusOK {
+			t.Fatalf("expected 200, got %d. Body: %s", w.Code, w.Body.String())
+		}
+	})
+
+	// Test 4: v2 with empty backends (no backend namespaces)
+	t.Run("v2 with empty backends", func(t *testing.T) {
+		// Create app without any backends
+		a2, _, cleanup2 := testAppNoBackends(t)
+		defer cleanup2()
+
+		body := `{"jsonrpc":"2.0","method":"tools/list","id":1}`
+		req := httptest.NewRequest("POST", "/mcp/v2", strings.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		ctx := context.WithValue(req.Context(), auth.UserIDKey, "test-user-1")
+		req = req.WithContext(ctx)
+
+		w := httptest.NewRecorder()
+		v2HandleWrapper(a2).ServeHTTP(w, req)
+
+		if w.Code != http.StatusOK {
+			t.Fatalf("expected 200, got %d. Body: %s", w.Code, w.Body.String())
+		}
+
+		var resp map[string]interface{}
+		if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+			t.Fatalf("invalid JSON response: %v", err)
+		}
+
+		result, ok := resp["result"].(map[string]interface{})
+		if !ok {
+			t.Fatal("expected result in response")
+		}
+
+		tools, ok := result["tools"].([]interface{})
+		if !ok {
+			t.Fatal("expected tools in result")
+		}
+
+		// With no backends, should only have mcpbridge + verbs
+		t.Logf("Got %d tools with no backends", len(tools))
+		for _, tt := range tools {
+			tool := tt.(map[string]interface{})
+			t.Logf("Tool: %s", tool["name"])
+		}
+	})
+}
+
+// TestIntegration_V2WithAuthMiddleware tests v2 endpoint going through auth middleware with valid token.
+func TestIntegration_V2WithAuthMiddleware(t *testing.T) {
+	a, token, cleanup := testApp(t, "cat", 1)
+	defer cleanup()
+
+	// Test: v2 initialize through full auth middleware
+	t.Run("v2 initialize through auth middleware", func(t *testing.T) {
+		body := `{"jsonrpc":"2.0","method":"initialize","id":0,"params":{}}`
+		req := authRequest("POST", "/mcp/v2", body, token)
+		req.Header.Set("Content-Type", "application/json")
+
+		w := httptest.NewRecorder()
+		v2Handler := v2HandleWrapper(a)
+		// Wrap with auth middleware
+		handler := a.auth.Middleware(v2Handler)
+		handler.ServeHTTP(w, req)
+
+		// Should NOT be 401 - token is valid
+		if w.Code == http.StatusUnauthorized {
+			t.Fatalf("expected 200, got 401 (auth rejected valid token). Body: %s", w.Body.String())
+		}
+		if w.Code != http.StatusOK {
+			t.Fatalf("expected 200, got %d. Body: %s", w.Code, w.Body.String())
+		}
+
+		var resp map[string]interface{}
+		if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+			t.Fatalf("invalid JSON: %v", err)
+		}
+		result, ok := resp["result"].(map[string]interface{})
+		if !ok {
+			t.Fatal("expected result in response")
+		}
+		serverInfo := result["serverInfo"].(map[string]interface{})
+		if serverInfo["name"] != "mcp-bridge-v2" {
+			t.Errorf("expected mcp-bridge-v2, got %v", serverInfo["name"])
+		}
+	})
+
+	// Test: Without token returns 401
+	t.Run("v2 without token returns 401", func(t *testing.T) {
+		body := `{"jsonrpc":"2.0","method":"initialize","id":0}`
+		req := httptest.NewRequest("POST", "/mcp/v2", strings.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+
+		w := httptest.NewRecorder()
+		handler := a.auth.Middleware(v2HandleWrapper(a))
+		handler.ServeHTTP(w, req)
+
+		if w.Code != http.StatusUnauthorized {
+			t.Errorf("expected 401 without token, got %d", w.Code)
+		}
+	})
+
+	// Test: With invalid token returns 401
+	t.Run("v2 with invalid token returns 401", func(t *testing.T) {
+		body := `{"jsonrpc":"2.0","method":"initialize","id":0}`
+		req := authRequest("POST", "/mcp/v2", body, "invalid-token")
+		req.Header.Set("Content-Type", "application/json")
+
+		w := httptest.NewRecorder()
+		handler := a.auth.Middleware(v2HandleWrapper(a))
+		handler.ServeHTTP(w, req)
+
+		if w.Code != http.StatusUnauthorized {
+			t.Errorf("expected 401 with invalid token, got %d", w.Code)
+		}
+	})
+}
+
+// TestIntegration_V2FullFlow simulates the full MCP client flow:
+// initialize → tools/list → namespace_expand → tool_call
+func TestIntegration_V2FullFlow(t *testing.T) {
+	a, token, cleanup := testApp(t, "echo hello", 1)
+	defer cleanup()
+
+	handler := a.auth.Middleware(v2HandleWrapper(a))
+
+	// Step 1: initialize
+	initBody := `{"jsonrpc":"2.0","method":"initialize","id":0,"params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"test","version":"1.0"}}}`
+	req := authRequest("POST", "/mcp/v2", initBody, token)
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("initialize failed: %d - %s", w.Code, w.Body.String())
+	}
+	var initResp map[string]interface{}
+	if err := json.Unmarshal(w.Body.Bytes(), &initResp); err != nil {
+		t.Fatalf("invalid JSON: %v", err)
+	}
+	if initResp["result"] == nil {
+		t.Fatal("initialize expected result, got error")
+	}
+	t.Logf("initialize success")
+
+	// Step 2: tools/list
+	toolsBody := `{"jsonrpc":"2.0","method":"tools/list","id":1}`
+	req = authRequest("POST", "/mcp/v2", toolsBody, token)
+	req.Header.Set("Content-Type", "application/json")
+	w = httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("tools/list failed: %d - %s", w.Code, w.Body.String())
+	}
+	var toolsResp map[string]interface{}
+	if err := json.Unmarshal(w.Body.Bytes(), &toolsResp); err != nil {
+		t.Fatalf("invalid JSON: %v", err)
+	}
+	result := toolsResp["result"].(map[string]interface{})
+	tools := result["tools"].([]interface{})
+	t.Logf("Got %d tools in tools/list", len(tools))
+
+	// Step 3: namespace_expand for mcpbridge (internal tools)
+	expandBody := `{"jsonrpc":"2.0","method":"tools/call","id":2,"params":{"name":"namespace_expand","arguments":{"namespace":"mcpbridge"}}}`
+	req = authRequest("POST", "/mcp/v2", expandBody, token)
+	req.Header.Set("Content-Type", "application/json")
+	w = httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("namespace_expand failed: %d - %s", w.Code, w.Body.String())
+	}
+	var expandResp map[string]interface{}
+	if err := json.Unmarshal(w.Body.Bytes(), &expandResp); err != nil {
+		t.Fatalf("invalid JSON: %v", err)
+	}
+	// namespace_expand returns tools directly in result (not wrapped)
+	t.Logf("namespace_expand result type: %T", expandResp["result"])
 }

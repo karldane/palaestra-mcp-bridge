@@ -355,6 +355,11 @@ func main() {
 	mcpBridgeServer := NewMCPBridgeServer(a, toolMuxer)
 	mux.Handle("/", authHandler.Middleware(mcpBridgeServer.Handler()))
 
+	// MCP v2 endpoint - Streamable HTTP with lazy-loading tool discovery
+	v2Handler := v2HandleWrapper(a)
+	mux.Handle("/mcp/v2", authHandler.Middleware(v2Handler))
+	mux.Handle("/mcp", authHandler.Middleware(v2Handler))
+
 	shared.Infof("MCP SSE Bridge started on :%s (command=%s, pool=%d, db=%s, idleGC=%s)",
 		port, command, poolSize, dbPath, idleTimeout)
 
@@ -396,6 +401,12 @@ func main() {
 		testMux.Handle("/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			ctx := context.WithValue(r.Context(), auth.UserIDKey, adminUser.ID)
 			mcpBridgeServer.Handler().ServeHTTP(w, r.WithContext(ctx))
+		}))
+
+		// Add v2 handler to test mux with admin context
+		testMux.Handle("/mcp/v2", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			ctx := context.WithValue(r.Context(), auth.UserIDKey, adminUser.ID)
+			v2HandleWrapper(a)(w, r.WithContext(ctx))
 		}))
 
 		go func() {

@@ -17,6 +17,7 @@ func TestEnforcerPolicyEvaluation(t *testing.T) {
 
 	// Create enforcer with a test policy
 	enforcerConfig := enforcer.DefaultEnforcerConfig()
+	enforcerConfig.MinJustificationLength = 0 // disable justification gate for policy tests
 	enf, err := enforcer.NewEnforcer(enforcerConfig, store.NewEnforcerStore(a.store.DB()), nil)
 	if err != nil {
 		t.Fatalf("Failed to create enforcer: %v", err)
@@ -39,6 +40,22 @@ func TestEnforcerPolicyEvaluation(t *testing.T) {
 		t.Fatalf("Failed to add test policy: %v", err)
 	}
 
+	// Add an allow policy for read tools (needed because default-deny is by design)
+	allowPolicy := enforcer.PolicyRow{
+		ID:          "test_allow_read",
+		Name:        "Allow Read Operations",
+		Description: "Allow read operations",
+		Expression:  "tool.contains('read') || tool.contains('view') || tool.contains('list')",
+		Action:      "ALLOW",
+		Severity:    "LOW",
+		Message:     "Read operations allowed",
+		Enabled:     true,
+		Priority:    50,
+	}
+	if err := enf.AddPolicy(allowPolicy); err != nil {
+		t.Fatalf("Failed to add allow policy: %v", err)
+	}
+
 	// Test 1: Verify enforcer evaluates "delete" tool
 	t.Run("Delete tool should trigger policy", func(t *testing.T) {
 		body := `{"jsonrpc":"2.0","method":"tools/call","id":1,"params":{"name":"test_delete_file","arguments":{"path":"test.txt"}}}`
@@ -58,7 +75,7 @@ func TestEnforcerPolicyEvaluation(t *testing.T) {
 
 	// Test 2: Verify non-delete tools pass through
 	t.Run("Read tool should not trigger policy", func(t *testing.T) {
-		body := `{"jsonrpc":"2.0","method":"tools/call","id":2,"params":{"name":"test_read_file","arguments":{"path":"test.txt"}}}`
+		body := `{"jsonrpc":"2.0","method":"tools/call","id":2,"params":{"name":"file_view","arguments":{"path":"test.txt"}}}`
 		req := httptest.NewRequest("POST", "/", strings.NewReader(body))
 		req.Header.Set("Content-Type", "application/json")
 
@@ -84,6 +101,7 @@ func TestEnforcerBlocksBeforeExecution(t *testing.T) {
 
 	// Create enforcer with a DENY policy for delete operations
 	enforcerConfig := enforcer.DefaultEnforcerConfig()
+	enforcerConfig.MinJustificationLength = 0 // disable justification gate for policy tests
 	enf, err := enforcer.NewEnforcer(enforcerConfig, store.NewEnforcerStore(a.store.DB()), nil)
 	if err != nil {
 		t.Fatalf("Failed to create enforcer: %v", err)
@@ -106,9 +124,25 @@ func TestEnforcerBlocksBeforeExecution(t *testing.T) {
 		t.Fatalf("Failed to add deny policy: %v", err)
 	}
 
+	// Add an allow policy for list operations (needed because default-deny is by design)
+	listAllowPolicy := enforcer.PolicyRow{
+		ID:          "allow_list_ops",
+		Name:        "Allow List Operations",
+		Description: "Allow list operations",
+		Expression:  "tool.contains('list')",
+		Action:      "ALLOW",
+		Severity:    "LOW",
+		Message:     "List operations allowed",
+		Enabled:     true,
+		Priority:    50,
+	}
+	if err := enf.AddPolicy(listAllowPolicy); err != nil {
+		t.Fatalf("Failed to add allow policy: %v", err)
+	}
+
 	// Test: Verify delete tool is blocked with 403 BEFORE backend execution
 	t.Run("Delete tool blocked before backend", func(t *testing.T) {
-		body := `{"jsonrpc":"2.0","method":"tools/call","id":1,"params":{"name":"github_delete_file","arguments":{"owner":"test","repo":"test","path":"README.md","message":"Delete","branch":"main"}}}`
+		body := `{"jsonrpc":"2.0","method":"tools/call","id":1,"params":{"name":"delete_repository","arguments":{"owner":"test","repo":"test"}}}`
 		req := httptest.NewRequest("POST", "/", strings.NewReader(body))
 		req.Header.Set("Content-Type", "application/json")
 
@@ -135,7 +169,7 @@ func TestEnforcerBlocksBeforeExecution(t *testing.T) {
 
 	// Test: Verify read tool passes through (backend would be reached for non-delete operations)
 	t.Run("Read tool passes through enforcer", func(t *testing.T) {
-		body := `{"jsonrpc":"2.0","method":"tools/call","id":2,"params":{"name":"github_read_file","arguments":{"owner":"test","repo":"test","path":"README.md"}}}`
+		body := `{"jsonrpc":"2.0","method":"tools/call","id":2,"params":{"name":"list_repositories","arguments":{"type":"all"}}}`
 		req := httptest.NewRequest("POST", "/", strings.NewReader(body))
 		req.Header.Set("Content-Type", "application/json")
 
