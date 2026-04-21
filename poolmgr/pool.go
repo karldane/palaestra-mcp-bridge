@@ -21,34 +21,35 @@ const (
 )
 
 type Pool struct {
-	Warm             chan *ManagedProcess
-	mu               sync.Mutex
-	Spawning         chan struct{}
-	Command          string
-	Env              []string
-	EnvHash          string // Hash of env for comparison
-	backoffDelay     time.Duration
-	wg               sync.WaitGroup
-	pendingRequests  map[string]*PendingRequest
-	pendingMu        sync.Mutex
-	broadcastCh      chan []byte
-	broadcastMu      sync.Mutex
-	closed           bool
-	BackendID        string
-	MinPoolSize      int // Minimum warm processes to maintain
-	MaxPoolSize      int // Maximum warm processes (0 = unlimited)
-	CurrentSize      int // Current number of warm + spawning processes
-	activeCount      int // Number of processes currently in use
-	activeMu         sync.Mutex
-	dedicatedUser    string
-	lastUsed         time.Time
-	lastUsedMu       sync.Mutex
-	Instructions     string // Instructions from backend's initialize response
-	instructionsMu   sync.Mutex
-	spawnAttempts    int // Number of consecutive failed spawn attempts
-	maxSpawnAttempts int // Max attempts before giving up (0 = unlimited)
-	secretInjector   secret.SecretInjector
-	secretsPath      string
+	Warm              chan *ManagedProcess
+	mu                sync.Mutex
+	Spawning          chan struct{}
+	Command           string
+	Env               []string
+	EnvHash           string // Hash of env for comparison
+	backoffDelay      time.Duration
+	wg                sync.WaitGroup
+	pendingRequests   map[string]*PendingRequest
+	pendingMu         sync.Mutex
+	broadcastCh       chan []byte
+	broadcastMu       sync.Mutex
+	closed            bool
+	BackendID         string
+	MinPoolSize       int // Minimum warm processes to maintain
+	MaxPoolSize       int // Maximum warm processes (0 = unlimited)
+	CurrentSize       int // Current number of warm + spawning processes
+	activeCount       int // Number of processes currently in use
+	activeMu          sync.Mutex
+	dedicatedUser     string
+	lastUsed          time.Time
+	lastUsedMu        sync.Mutex
+	Instructions      string // Instructions from backend's initialize response
+	instructionsMu    sync.Mutex
+	spawnAttempts     int    // Number of consecutive failed spawn attempts
+	maxSpawnAttempts  int    // Max attempts before giving up (0 = unlimited)
+	lastFailureReason string // Last failure reason (e.g. stderr from failed process)
+	secretInjector    secret.SecretInjector
+	secretsPath       string
 }
 
 func NewPool(backendID string, size int, command string) *Pool {
@@ -149,6 +150,13 @@ func (pool *Pool) DedicatedUser() string {
 	pool.mu.Lock()
 	defer pool.mu.Unlock()
 	return pool.dedicatedUser
+}
+
+// GetLastFailureReason returns the last recorded failure reason (e.g. stderr from a failed process).
+func (pool *Pool) GetLastFailureReason() string {
+	pool.mu.Lock()
+	defer pool.mu.Unlock()
+	return pool.lastFailureReason
 }
 
 // IsUnavailable returns true if the pool has exhausted its spawn attempts
@@ -317,6 +325,14 @@ func (pool *Pool) spawnAndHandshake() {
 				shared.Errorf("MCP handshake failed for backend %s - process exited immediately (no stderr output)", pool.BackendID)
 			}
 			proc.Kill()
+			// Store failure reason for surfacing to callers
+			pool.mu.Lock()
+			if stderrOutput != "" {
+				pool.lastFailureReason = strings.TrimSpace(stderrOutput)
+			} else {
+				pool.lastFailureReason = "process exited immediately (no stderr output)"
+			}
+			pool.mu.Unlock()
 			// Don't retry indefinitely for immediate exit errors
 			// Reset backoff for next successful startup
 			pool.mu.Lock()
@@ -334,6 +350,15 @@ func (pool *Pool) spawnAndHandshake() {
 		} else {
 			shared.Errorf("MCP handshake timeout for backend %s - no stderr output (process may be downloading or waiting for auth)", pool.BackendID)
 		}
+
+		// Store failure reason for surfacing to callers
+		pool.mu.Lock()
+		if stderrOutput != "" {
+			pool.lastFailureReason = strings.TrimSpace(stderrOutput)
+		} else {
+			pool.lastFailureReason = "handshake timeout (process may be downloading or waiting for auth)"
+		}
+		pool.mu.Unlock()
 
 		// Track failed attempts
 		pool.mu.Lock()
@@ -490,6 +515,10 @@ func (pool *Pool) WaitForWarm(timeout time.Duration) bool {
 // another request completing and released back to the warm pool.
 func (pool *Pool) WaitForWarmWithMax(timeout time.Duration) (*ManagedProcess, error) {
 	if pool.IsUnavailable() {
+		reason := pool.GetLastFailureReason()
+		if reason != "" {
+			return nil, fmt.Errorf("backend unavailable: %s: %s", pool.BackendID, reason)
+		}
 		return nil, fmt.Errorf("backend unavailable: %s", pool.BackendID)
 	}
 
@@ -500,6 +529,10 @@ func (pool *Pool) WaitForWarmWithMax(timeout time.Duration) (*ManagedProcess, er
 	deadline := time.Now().Add(timeout)
 	for time.Now().Before(deadline) {
 		if pool.IsUnavailable() {
+			reason := pool.GetLastFailureReason()
+			if reason != "" {
+				return nil, fmt.Errorf("backend unavailable: %s: %s", pool.BackendID, reason)
+			}
 			return nil, fmt.Errorf("backend unavailable: %s", pool.BackendID)
 		}
 		select {
@@ -519,6 +552,10 @@ func (pool *Pool) WaitForWarmWithMax(timeout time.Duration) (*ManagedProcess, er
 	}
 
 	if pool.IsUnavailable() {
+		reason := pool.GetLastFailureReason()
+		if reason != "" {
+			return nil, fmt.Errorf("backend unavailable: %s: %s", pool.BackendID, reason)
+		}
 		return nil, fmt.Errorf("backend unavailable: %s", pool.BackendID)
 	}
 	return nil, fmt.Errorf("timeout waiting for warm process")

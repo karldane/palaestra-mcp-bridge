@@ -208,7 +208,9 @@ func (h *Handler) TokensSaveHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Try to use user-derived encryption if session has DEK
+	// Try to use user-derived encryption if session has DEK.
+	// Note: always ALSO save a master-key copy so that pool spawning (which has
+	// no user session) can decrypt tokens via GetUserTokensDecrypted.
 	userDEK := getSessionDEK(r)
 	if userDEK != nil {
 		if err := h.Store.SetUserTokenWithUserDEK(user.ID, backendID, envKey, value, userDEK); err != nil {
@@ -217,11 +219,21 @@ func (h *Handler) TokensSaveHandler(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		defer crypto.Zeroize(userDEK)
+		// Fall through to also save master-key copy for spawn-time decryption.
+		// Use UpdateMasterKeyEncrypted to preserve the user-DEK columns.
+		if ks := h.Store.KeyStore(); ks != nil {
+			if encrypted, encErr := ks.EncryptSecret([]byte(value)); encErr == nil {
+				if err := h.Store.UpdateMasterKeyEncrypted(user.ID, backendID, envKey, string(encrypted)); err != nil {
+					log.Printf("web: set master-key copy of token: %v", err)
+					// Non-fatal: user-DEK copy was saved, display will work; spawn will fail until re-saved
+				}
+			}
+		}
 		http.Redirect(w, r, "/web/tokens?backend="+backendID+"&success=Token+saved", http.StatusSeeOther)
 		return
 	}
 
-	// Fall back to master key encryption
+	// Save with master key so pool spawning can always decrypt this token.
 	if ks := h.Store.KeyStore(); ks != nil {
 		if encrypted, encErr := ks.EncryptSecret([]byte(value)); encErr == nil {
 			if err := h.Store.SetUserTokenEncrypted(user.ID, backendID, envKey, string(encrypted)); err != nil {

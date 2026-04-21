@@ -368,7 +368,7 @@ func v2namespaceExpand(a *app, w http.ResponseWriter, r *http.Request, userID st
 
 		proc, err := pool.WaitForWarmWithMax(15 * time.Second)
 		if err != nil {
-			finalErr = fmt.Errorf("timeout waiting for warm process for backend %s", backend.ID)
+			finalErr = err
 		} else {
 			reqID := fmt.Sprintf("list-%s-%d", backend.ID, time.Now().UnixNano())
 			reqBody, _ := json.Marshal(map[string]interface{}{
@@ -645,7 +645,7 @@ func v2toolCall(a *app, w http.ResponseWriter, r *http.Request, userID string, p
 		w.Header().Set("Content-Type", "application/json")
 		w.Header().Set("Connection", "close")
 		w.WriteHeader(http.StatusServiceUnavailable)
-		w.Write([]byte(fmt.Sprintf(`{"jsonrpc":"2.0","error":{"code":-32003,"message":"Backend %s unavailable: %v"}}`, namespace, err)))
+		w.Write([]byte(fmt.Sprintf(`{"jsonrpc":"2.0","error":{"code":-32003,"message":"%v"}}`, err)))
 		return
 	}
 

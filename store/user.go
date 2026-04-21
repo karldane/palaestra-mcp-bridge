@@ -213,6 +213,29 @@ func (s *Store) SetUserTokenEncrypted(userID, backendID, envKey, encryptedValue 
 	return err
 }
 
+// UpdateMasterKeyEncrypted updates only the encrypted_value column with master-key ciphertext,
+// leaving other columns (encrypted_dek, encryption_type) intact.
+// Use this when you want to ensure spawn-time decryption works without destroying user-DEK columns.
+func (s *Store) UpdateMasterKeyEncrypted(userID, backendID, envKey, encryptedValue string) error {
+	result, err := s.db.Exec(
+		`UPDATE user_tokens SET encrypted_value = ? WHERE user_id = ? AND backend_id = ? AND env_key = ?`,
+		encryptedValue, userID, backendID, envKey,
+	)
+	if err != nil {
+		return err
+	}
+	rows, _ := result.RowsAffected()
+	if rows == 0 {
+		// Row doesn't exist yet — insert it.
+		_, err = s.db.Exec(
+			`INSERT OR REPLACE INTO user_tokens (user_id, backend_id, env_key, value, encrypted_value)
+			 VALUES (?, ?, ?, '', ?)`,
+			userID, backendID, envKey, encryptedValue,
+		)
+	}
+	return err
+}
+
 // GetUserTokenDecrypted retrieves and decrypts a user token.
 func (s *Store) GetUserTokenDecrypted(userID, backendID, envKey string) (string, error) {
 	if s.keyStore == nil {
