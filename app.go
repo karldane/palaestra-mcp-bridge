@@ -63,7 +63,7 @@ func (a *app) getPoolForUser(userID, backendID string) *poolmgr.Pool {
 		shared.Debugf("getPoolForUser: failed to build env for user %s, backend %s: %v", userID, backendID, err)
 		return nil
 	}
-	shared.Debugf("getPoolForUser: creating pool for backendID=%s, userID=%s, command=%q, min=%d, max=%d, envCount=%d", backendID, userID, command, minPoolSize, maxPoolSize, len(env))
+	shared.Debugf("getPoolForUser: get-or-create pool for backendID=%s, userID=%s, command=%q, min=%d, max=%d, envCount=%d", backendID, userID, command, minPoolSize, maxPoolSize, len(env))
 	return a.poolManager.GetOrCreateUserPool(
 		backendID, userID, command, minPoolSize, maxPoolSize, env,
 	)

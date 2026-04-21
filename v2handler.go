@@ -635,6 +635,7 @@ func v2toolCall(a *app, w http.ResponseWriter, r *http.Request, userID string, p
 		shared.Debugf("[v2toolCall] GOT response len=%d ok=%v", len(response), ok)
 		pool.UnregisterRequest(reqID)
 		if ok && len(response) > 0 {
+			pool.ReleaseWarm(proc)
 			// Replace the backend's internal request ID with the client's original ID
 			var respMap map[string]interface{}
 			if err := json.Unmarshal(response, &respMap); err == nil {
