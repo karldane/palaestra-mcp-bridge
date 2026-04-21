@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"log"
 	"net/http"
 	"strings"
 	"time"
@@ -64,7 +63,7 @@ func (v *MCPSchemaValidator) ValidateToolsCallResponse(resp map[string]interface
 	}
 	// Our current format uses "tools" but spec says "content"
 	if tools, ok := result["tools"].([]interface{}); ok {
-		log.Printf("[MCPValidator] WARNING: tools/call uses 'tools' array, spec requires 'content' array")
+		shared.Warnf("[MCPValidator] WARNING: tools/call uses 'tools' array, spec requires 'content' array")
 		if len(tools) == 0 {
 			return fmt.Errorf("empty tools array")
 		}
@@ -98,7 +97,7 @@ func v2Handle(a *app, w http.ResponseWriter, r *http.Request, userID string) {
 		http.Error(w, "Invalid JSON-RPC request", http.StatusBadRequest)
 		return
 	}
-	log.Printf("[v2] method=%s id=%v", msg.Method, msg.ID)
+	shared.Debugf("[v2] method=%s id=%v", msg.Method, msg.ID)
 
 	switch msg.Method {
 	case "initialize":
@@ -131,16 +130,16 @@ func v2Handle(a *app, w http.ResponseWriter, r *http.Request, userID string) {
 			http.Error(w, "Invalid params type in tools/call request", http.StatusBadRequest)
 			return
 		}
-		log.Printf("[v2] tools/call: name=%q args=%v", params.Name, params.Arguments)
+		shared.Debugf("[v2] tools/call: name=%q args=%v", params.Name, params.Arguments)
 		toolName := params.Name
 		// Strip MCP_Bridge_v2_ prefix if present (some clients add this prefix)
 		if strings.HasPrefix(toolName, "MCP_Bridge_v2_") {
 			toolName = strings.TrimPrefix(toolName, "MCP_Bridge_v2_")
-			log.Printf("[v2] stripped prefix, toolName=%s", toolName)
+			shared.Debugf("[v2] stripped prefix, toolName=%s", toolName)
 		}
 
 		// Log the final toolName being processed for debugging
-		log.Printf("[v2] tools/call: processing toolName=%q (original=%q)", toolName, params.Name)
+		shared.Debugf("[v2] tools/call: processing toolName=%q (original=%q)", toolName, params.Name)
 
 		if toolName == "namespace_expand" || toolName == "MCP_Bridge_v2_namespace_expand" {
 			v2namespaceExpand(a, w, r, userID, params.Arguments, msg.ID)
@@ -149,29 +148,26 @@ func v2Handle(a *app, w http.ResponseWriter, r *http.Request, userID string) {
 		} else if strings.HasSuffix(toolName, "_expand") {
 			// Handle dynamic namespace_expand calls like "atlassian_expand", "appscan_asoc_expand"
 			namespace := strings.TrimSuffix(toolName, "_expand")
-			log.Printf("[v2] expand: name=%s namespace=%s args=%v", toolName, namespace, params.Arguments)
+			shared.Debugf("[v2] expand: name=%s namespace=%s args=%v", toolName, namespace, params.Arguments)
 			// Build params with namespace
 			expandParams := map[string]interface{}{"namespace": namespace}
-			if params.Arguments != nil {
-				for k, v := range params.Arguments {
-					expandParams[k] = v
-				}
-			}
+			shared.Debugf("[v2] expand routing: namespace=%s args=%v", namespace, params.Arguments)
 			v2namespaceExpand(a, w, r, userID, expandParams, msg.ID)
 		} else if strings.HasSuffix(toolName, "_call") {
 			// Handle dynamic tool_call calls like "atlassian_call", "appscan_asoc_call"
 			namespace := strings.TrimSuffix(toolName, "_call")
 			// Build params with namespace
-			callParams := map[string]interface{}{"namespace": namespace}
-			if params.Arguments != nil {
-				for k, v := range params.Arguments {
-					callParams[k] = v
-				}
+			callParams := map[string]interface{}{
+				"namespace":     namespace,
+				"tool":          params.Arguments["tool"],
+				"params":        params.Arguments["params"],
+				"justification": params.Arguments["justification"],
 			}
+			shared.Debugf("[v2] atlassian_call routing: namespace=%s tool=%v params=%v", namespace, callParams["tool"], callParams["params"])
 			v2toolCall(a, w, r, userID, callParams, msg.ID)
 		} else {
 			// Handle unknown tools/call methods
-			log.Printf("[v2] tools/call: Method not found for toolName=%q", toolName)
+			shared.Debugf("[v2] tools/call: Method not found for toolName=%q", toolName)
 			resp := map[string]interface{}{
 				"jsonrpc": "2.0",
 				"id":      msg.ID,
@@ -258,27 +254,27 @@ func v2Initialize(a *app, w http.ResponseWriter, r *http.Request, userID string,
 			},
 		},
 	}
-	log.Printf("[v2Initialize] sessionID=%s", sessionID)
+	shared.Debugf("[v2Initialize] sessionID=%s", sessionID)
 	json.NewEncoder(w).Encode(response)
 }
 
 // v2toolsList generates the initial tools/list response for v2
 // For opencode compatibility, we return actual tool descriptors from each namespace
 func v2toolsList(a *app, w http.ResponseWriter, r *http.Request, userID string, id interface{}) {
-	log.Printf("v2toolsList: userID=%s START", userID)
+	shared.Debugf("v2toolsList: userID=%s START", userID)
 	backends, err := a.store.ListBackends()
 	if err != nil {
-		log.Printf("v2toolsList: Error listing backends: %v", err)
+		shared.Errorf("v2toolsList: Error listing backends: %v", err)
 		http.Error(w, "Internal Server Error", http.StatusInternalServerError)
 		return
 	}
-	log.Printf("v2toolsList: found %d backends in DB", len(backends))
+	shared.Debugf("v2toolsList: found %d backends in DB", len(backends))
 
 	var toolsList []map[string]interface{}
 
 	// Add tool entry for each backend namespace pointing to namespace_expand
 	for _, backend := range backends {
-		log.Printf("v2toolsList: processing backend: %s enabled=%v", backend.ID, backend.Enabled)
+		shared.Debugf("v2toolsList: processing backend: %s enabled=%v", backend.ID, backend.Enabled)
 		if backend.Enabled {
 			// Capitalize first letter of each part for display name
 			parts := strings.Split(backend.ID, "_")
@@ -315,7 +311,7 @@ func v2toolsList(a *app, w http.ResponseWriter, r *http.Request, userID string, 
 			})
 		}
 	}
-	log.Printf("v2toolsList: added %d tool entries for namespace routing", len(toolsList))
+	shared.Debugf("v2toolsList: added %d tool entries for namespace routing", len(toolsList))
 
 	resp := map[string]interface{}{
 		"jsonrpc": "2.0",
@@ -324,7 +320,7 @@ func v2toolsList(a *app, w http.ResponseWriter, r *http.Request, userID string, 
 			"tools": toolsList,
 		},
 	}
-	log.Printf("v2toolsList: responding with %d tools", len(toolsList))
+	shared.Debugf("v2toolsList: responding with %d tools", len(toolsList))
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(resp)
 }
@@ -372,13 +368,13 @@ func v2namespaceExpand(a *app, w http.ResponseWriter, r *http.Request, userID st
 			})
 
 			respCh := pool.RegisterRequest(reqID)
-			log.Printf("[v2namespaceExpand] REQ: sent tools/list to backend=%s reqID=%s", backend.ID, reqID)
+			shared.Debugf("[v2namespaceExpand] REQ: sent tools/list to backend=%s reqID=%s", backend.ID, reqID)
 			proc.Stdin.Write(append(reqBody, '\n'))
 
 			select {
 			case response, ok := <-respCh:
 				pool.UnregisterRequest(reqID)
-				log.Printf("[v2namespaceExpand] RSP: backend=%s got response len=%d ok=%v", backend.ID, len(response), ok)
+				shared.Debugf("[v2namespaceExpand] RSP: backend=%s got response len=%d ok=%v", backend.ID, len(response), ok)
 				if ok && len(response) > 0 {
 					var result struct {
 						Result struct {
@@ -391,10 +387,10 @@ func v2namespaceExpand(a *app, w http.ResponseWriter, r *http.Request, userID st
 							finalErr = fmt.Errorf("tools/list error from backend %s: %v", backend.ID, result.Error)
 						} else {
 							allTools = result.Result.Tools
-							log.Printf("[v2namespaceExpand] OK: got %d tools from backend=%s", len(allTools), backend.ID)
+							shared.Debugf("[v2namespaceExpand] OK: got %d tools from backend=%s", len(allTools), backend.ID)
 						}
 					} else {
-						log.Printf("[MCPValidator] tools/list response invalid: %v", err)
+						shared.Warnf("[MCPValidator] tools/list response invalid: %v", err)
 						finalErr = fmt.Errorf("JSON unmarshal error from backend %s: %v", backend.ID, err)
 					}
 				} else {
@@ -403,7 +399,7 @@ func v2namespaceExpand(a *app, w http.ResponseWriter, r *http.Request, userID st
 			case <-time.After(30 * time.Second):
 				pool.UnregisterRequest(reqID)
 				proc.Kill()
-				log.Printf("[v2namespaceExpand] TIMEOUT: backend=%s reqID=%s", backend.ID, reqID)
+				shared.Warnf("[v2namespaceExpand] TIMEOUT: backend=%s reqID=%s", backend.ID, reqID)
 				finalErr = fmt.Errorf("timeout waiting for tools/list from backend %s", backend.ID)
 			}
 			pool.Warm <- proc
@@ -411,7 +407,7 @@ func v2namespaceExpand(a *app, w http.ResponseWriter, r *http.Request, userID st
 	}
 
 	if finalErr != nil {
-		log.Printf("[v2namespaceExpand] ERROR: %v", finalErr)
+		shared.Errorf("[v2namespaceExpand] ERROR: %v", finalErr)
 		resp := map[string]interface{}{
 			"jsonrpc": "2.0",
 			"id":      id,
@@ -425,7 +421,7 @@ func v2namespaceExpand(a *app, w http.ResponseWriter, r *http.Request, userID st
 		return
 	}
 
-	log.Printf("[v2namespaceExpand] success: returning %d tools for namespace=%s", len(allTools), namespace)
+	shared.Debugf("[v2namespaceExpand] success: returning %d tools for namespace=%s", len(allTools), namespace)
 
 	// Per MCP spec 2024-11-05, tools/call returns "content" array
 	// But for namespace_expand (custom extension), we return tool descriptors
@@ -455,15 +451,15 @@ func v2namespaceExpand(a *app, w http.ResponseWriter, r *http.Request, userID st
 
 	// Validate against MCP spec
 	if err := mcpValidator.ValidateToolsCallResponse(resp); err != nil {
-		log.Printf("[MCPValidator] tools/call response warning: %v", err)
+		shared.Warnf("[MCPValidator] tools/call response warning: %v", err)
 	}
 
-	log.Printf("[v2namespaceExpand] ENCODING dual-format response with %d tools", len(allTools))
+	shared.Debugf("[v2namespaceExpand] ENCODING dual-format response with %d tools", len(allTools))
 	w.Header().Set("Content-Type", "application/json")
 	if err := json.NewEncoder(w).Encode(resp); err != nil {
-		log.Printf("[v2namespaceExpand] ENCODE ERROR: %v", err)
+		shared.Errorf("[v2namespaceExpand] ENCODE ERROR: %v", err)
 	}
-	log.Printf("[v2namespaceExpand] DONE - response written with content+tools")
+	shared.Debugf("[v2namespaceExpand] DONE - response written with content+tools")
 }
 
 // v2toolCall handles the tool_call verb for v2
@@ -507,6 +503,7 @@ func v2toolCall(a *app, w http.ResponseWriter, r *http.Request, userID string, p
 			switch decision.Action {
 			case enforcer.ActionDeny:
 				w.Header().Set("Content-Type", "application/json")
+				w.Header().Set("Connection", "close")
 				w.WriteHeader(http.StatusOK)
 				json.NewEncoder(w).Encode(map[string]interface{}{
 					"jsonrpc": "2.0",
@@ -531,6 +528,7 @@ func v2toolCall(a *app, w http.ResponseWriter, r *http.Request, userID string, p
 				}
 				w.Header().Set("Content-Type", "application/json")
 				w.Header().Set("X-Enforcer-Status", "pending_approval")
+				w.Header().Set("Connection", "close")
 				w.WriteHeader(http.StatusAccepted)
 				json.NewEncoder(w).Encode(map[string]interface{}{
 					"jsonrpc": "2.0",
@@ -556,6 +554,7 @@ func v2toolCall(a *app, w http.ResponseWriter, r *http.Request, userID string, p
 				}
 				w.Header().Set("Content-Type", "application/json")
 				w.Header().Set("X-Enforcer-Status", "pending_user_approval")
+				w.Header().Set("Connection", "close")
 				w.WriteHeader(http.StatusAccepted)
 				json.NewEncoder(w).Encode(map[string]interface{}{
 					"jsonrpc": "2.0",
@@ -575,17 +574,21 @@ func v2toolCall(a *app, w http.ResponseWriter, r *http.Request, userID string, p
 	}
 
 	// Route to backend
+	shared.Debugf("[v2toolCall] START: namespace=%s tool=%s", namespace, toolName)
 	pool := a.getPoolForUser(userID, namespace)
 	if pool == nil {
+		shared.Errorf("[v2toolCall] ERROR: failed to get pool for %s", namespace)
 		http.Error(w, "Failed to create pool for backend", http.StatusInternalServerError)
 		return
 	}
+	shared.Debugf("[v2toolCall] got pool, getting warm process")
 	pool.TouchLastUsed()
 
 	proc, err := pool.GetWarmWithRetry(poolmgr.DefaultWarmWaitTimeout)
 	if err != nil {
-		w.WriteHeader(http.StatusServiceUnavailable)
 		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("Connection", "close")
+		w.WriteHeader(http.StatusServiceUnavailable)
 		w.Write([]byte(fmt.Sprintf(`{"jsonrpc":"2.0","error":{"code":-32003,"message":"Backend %s unavailable: %v"}}`, namespace, err)))
 		return
 	}
@@ -626,12 +629,27 @@ func v2toolCall(a *app, w http.ResponseWriter, r *http.Request, userID string, p
 	buf.WriteByte('\n')
 	proc.Stdin.Write(buf.Bytes())
 
+	shared.Debugf("[v2toolCall] waiting for response...")
 	select {
 	case response, ok := <-respCh:
+		shared.Debugf("[v2toolCall] GOT response len=%d ok=%v", len(response), ok)
 		pool.UnregisterRequest(reqID)
 		if ok && len(response) > 0 {
+			// Replace the backend's internal request ID with the client's original ID
+			var respMap map[string]interface{}
+			if err := json.Unmarshal(response, &respMap); err == nil {
+				respMap["id"] = id
+				if rewritten, err := json.Marshal(respMap); err == nil {
+					response = rewritten
+				}
+			}
+			// Set Content-Length and Connection: close so client (e.g. httpx aread()) gets EOF
 			w.Header().Set("Content-Type", "application/json")
+			w.Header().Set("Content-Length", fmt.Sprintf("%d", len(response)))
+			w.Header().Set("Connection", "close")
+			w.WriteHeader(http.StatusOK)
 			w.Write(response)
+			shared.Debugf("[v2toolCall] DONE - response written, closing body")
 		} else {
 			pool.ReleaseWarm(proc)
 			http.Error(w, "Empty response from backend", http.StatusInternalServerError)
