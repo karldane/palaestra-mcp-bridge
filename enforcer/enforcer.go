@@ -270,6 +270,11 @@ func (e *Enforcer) SetRateLimitConfig(backendID string, riskCapacity, riskRefill
 	e.rateLimit.SetDefaultConfig(backendID, riskCapacity, riskRefill, resourceCapacity, resourceRefill)
 }
 
+// GetMinJustificationLength returns the configured minimum justification length.
+func (e *Enforcer) GetMinJustificationLength() int {
+	return e.config.MinJustificationLength
+}
+
 // GetRateLimitStatus returns the current rate limit status for a user/backend
 func (e *Enforcer) GetRateLimitStatus(userID, backendID string) map[string]interface{} {
 	return e.rateLimit.GetStatusMap(userID, backendID)

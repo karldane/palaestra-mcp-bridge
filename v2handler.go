@@ -302,9 +302,19 @@ func v2toolsList(a *app, w http.ResponseWriter, r *http.Request, userID string, 
 				"inputSchema": map[string]interface{}{
 					"type": "object",
 					"properties": map[string]interface{}{
-						"tool":          map[string]interface{}{"type": "string", "description": "Tool name in " + backend.ID},
-						"params":        map[string]interface{}{"type": "object", "description": "Tool parameters"},
-						"justification": map[string]interface{}{"type": "string", "description": "Reason for call"},
+						"tool":   map[string]interface{}{"type": "string", "description": "Tool name in " + backend.ID},
+						"params": map[string]interface{}{"type": "object", "description": "Tool parameters"},
+						"justification": func() map[string]interface{} {
+							minLen := 40
+							if a.enforcer != nil {
+								minLen = a.enforcer.GetMinJustificationLength()
+							}
+							return map[string]interface{}{
+								"type":        "string",
+								"description": fmt.Sprintf("Reason for this tool call (minimum %d characters)", minLen),
+								"minLength":   minLen,
+							}
+						}(),
 					},
 					"required": []string{"tool", "justification"},
 				},
