@@ -111,7 +111,7 @@ func TestV2ToolsListInitial(t *testing.T) {
 
 		switch name {
 		case "test_backend_1_expand":
-			expectedDesc := "Expand Test_Backend_1 namespace to get available tools"
+			expectedDesc := "Expand Test_Backend_1 namespace to get available tools. No justification required. Call this before test_backend_1_call to discover tool names."
 			if description == expectedDesc {
 				foundBackend1Expand = true
 				t.Logf("Found test_backend_1_expand")
@@ -127,7 +127,7 @@ func TestV2ToolsListInitial(t *testing.T) {
 				t.Errorf("Unexpected description for test_backend_1_call: got %q want %q", description, expectedDesc)
 			}
 		case "test_backend_2_expand":
-			expectedDesc := "Expand Test_Backend_2 namespace to get available tools"
+			expectedDesc := "Expand Test_Backend_2 namespace to get available tools. No justification required. Call this before test_backend_2_call to discover tool names."
 			if description == expectedDesc {
 				foundBackend2Expand = true
 				t.Logf("Found test_backend_2_expand")

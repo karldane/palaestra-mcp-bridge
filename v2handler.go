@@ -285,10 +285,10 @@ func v2toolsList(a *app, w http.ResponseWriter, r *http.Request, userID string, 
 			}
 			capitalizedID := strings.Join(parts, "_")
 
-			// Add namespace_expand tool for this backend
+			// Add namespace_expand tool for this backend (no justification required)
 			toolsList = append(toolsList, map[string]interface{}{
 				"name":        fmt.Sprintf("%s_expand", backend.ID),
-				"description": fmt.Sprintf("Expand %s namespace to get available tools", capitalizedID),
+				"description": fmt.Sprintf("Expand %s namespace to get available tools. No justification required. Call this before %s_call to discover tool names.", capitalizedID, backend.ID),
 				"inputSchema": map[string]interface{}{
 					"type":       "object",
 					"properties": map[string]interface{}{},
@@ -427,12 +427,20 @@ func v2namespaceExpand(a *app, w http.ResponseWriter, r *http.Request, userID st
 	// But for namespace_expand (custom extension), we return tool descriptors
 	// Wrap in both formats for compatibility: spec-compliant "content" + legacy "tools"
 
-	// Create text representation of tools for spec-compliant response
-	toolsText := fmt.Sprintf("Available tools in namespace '%s': %d tools", namespace, len(allTools))
-	toolsText += fmt.Sprintf("\n(%d tool definitions)", len(allTools))
-	if len(allTools) > 10 {
-		toolsText += fmt.Sprintf("\n... and %d more", len(allTools)-10)
+	// Create text listing all tools for the content array — agents read this to discover tool names.
+	// Include every tool name + first sentence of description so the agent doesn't have to guess.
+	var sb strings.Builder
+	sb.WriteString(fmt.Sprintf("Available tools in namespace '%s' (%d tools):\n\n", namespace, len(allTools)))
+	for _, t := range allTools {
+		name, _ := t["name"].(string)
+		desc, _ := t["description"].(string)
+		// Trim description to first sentence for brevity
+		if idx := strings.IndexAny(desc, ".\n"); idx > 0 {
+			desc = desc[:idx+1]
+		}
+		sb.WriteString(fmt.Sprintf("- %s: %s\n", name, desc))
 	}
+	toolsText := sb.String()
 
 	resp := map[string]interface{}{
 		"jsonrpc": "2.0",
@@ -455,10 +463,17 @@ func v2namespaceExpand(a *app, w http.ResponseWriter, r *http.Request, userID st
 	}
 
 	shared.Debugf("[v2namespaceExpand] ENCODING dual-format response with %d tools", len(allTools))
-	w.Header().Set("Content-Type", "application/json")
-	if err := json.NewEncoder(w).Encode(resp); err != nil {
+	respBytes, err := json.Marshal(resp)
+	if err != nil {
 		shared.Errorf("[v2namespaceExpand] ENCODE ERROR: %v", err)
+		http.Error(w, "Internal Server Error", http.StatusInternalServerError)
+		return
 	}
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Content-Length", fmt.Sprintf("%d", len(respBytes)))
+	w.Header().Set("Connection", "close")
+	w.WriteHeader(http.StatusOK)
+	w.Write(respBytes)
 	shared.Debugf("[v2namespaceExpand] DONE - response written with content+tools")
 }
 
