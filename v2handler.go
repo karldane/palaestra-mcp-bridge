@@ -427,8 +427,8 @@ func v2namespaceExpand(a *app, w http.ResponseWriter, r *http.Request, userID st
 	// But for namespace_expand (custom extension), we return tool descriptors
 	// Wrap in both formats for compatibility: spec-compliant "content" + legacy "tools"
 
-	// Create text listing all tools for the content array — agents read this to discover tool names.
-	// Include every tool name + first sentence of description so the agent doesn't have to guess.
+	// Create text listing all tools for the content array — agents read this to discover tool names,
+	// required parameters, and parameter types/enums so they can construct correct calls.
 	var sb strings.Builder
 	sb.WriteString(fmt.Sprintf("Available tools in namespace '%s' (%d tools):\n\n", namespace, len(allTools)))
 	for _, t := range allTools {
@@ -439,6 +439,37 @@ func v2namespaceExpand(a *app, w http.ResponseWriter, r *http.Request, userID st
 			desc = desc[:idx+1]
 		}
 		sb.WriteString(fmt.Sprintf("- %s: %s\n", name, desc))
+
+		// Include required parameters and their types/enums so the agent can call correctly
+		if schema, ok := t["inputSchema"].(map[string]interface{}); ok {
+			required, _ := schema["required"].([]interface{})
+			props, _ := schema["properties"].(map[string]interface{})
+			if len(required) > 0 && props != nil {
+				sb.WriteString("  Required params: ")
+				for i, req := range required {
+					key, _ := req.(string)
+					if i > 0 {
+						sb.WriteString(", ")
+					}
+					sb.WriteString(key)
+					if prop, ok := props[key].(map[string]interface{}); ok {
+						if enumVals, ok := prop["enum"].([]interface{}); ok {
+							sb.WriteString(" (one of: ")
+							for j, ev := range enumVals {
+								if j > 0 {
+									sb.WriteString("|")
+								}
+								sb.WriteString(fmt.Sprintf("%v", ev))
+							}
+							sb.WriteString(")")
+						} else if t, ok := prop["type"].(string); ok {
+							sb.WriteString(" (" + t + ")")
+						}
+					}
+				}
+				sb.WriteString("\n")
+			}
+		}
 	}
 	toolsText := sb.String()
 
