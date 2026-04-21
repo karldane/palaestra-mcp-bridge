@@ -1,7 +1,9 @@
 # MCP Bridge - Usage Guide
 
-Multi-tenant SSE-to-Stdio bridge for MCP servers with OAuth 2.1
-authentication, per-user credential injection, and HITL approval workflow.
+Multi-tenant MCP bridge for MCP servers with OAuth 2.1 authentication,
+per-user credential injection, and HITL approval workflow.
+
+Supports **Streamable HTTP** (MCP 2024-11-05, `/mcp/v2`) and legacy **SSE** (`/`).
 
 ## Quick Start
 
@@ -57,14 +59,15 @@ In your opencode config (`~/.config/opencode/config.json`):
 {
   "mcpServers": {
     "my-bridge": {
-      "type": "sse",
-      "url": "http://localhost:8080"
+      "type": "http",
+      "url": "http://localhost:8080/mcp/v2"
     }
   }
 }
 ```
 
-opencode handles OAuth discovery, PKCE, and SSE automatically.
+opencode handles OAuth discovery, PKCE, and the Streamable HTTP transport
+automatically. Alternatively, use an API key (`mcp_...`) for simpler setups.
 
 ### 6. Connect via curl
 
@@ -375,10 +378,34 @@ Managed with auto-migration:
 
 ## API Endpoints
 
-### MCP (OAuth-protected)
+### MCP (OAuth / API key protected)
+
+#### Streamable HTTP (recommended)
 
 ```bash
-# SSE stream (typical for opencode)
+# Initialize
+curl -X POST http://localhost:8080/mcp/v2 \
+  -H "Authorization: Bearer <token>" \
+  -H "Content-Type: application/json" \
+  -d '{"jsonrpc":"2.0","method":"initialize","id":1,"params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"curl","version":"1.0"}}}'
+
+# List tools
+curl -X POST http://localhost:8080/mcp/v2 \
+  -H "Authorization: Bearer <token>" \
+  -H "Content-Type: application/json" \
+  -d '{"jsonrpc":"2.0","method":"tools/list","id":2}'
+
+# Call a tool
+curl -X POST http://localhost:8080/mcp/v2 \
+  -H "Authorization: Bearer <token>" \
+  -H "Content-Type: application/json" \
+  -d '{"jsonrpc":"2.0","method":"tools/call","id":3,"params":{"name":"atlassian_call","arguments":{"tool":"confluence_search","params":{"query":"my page"},"justification":"Searching for documentation"}}}'
+```
+
+#### Legacy SSE
+
+```bash
+# SSE stream
 curl -N -H "Authorization: Bearer <token>" http://localhost:8080/
 
 # JSON-RPC request

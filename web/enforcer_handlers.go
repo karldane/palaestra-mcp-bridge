@@ -116,7 +116,6 @@ func (h *EnforcerHandler) ListPendingApprovals(w http.ResponseWriter, r *http.Re
 
 func (h *EnforcerHandler) QueuePageHandler(w http.ResponseWriter, r *http.Request) {
 	user := userFromContext(r)
-	fmt.Printf("DEBUG QueuePageHandler: user=%v\n", user)
 
 	data := map[string]interface{}{
 		"Title":          "Approval Queue",

@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/mcp-bridge/mcp-bridge/shared"
 	"github.com/mcp-bridge/mcp-bridge/store"
 )
 
@@ -218,8 +219,8 @@ func (h *Handler) AdminBackendsCreateHandler(w http.ResponseWriter, r *http.Requ
 	env := strings.TrimSpace(r.FormValue("env"))
 	envMappings := strings.TrimSpace(r.FormValue("env_mappings"))
 	toolHints := strings.TrimSpace(r.FormValue("tool_hints"))
-	log.Printf("web create: env from form: %q", env)
-	log.Printf("web create: env_mappings from form: %q", envMappings)
+	shared.Debugf("web create: env from form: %q", env)
+	shared.Debugf("web create: env_mappings from form: %q", envMappings)
 	enabled := r.FormValue("enabled") == "on"
 	selfReporting := r.FormValue("self_reporting") == "on"
 	noKeysRequired := r.FormValue("no_keys_required") == "on"
@@ -288,26 +289,22 @@ func (h *Handler) AdminBackendsEditHandler(w http.ResponseWriter, r *http.Reques
 	env := strings.TrimSpace(r.FormValue("env"))
 	envMappings := strings.TrimSpace(r.FormValue("env_mappings"))
 	toolHints := strings.TrimSpace(r.FormValue("tool_hints"))
-	log.Printf("web: env from form: %q", env)
-	log.Printf("web: env_mappings from form: %q", envMappings)
+	shared.Debugf("web: env from form: %q", env)
+	shared.Debugf("web: env_mappings from form: %q", envMappings)
 	enabled := r.FormValue("enabled") == "on"
 	selfReporting := r.FormValue("self_reporting") == "on"
 	noKeysRequired := r.FormValue("no_keys_required") == "on"
 	skipJustification := r.FormValue("skip_justification") == "on"
 
 	// Validate inputs
-	log.Printf("web: validating inputs: id=%q, command=%q", id, command)
 	if id == "" || command == "" {
-		log.Printf("web: validation failed: ID or command empty")
 		http.Redirect(w, r, "/web/admin/backends?error=ID+and+command+required", http.StatusSeeOther)
 		return
 	}
 	if !isValidBackendID(id) {
-		log.Printf("web: validation failed: invalid backend ID: %q", id)
 		http.Redirect(w, r, "/web/admin/backends?error=Invalid+backend+ID", http.StatusSeeOther)
 		return
 	}
-	log.Printf("web: validation passed")
 
 	minPoolSize := 1
 	if n := parseInt(minPoolSizeStr); n > 0 {

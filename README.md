@@ -1,15 +1,21 @@
 # Palæstra MCP Bridge
 
-Multi-tenant SSE-to-Stdio bridge for Model Context Protocol (MCP) servers,
-with OAuth 2.1 authentication, per-user credential injection, and a web
-admin interface.
+Multi-tenant MCP bridge for Model Context Protocol (MCP) servers, with
+OAuth 2.1 authentication, per-user credential injection, and a web admin
+interface.
+
+Supports both **Streamable HTTP** (MCP 2024-11-05 spec, `/mcp/v2`) and
+legacy **SSE** transport (`/`).
 
 ## Features
 
 - **Multi-backend support** &mdash; route multiple MCP servers behind a single
   endpoint; backends managed via database
+- **Streamable HTTP transport** &mdash; MCP 2024-11-05 spec-compliant `/mcp/v2`
+  endpoint; lazy tool discovery via `{backend}_expand` / `{backend}_call`
 - **OAuth 2.1 + PKCE** &mdash; RFC 8414 discovery, RFC 7591 dynamic client
   registration, authorization code flow with PKCE
+- **API key auth** &mdash; `mcp_` prefixed keys for programmatic access
 - **Per-user credential injection** &mdash; each user's API tokens are
   injected into the MCP server environment at spawn time
 - **Encryption at rest** &mdash; all secrets encrypted using AES-256-GCM
@@ -23,6 +29,7 @@ admin interface.
 - **Live reload** &mdash; backend config changes take effect immediately (no
   restart required)
 - **SSE streaming** &mdash; real-time stdout streaming via Server-Sent Events
+  (legacy `/` endpoint)
 - **Health checks** &mdash; `/healthz` and `/readyz` endpoints
 - **Tool hints and instructions** &mdash; guide LLMs with global instructions,
   per-backend hints, and native MCP server guidance via `mcpbridge_0_README`
@@ -101,6 +108,8 @@ go build -o mcp-bridge .
 .
 ├── main.go              # App struct, HTTP wiring, auth middleware
 ├── main_test.go         # Integration tests
+├── v2handler.go         # MCP Streamable HTTP transport (/mcp/v2)
+├── v2handler_test.go    # V2 handler tests
 ├── config/
 │   └── config.go        # YAML config loader
 ├── store/
@@ -135,14 +144,41 @@ go build -o mcp-bridge .
 
 ## API Reference
 
-### MCP Endpoints (OAuth-protected)
+### MCP Endpoints (OAuth / API key protected)
 
-| Endpoint     | Method | Description                                |
-|--------------|--------|--------------------------------------------|
-| `/`          | GET    | SSE stream (opencode connects here)        |
-| `/`          | POST   | JSON-RPC request/response                  |
-| `/healthz`   | GET    | Health check (always 200)                  |
-| `/readyz`    | GET    | Readiness (200 if pool has warm processes) |
+| Endpoint     | Method | Description                                              |
+|--------------|--------|----------------------------------------------------------|
+| `/mcp/v2`    | POST   | **Streamable HTTP** (MCP 2024-11-05 spec) — recommended  |
+| `/`          | GET    | SSE stream (legacy)                                      |
+| `/`          | POST   | JSON-RPC request/response (legacy)                       |
+| `/healthz`   | GET    | Health check (always 200)                                |
+| `/readyz`    | GET    | Readiness (200 if pool has warm processes)               |
+
+#### `/mcp/v2` — Streamable HTTP Transport
+
+Fully compliant with the MCP 2024-11-05 Streamable HTTP spec. Supports
+`initialize`, `tools/list`, and `tools/call`. Tool discovery is lazy:
+`tools/list` returns lightweight `{backend}_expand` and `{backend}_call`
+entry-points; calling `{backend}_expand` fetches the full tool list from
+the backend.
+
+All responses include `Connection: close` so clients receive TCP EOF
+immediately after the response body — no polling or SSE stream required.
+
+**Authentication:** Bearer token (`Authorization: Bearer <token>`) or
+API key (`mcp_` prefix).
+
+**opencode config** (`~/.config/opencode/config.json`):
+```json
+{
+  "mcpServers": {
+    "my-bridge": {
+      "type": "http",
+      "url": "http://localhost:8080/mcp/v2"
+    }
+  }
+}
+```
 
 ### OAuth 2.1 Endpoints
 
@@ -222,14 +258,15 @@ In your opencode config (`~/.config/opencode/config.json`):
 {
   "mcpServers": {
     "my-bridge": {
-      "type": "sse",
-      "url": "http://localhost:8080"
+      "type": "http",
+      "url": "http://localhost:8080/mcp/v2"
     }
   }
 }
 ```
 
-The bridge handles OAuth discovery and PKCE automatically.
+The bridge handles OAuth discovery, PKCE, and the Streamable HTTP
+handshake automatically. Use an API key (`mcp_...`) for simpler setups.
 
 See [USAGE.md](USAGE.md) for detailed usage information.
 
