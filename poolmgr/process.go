@@ -271,6 +271,11 @@ func spawnProcessRaw(command string, env []string) (*ManagedProcess, error) {
 	return proc, nil
 }
 
+// formatMCPPacket formats a message as MCP packet with Content-Length header
+func formatMCPPacket(body string) string {
+	return "Content-Length: " + fmt.Sprint(len(body)) + "\r\n\r\n" + body
+}
+
 func captureStdout(pool *Pool, proc *ManagedProcess) {
 	defer func() {
 		if r := recover(); r != nil {

@@ -232,6 +232,7 @@ type pageData struct {
 	Title    string
 	Error    string
 	Success  string
+	Warning  string
 	Data     interface{}
 	Backends []*store.Backend
 	Extra    map[string]interface{}

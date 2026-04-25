@@ -580,7 +580,18 @@ func (pool *Pool) GetWarmWithRetry(timeout time.Duration) (*ManagedProcess, erro
 		go pool.spawnAndHandshake()
 	}
 
-	return pool.WaitForWarmWithMax(timeout)
+	// Always check for failure reason after any error from WaitForWarmWithMax
+	proc, err := pool.WaitForWarmWithMax(timeout)
+	if err != nil {
+		reason := pool.GetLastFailureReason()
+		if reason != "" {
+			// Include the actual failure reason in a clearer way
+			return nil, fmt.Errorf("backend unavailable: %s: %s", pool.BackendID, reason)
+		}
+		// If no specific reason, return original error
+		return nil, err
+	}
+	return proc, nil
 }
 
 func (pool *Pool) WarmCount() int {

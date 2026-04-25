@@ -90,10 +90,9 @@ func ProbeBackend(command string, env []string, timeout time.Duration) *ProbeRes
 	if compErr := json.Compact(buf, initBody); compErr != nil {
 		buf.Write(initBody)
 	}
-	buf.WriteByte('\n')
 
 	respCh := pool.RegisterRequest(initID)
-	proc.Stdin.Write(buf.Bytes())
+	proc.Stdin.Write([]byte(formatMCPPacket(buf.String())))
 
 	select {
 	case resp, ok := <-respCh:
@@ -213,8 +212,7 @@ func ScanBackendTools(command string, env []string, timeout time.Duration) ([]by
 	if compErr := json.Compact(buf, notifBody); compErr != nil {
 		buf.Write(notifBody)
 	}
-	buf.WriteByte('\n')
-	proc.Stdin.Write(buf.Bytes())
+	proc.Stdin.Write([]byte(formatMCPPacket(buf.String())))
 
 	time.Sleep(100 * time.Millisecond)
 

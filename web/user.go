@@ -182,6 +182,7 @@ func (h *Handler) TokensHandler(w http.ResponseWriter, r *http.Request) {
 		Title:   "My Tokens",
 		Error:   r.URL.Query().Get("error"),
 		Success: r.URL.Query().Get("success"),
+		Warning: r.URL.Query().Get("warning"),
 		Data: tokensData{
 			Backends:        backends,
 			SelectedID:      backendID,
@@ -233,33 +234,10 @@ func (h *Handler) TokensSaveHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Save with master key so pool spawning can always decrypt this token.
-	if ks := h.Store.KeyStore(); ks != nil {
-		if encrypted, encErr := ks.EncryptSecret([]byte(value)); encErr == nil {
-			if err := h.Store.SetUserTokenEncrypted(user.ID, backendID, envKey, string(encrypted)); err != nil {
-				log.Printf("web: set encrypted token: %v", err)
-				http.Redirect(w, r, "/web/tokens?backend="+backendID+"&error=Failed+to+save+token", http.StatusSeeOther)
-				return
-			}
-			http.Redirect(w, r, "/web/tokens?backend="+backendID+"&success=Token+saved", http.StatusSeeOther)
-			return
-		}
-	}
-
-	// No encryption available — save as plaintext
-	token := &store.UserToken{
-		UserID:    user.ID,
-		BackendID: backendID,
-		EnvKey:    envKey,
-		Value:     value,
-	}
-	if err := h.Store.SetUserToken(token); err != nil {
-		log.Printf("web: set token: %v", err)
-		http.Redirect(w, r, "/web/tokens?backend="+backendID+"&error=Failed+to+save+token", http.StatusSeeOther)
-		return
-	}
-
-	http.Redirect(w, r, "/web/tokens?backend="+backendID+"&success=Token+saved", http.StatusSeeOther)
+	// Session DEK not in memory (service restarted since login).
+	// Show warning: user needs to re-login for user-derived encryption.
+	http.Redirect(w, r, "/web/tokens?backend="+backendID+"&warning=Session+expired+re-login+to+save+with+user+encryption", http.StatusSeeOther)
+	return
 }
 
 func (h *Handler) TokensDeleteHandler(w http.ResponseWriter, r *http.Request) {

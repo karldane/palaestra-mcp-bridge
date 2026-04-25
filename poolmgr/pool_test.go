@@ -1,6 +1,7 @@
 package poolmgr
 
 import (
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -810,5 +811,37 @@ func TestIsAllowedCommand_AbsolutePathWithArgs(t *testing.T) {
 				t.Errorf("isAllowedCommand(%q) = nil, want error", tt.cmd)
 			}
 		})
+	}
+}
+
+func TestPool_LastFailureReason_SurfacedInError(t *testing.T) {
+	// We're in the same package so we can set unexported fields directly.
+	// Simulate a pool that has exhausted its spawn attempts with a known failure reason.
+	pool := NewPool("test-fail", 1, "cat")
+	defer pool.Shutdown()
+
+	// Manually put the pool into the unavailable state with a known failure reason.
+	pool.mu.Lock()
+	pool.spawnAttempts = pool.maxSpawnAttempts // mark unavailable
+	pool.lastFailureReason = "GITHUB_PERSONAL_ACCESS_TOKEN not set"
+	pool.mu.Unlock()
+
+	proc, err := pool.WaitForWarmWithMax(100 * time.Millisecond)
+	if err == nil {
+		if proc != nil {
+			proc.Kill()
+		}
+		t.Fatal("expected error for unavailable backend, got nil")
+	}
+	if proc != nil {
+		t.Error("expected nil process on unavailable backend")
+	}
+
+	wantSubstring := "GITHUB_PERSONAL_ACCESS_TOKEN not set"
+	if !strings.Contains(err.Error(), wantSubstring) {
+		t.Errorf("error = %q, want to contain %q", err.Error(), wantSubstring)
+	}
+	if !strings.Contains(err.Error(), "backend unavailable: test-fail") {
+		t.Errorf("error = %q, want to contain backend ID", err.Error())
 	}
 }

@@ -36,6 +36,9 @@
       --alert-success-bg: #dcfce7;
       --alert-success-text: #166534;
       --alert-success-border: #bbf7d0;
+      --alert-warning-bg: #fef3c7;
+      --alert-warning-text: #92400e;
+      --alert-warning-border: #fde68a;
       --badge-admin-bg: #dbeafe;
       --badge-admin-text: #1e40af;
       --badge-user-bg: #f3f4f6;
@@ -73,6 +76,9 @@
       --alert-success-bg: #052e16;
       --alert-success-text: #86efac;
       --alert-success-border: #14532d;
+      --alert-warning-bg: #451a03;
+      --alert-warning-text: #fcd34d;
+      --alert-warning-border: #78350f;
       --badge-admin-bg: #1e3a8a;
       --badge-admin-text: #93c5fd;
       --badge-user-bg: #374151;
@@ -196,6 +202,7 @@
     .alert { padding: 0.75rem 1rem; border-radius: 4px; margin-bottom: 1rem; font-size: 0.9rem; }
     .alert-error { background: var(--alert-error-bg); color: var(--alert-error-text); border: 1px solid var(--alert-error-border); }
     .alert-success { background: var(--alert-success-bg); color: var(--alert-success-text); border: 1px solid var(--alert-success-border); }
+    .alert-warning { background: var(--alert-warning-bg); color: var(--alert-warning-text); border: 1px solid var(--alert-warning-border); }
     .badge {
       display: inline-block; padding: 0.15rem 0.5rem; border-radius: 9999px;
       font-size: 0.75rem; font-weight: 600;
@@ -334,6 +341,7 @@
 {{define "alerts"}}
   {{if .Error}}<div class="alert alert-error">{{.Error}}</div>{{end}}
   {{if .Success}}<div class="alert alert-success">{{.Success}}</div>{{end}}
+  {{if .Warning}}<div class="alert alert-warning">{{.Warning}}</div>{{end}}
 {{end}}
 
 {{define "foot"}}

@@ -123,11 +123,22 @@ func v2Handle(a *app, w http.ResponseWriter, r *http.Request, userID string) {
 			if name, ok := p["name"].(string); ok {
 				params.Name = name
 			}
+			shared.Debugf("[v2tools/call] raw params: %v", p)
+			// Simple approach: assume arguments is nested as MCP spec says
 			if args, ok := p["arguments"].(map[string]interface{}); ok {
+				params.Arguments = args
+			} else if params.Name != "" {
+				// If name was extracted, assume everything else goes into arguments
+				args := make(map[string]interface{})
+				for k, v := range p {
+					if k != "name" {
+						args[k] = v
+					}
+				}
 				params.Arguments = args
 			}
 		default:
-			http.Error(w, "Invalid params type in tools/call request", http.StatusBadRequest)
+			http.Error(w, fmt.Sprintf("Invalid params type in tools/call: %T", msg.Params), http.StatusBadRequest)
 			return
 		}
 		shared.Debugf("[v2] tools/call: name=%q args=%v", params.Name, params.Arguments)
@@ -286,9 +297,10 @@ func v2toolsList(a *app, w http.ResponseWriter, r *http.Request, userID string, 
 			capitalizedID := strings.Join(parts, "_")
 
 			// Add namespace_expand tool for this backend (no justification required)
+			// NOTE: expand is for DISCOVERY only - to actually call tools, use xxx_call with justification
 			toolsList = append(toolsList, map[string]interface{}{
 				"name":        fmt.Sprintf("%s_expand", backend.ID),
-				"description": fmt.Sprintf("Expand %s namespace to get available tools. No justification required. Call this before %s_call to discover tool names.", capitalizedID, backend.ID),
+				"description": fmt.Sprintf("Discover available tools in %s namespace. NOTE: To call these tools, use the %s_call tool with justification (not this one).", capitalizedID, backend.ID),
 				"inputSchema": map[string]interface{}{
 					"type":       "object",
 					"properties": map[string]interface{}{},
@@ -296,9 +308,16 @@ func v2toolsList(a *app, w http.ResponseWriter, r *http.Request, userID string, 
 			})
 
 			// Add tool_call tool for this backend
+			justificationRequired := !backend.SkipJustification
+			descSuffix := ""
+			if justificationRequired {
+				descSuffix = fmt.Sprintf(" Justification required (minimum %d characters).", a.enforcer.GetMinJustificationLength())
+			} else {
+				descSuffix = " No justification required."
+			}
 			toolsList = append(toolsList, map[string]interface{}{
 				"name":        fmt.Sprintf("%s_call", backend.ID),
-				"description": fmt.Sprintf("Call a tool in the %s namespace", capitalizedID),
+				"description": fmt.Sprintf("Call a tool in the %s namespace.%s", capitalizedID, descSuffix),
 				"inputSchema": map[string]interface{}{
 					"type": "object",
 					"properties": map[string]interface{}{
@@ -316,7 +335,12 @@ func v2toolsList(a *app, w http.ResponseWriter, r *http.Request, userID string, 
 							}
 						}(),
 					},
-					"required": []string{"tool", "justification"},
+					"required": func() []string {
+						if justificationRequired {
+							return []string{"tool", "justification"}
+						}
+						return []string{"tool"}
+					}(),
 				},
 			})
 		}
@@ -534,23 +558,28 @@ func v2toolCall(a *app, w http.ResponseWriter, r *http.Request, userID string, p
 	if !ok {
 		toolParams = make(map[string]interface{})
 	}
-	justification, ok := params["justification"].(string)
-	if !ok || justification == "" {
-		http.Error(w, "Missing or invalid 'justification' parameter", http.StatusBadRequest)
-		return
-	}
 
-	// Validate namespace is a valid backend
+	// Validate namespace is a valid backend (must check before justification validation)
 	backend, err := a.store.GetBackend(namespace)
 	if err != nil || !backend.Enabled {
 		http.Error(w, fmt.Sprintf("Backend %s not found or disabled", namespace), http.StatusNotFound)
 		return
 	}
 
+	// Check justification - only reject if explicitly empty AND backend requires it
+	// Don't reject if justification is missing from params entirely; let enforcer handle it
+	justification, hasJustification := params["justification"].(string)
+	shared.Debugf("[v2toolCall] params: %v justification: has=%v value=%q skipJustification=%v", params, hasJustification, justification, backend.SkipJustification)
+	if !backend.SkipJustification && hasJustification && justification == "" {
+		http.Error(w, "Missing or invalid 'justification' parameter", http.StatusBadRequest)
+		return
+	}
+	// If justification wasn't provided at all, use empty string but let enforcer decide
+
 	// Enforcer check
 	if a.enforcer != nil && !strings.HasPrefix(toolName, "mcpbridge_") {
 		ctx := r.Context()
-		shared.Infof("Enforcer: Evaluating tool call - user=%s tool=%s backend=%s", userID, toolName, namespace)
+		shared.Infof("Enforcer: Evaluating tool call - user=%s tool=%s backend=%s skipJustification=%v", userID, toolName, namespace, backend.SkipJustification)
 		decision, err := a.enforcer.HandleToolCall(ctx, userID, toolName, toolParams, namespace, justification, enforcer.CallOptions{SkipJustification: backend.SkipJustification})
 		if err != nil && decision.Action == "" {
 			shared.Errorf("Enforcer error: %v", err)
@@ -642,10 +671,21 @@ func v2toolCall(a *app, w http.ResponseWriter, r *http.Request, userID string, p
 
 	proc, err := pool.GetWarmWithRetry(poolmgr.DefaultWarmWaitTimeout)
 	if err != nil {
+		// Include failure reason in error message
+		failureMsg := err.Error()
+		shared.Errorf("[v2toolCall] ERROR: %s", failureMsg)
+		resp := map[string]interface{}{
+			"jsonrpc": "2.0",
+			"id":      id,
+			"error": map[string]interface{}{
+				"code":    -32003,
+				"message": failureMsg,
+			},
+		}
 		w.Header().Set("Content-Type", "application/json")
 		w.Header().Set("Connection", "close")
 		w.WriteHeader(http.StatusServiceUnavailable)
-		w.Write([]byte(fmt.Sprintf(`{"jsonrpc":"2.0","error":{"code":-32003,"message":"%v"}}`, err)))
+		json.NewEncoder(w).Encode(resp)
 		return
 	}
 

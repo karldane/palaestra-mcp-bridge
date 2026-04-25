@@ -442,3 +442,49 @@ func TestMigrateSecrets_RollbackCapability(t *testing.T) {
 		t.Errorf("decrypted = %q, want original-secret", decrypted)
 	}
 }
+
+func TestDualKeyInvariant_WriteBothKeys_DecryptSpawnTime(t *testing.T) {
+	s, dir, provider := testStoreWithCrypto(t)
+	defer os.RemoveAll(dir)
+	defer s.Close()
+
+	u := &User{ID: "u1", Name: "A", Email: "a@x.com", Password: "pw"}
+	s.CreateUser(u)
+	b := &Backend{ID: "github", Command: "echo", PoolSize: 1, Env: "{}"}
+	s.CreateBackend(b)
+
+	plaintext := "ghp_githubtoken123"
+	userDEK, err := crypto.GenerateRandomKey()
+	if err != nil {
+		t.Fatalf("failed to generate user DEK: %v", err)
+	}
+	defer crypto.Zeroize(userDEK)
+
+	err = s.SetUserTokenWithUserDEK("u1", "github", "GITHUB_PERSONAL_ACCESS_TOKEN", plaintext, userDEK)
+	if err != nil {
+		t.Fatalf("SetUserTokenWithUserDEK failed: %v", err)
+	}
+
+	masterKeyCiphertext, err := s.keyStore.EncryptSecret([]byte(plaintext))
+	if err != nil {
+		t.Fatalf("master-key encryption failed: %v", err)
+	}
+
+	err = s.UpdateMasterKeyEncrypted("u1", "github", "GITHUB_PERSONAL_ACCESS_TOKEN", string(masterKeyCiphertext))
+	if err != nil {
+		t.Fatalf("UpdateMasterKeyEncrypted failed: %v", err)
+	}
+
+	tokens, err := s.GetUserTokensDecrypted("u1", "github")
+	if err != nil {
+		t.Fatalf("GetUserTokensDecrypted failed: %v", err)
+	}
+	if len(tokens) != 1 {
+		t.Fatalf("got %d tokens, want 1", len(tokens))
+	}
+	if tokens[0].Value != plaintext {
+		t.Errorf("spawn-time decrypted = %q, want %q", tokens[0].Value, plaintext)
+	}
+
+	_ = provider
+}
