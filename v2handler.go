@@ -568,6 +568,25 @@ func v2toolCall(a *app, w http.ResponseWriter, r *http.Request, userID string, p
 		return
 	}
 
+	// Check if backend is ready (has been scanned for self-reporting or has cached capabilities)
+	// If no profiles exist and it's a self-reporting backend, it may still be initializing
+	if backend.SelfReporting {
+		profiles, err := a.store.GetToolProfilesByBackend(namespace)
+		if err != nil || len(profiles) == 0 {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusOK)
+			json.NewEncoder(w).Encode(map[string]interface{}{
+				"jsonrpc": "2.0",
+				"id":      id,
+				"error": map[string]interface{}{
+					"code":    -32003,
+					"message": fmt.Sprintf("Backend '%s' is still initializing. Self-reporting scan in progress. Please retry shortly.", namespace),
+				},
+			})
+			return
+		}
+	}
+
 	// Validate tool exists in backend capabilities before enforcer check
 	caps, err := a.store.GetBackendCapabilities(namespace)
 	if err == nil && caps != nil && len(caps.Tools) > 0 {
