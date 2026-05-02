@@ -245,9 +245,11 @@ func main() {
 
 	// ---- Enforcer tool profile scanner ----
 	// Scan self-reporting backends at startup to populate enforcer_tool_profiles.
+	// Run in background goroutines to not block startup - bridge becomes ready immediately,
+	// scans complete in parallel in the background.
 	if enf != nil {
-		scanSelfReportingBackends(st, shared.Infof, shared.Warnf)
-		loadOverridesIntoResolver(st, enf, shared.Infof, shared.Warnf)
+		go scanSelfReportingBackends(st, shared.Infof, shared.Warnf)
+		go loadOverridesIntoResolver(st, enf, shared.Infof, shared.Warnf)
 	}
 
 	// ---- Wire up app ----

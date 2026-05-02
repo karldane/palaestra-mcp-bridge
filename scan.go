@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"os"
+	"sync"
 	"time"
 
 	"github.com/google/uuid"
@@ -18,6 +19,7 @@ type LogFn func(format string, args ...interface{})
 // scanSelfReportingBackends iterates over backends marked as self-reporting,
 // spawns each one to enumerate their tools, extracts EnforcerProfile metadata
 // from tool._meta, and stores the results in the enforcer_tool_profiles table.
+// Scans are run in parallel using goroutines for faster startup.
 func scanSelfReportingBackends(st *store.Store, logf, warnf LogFn) {
 	backends, err := st.ListBackends()
 	if err != nil {
@@ -25,7 +27,8 @@ func scanSelfReportingBackends(st *store.Store, logf, warnf LogFn) {
 		return
 	}
 
-	scanner := enforcer.NewToolProfileScanner(poolmgr.ScanBackendTools)
+	var wg sync.WaitGroup
+	var mu sync.Mutex
 	scanned := 0
 
 	for _, b := range backends {
@@ -33,45 +36,56 @@ func scanSelfReportingBackends(st *store.Store, logf, warnf LogFn) {
 			continue
 		}
 
-		logf("scanSelfReporting: scanning backend %s (command=%q)", b.ID, b.Command)
+		wg.Add(1)
+		go func(b *store.Backend) {
+			defer wg.Done()
 
-		env := buildEnvForScan(b)
-		profiles, err := scanner.ScanBackend(b.ID, b.Command, env)
-		if err != nil {
-			warnf("scanSelfReporting: backend %s scan failed: %v", b.ID, err)
-			continue
-		}
+			logf("scanSelfReporting: scanning backend %s (command=%q)", b.ID, b.Command)
 
-		if len(profiles) == 0 {
-			logf("scanSelfReporting: backend %s returned no self-reported profiles", b.ID)
-			continue
-		}
-
-		stored := 0
-		for _, p := range profiles {
-			row := store.ToolProfileRow{
-				ID:           uuid.New().String(),
-				BackendID:    b.ID,
-				ToolName:     p.ToolName,
-				RiskLevel:    p.Profile.RiskLevel,
-				ImpactScope:  p.Profile.ImpactScope,
-				ResourceCost: p.Profile.ResourceCost,
-				RequiresHITL: p.Profile.ApprovalReq,
-				PIIExposure:  p.Profile.PIIExposure,
-				Idempotent:   p.Profile.Idempotent,
-				RawProfile:   p.RawJSON,
-				ScannedAt:    time.Now(),
+			scanner := enforcer.NewToolProfileScanner(poolmgr.ScanBackendTools)
+			env := buildEnvForScan(b)
+			profiles, err := scanner.ScanBackend(b.ID, b.Command, env)
+			if err != nil {
+				warnf("scanSelfReporting: backend %s scan failed: %v", b.ID, err)
+				return
 			}
-			if err := st.UpsertToolProfile(row); err != nil {
-				warnf("scanSelfReporting: failed to store profile %s.%s: %v", b.ID, p.ToolName, err)
-				continue
-			}
-			stored++
-		}
 
-		logf("scanSelfReporting: backend %s: stored %d tool profiles", b.ID, stored)
-		scanned += stored
+			if len(profiles) == 0 {
+				logf("scanSelfReporting: backend %s returned no self-reported profiles", b.ID)
+				return
+			}
+
+			stored := 0
+			for _, p := range profiles {
+				row := store.ToolProfileRow{
+					ID:           uuid.New().String(),
+					BackendID:    b.ID,
+					ToolName:     p.ToolName,
+					RiskLevel:    p.Profile.RiskLevel,
+					ImpactScope:  p.Profile.ImpactScope,
+					ResourceCost: p.Profile.ResourceCost,
+					RequiresHITL: p.Profile.ApprovalReq,
+					PIIExposure:  p.Profile.PIIExposure,
+					Idempotent:   p.Profile.Idempotent,
+					RawProfile:   p.RawJSON,
+					ScannedAt:    time.Now(),
+				}
+				if err := st.UpsertToolProfile(row); err != nil {
+					warnf("scanSelfReporting: failed to store profile %s.%s: %v", b.ID, p.ToolName, err)
+					continue
+				}
+				stored++
+			}
+
+			logf("scanSelfReporting: backend %s: stored %d tool profiles", b.ID, stored)
+
+			mu.Lock()
+			scanned += stored
+			mu.Unlock()
+		}(b)
 	}
+
+	wg.Wait()
 
 	if scanned > 0 {
 		logf("scanSelfReporting: total: stored %d tool profiles", scanned)
