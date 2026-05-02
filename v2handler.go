@@ -566,6 +566,38 @@ func v2toolCall(a *app, w http.ResponseWriter, r *http.Request, userID string, p
 		return
 	}
 
+	// Validate tool exists in backend capabilities before enforcer check
+	caps, err := a.store.GetBackendCapabilities(namespace)
+	if err == nil && caps != nil && len(caps.Tools) > 0 {
+		toolExists := false
+		for _, t := range caps.Tools {
+			if tName, ok := t["name"].(string); ok && tName == toolName {
+				toolExists = true
+				break
+			}
+		}
+		if !toolExists {
+			availableTools := []string{}
+			for _, t := range caps.Tools {
+				if tName, ok := t["name"].(string); ok {
+					availableTools = append(availableTools, tName)
+				}
+			}
+			availableStr := strings.Join(availableTools, ", ")
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusOK)
+			json.NewEncoder(w).Encode(map[string]interface{}{
+				"jsonrpc": "2.0",
+				"id":      id,
+				"error": map[string]interface{}{
+					"code":    -32002,
+					"message": fmt.Sprintf("Tool '%s' not found in %s namespace. Available tools: %s. Call %s_expand to discover available tools.", toolName, namespace, availableStr, namespace),
+				},
+			})
+			return
+		}
+	}
+
 	// Check justification - only reject if explicitly empty AND backend requires it
 	// Don't reject if justification is missing from params entirely; let enforcer handle it
 	justification, hasJustification := params["justification"].(string)
