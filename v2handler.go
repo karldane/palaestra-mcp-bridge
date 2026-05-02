@@ -297,10 +297,9 @@ func v2toolsList(a *app, w http.ResponseWriter, r *http.Request, userID string, 
 			capitalizedID := strings.Join(parts, "_")
 
 			// Add namespace_expand tool for this backend (no justification required)
-			// NOTE: expand is for DISCOVERY only - to actually call tools, use xxx_call with justification
 			toolsList = append(toolsList, map[string]interface{}{
 				"name":        fmt.Sprintf("%s_expand", backend.ID),
-				"description": fmt.Sprintf("Discover available tools in %s namespace. NOTE: To call these tools, use the %s_call tool with justification (not this one).", capitalizedID, backend.ID),
+				"description": fmt.Sprintf("Returns the full list of available tools in the %s namespace, including parameter names, types, and descriptions. You MUST call this tool before calling MCP_Bridge_%s_call. Do not attempt to guess tool names — call this first.", capitalizedID, backend.ID),
 				"inputSchema": map[string]interface{}{
 					"type":       "object",
 					"properties": map[string]interface{}{},
@@ -309,29 +308,32 @@ func v2toolsList(a *app, w http.ResponseWriter, r *http.Request, userID string, 
 
 			// Add tool_call tool for this backend
 			justificationRequired := !backend.SkipJustification
+			minJustificationLen := 40
+			if a.enforcer != nil {
+				minJustificationLen = a.enforcer.GetMinJustificationLength()
+			}
 			descSuffix := ""
 			if justificationRequired {
-				descSuffix = fmt.Sprintf(" Justification required (minimum %d characters).", a.enforcer.GetMinJustificationLength())
+				descSuffix = fmt.Sprintf(" Justification required (minimum %d characters).", minJustificationLen)
 			} else {
 				descSuffix = " No justification required."
 			}
 			toolsList = append(toolsList, map[string]interface{}{
 				"name":        fmt.Sprintf("%s_call", backend.ID),
-				"description": fmt.Sprintf("Call a tool in the %s namespace.%s", capitalizedID, descSuffix),
+				"description": fmt.Sprintf("Executes a named tool in the %s namespace. The value of `tool` must exactly match a tool name returned by MCP_Bridge_%s_expand. If you have not called MCP_Bridge_%s_expand in this session, do so before calling this tool. Do not guess tool names.%s", capitalizedID, backend.ID, backend.ID, descSuffix),
 				"inputSchema": map[string]interface{}{
 					"type": "object",
 					"properties": map[string]interface{}{
-						"tool":   map[string]interface{}{"type": "string", "description": "Tool name in " + backend.ID},
+						"tool": map[string]interface{}{
+							"type":        "string",
+							"description": fmt.Sprintf("Exact tool name as returned by MCP_Bridge_%s_expand. Do not infer or guess this value — call MCP_Bridge_%s_expand first if you have not already done so.", backend.ID, backend.ID),
+						},
 						"params": map[string]interface{}{"type": "object", "description": "Tool parameters"},
 						"justification": func() map[string]interface{} {
-							minLen := 40
-							if a.enforcer != nil {
-								minLen = a.enforcer.GetMinJustificationLength()
-							}
 							return map[string]interface{}{
 								"type":        "string",
-								"description": fmt.Sprintf("Reason for this tool call (minimum %d characters)", minLen),
-								"minLength":   minLen,
+								"description": fmt.Sprintf("Reason for this tool call (minimum %d characters)", minJustificationLen),
+								"minLength":   minJustificationLen,
 							}
 						}(),
 					},
@@ -577,21 +579,79 @@ func v2toolCall(a *app, w http.ResponseWriter, r *http.Request, userID string, p
 			}
 		}
 		if !toolExists {
-			availableTools := []string{}
+			availableToolsArray := []map[string]interface{}{}
+			requiredParams := []string{}
+			optionalParams := []string{}
+
 			for _, t := range caps.Tools {
-				if tName, ok := t["name"].(string); ok {
-					availableTools = append(availableTools, tName)
+				toolMap := t
+
+				if toolMap["name"] == nil || toolMap["description"] == nil {
+					continue
 				}
+
+				toolNameStr, _ := toolMap["name"].(string)
+				toolDesc, _ := toolMap["description"].(string)
+
+				inputSchema, _ := toolMap["inputSchema"].(map[string]interface{})
+				props, _ := inputSchema["properties"].(map[string]interface{})
+				reqParams, _ := inputSchema["required"].([]interface{})
+
+				requiredParams = []string{}
+				optionalParams = []string{}
+				if reqParams != nil {
+					for _, rp := range reqParams {
+						if rpStr, ok := rp.(string); ok {
+							requiredParams = append(requiredParams, rpStr)
+						}
+					}
+				}
+				if props != nil {
+					for propName := range props {
+						found := false
+						for _, rp := range requiredParams {
+							if rp == propName {
+								found = true
+								break
+							}
+						}
+						if !found {
+							optionalParams = append(optionalParams, propName)
+						}
+					}
+				}
+
+				requiredParamsInterface := make([]interface{}, len(requiredParams))
+				for i, v := range requiredParams {
+					requiredParamsInterface[i] = v
+				}
+				optionalParamsInterface := make([]interface{}, len(optionalParams))
+				for i, v := range optionalParams {
+					optionalParamsInterface[i] = v
+				}
+
+				availableToolsArray = append(availableToolsArray, map[string]interface{}{
+					"name":             toolNameStr,
+					"description":      toolDesc,
+					"required_params": requiredParamsInterface,
+					"optional_params": optionalParamsInterface,
+				})
 			}
-			availableStr := strings.Join(availableTools, ", ")
+
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusOK)
 			json.NewEncoder(w).Encode(map[string]interface{}{
 				"jsonrpc": "2.0",
 				"id":      id,
 				"error": map[string]interface{}{
-					"code":    -32002,
-					"message": fmt.Sprintf("Tool '%s' not found in %s namespace. Available tools: %s. Call %s_expand to discover available tools.", toolName, namespace, availableStr, namespace),
+					"code": -32002,
+					"message": fmt.Sprintf("Unknown tool '%s' in namespace '%s'. Call MCP_Bridge_%s_expand to discover available tools. The current tool list is provided in 'data'.", toolName, namespace, namespace),
+					"data": map[string]interface{}{
+						"error":          "unknown_tool",
+						"provided":       toolName,
+						"namespace":      namespace,
+						"available_tools": availableToolsArray,
+					},
 				},
 			})
 			return
