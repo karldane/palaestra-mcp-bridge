@@ -2,9 +2,14 @@ package poolmgr
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
+	"os/exec"
+	"strings"
 	"time"
+
+	"github.com/mcp-bridge/mcp-bridge/enforcer"
 )
 
 // ---------- Backend health probing ----------
@@ -245,4 +250,59 @@ func ScanBackendTools(command string, env []string, timeout time.Duration) ([]by
 		pool.UnregisterRequest(toolsID)
 		return nil, fmt.Errorf("tools/list timeout after %s", timeout)
 	}
+}
+
+// ScanModeOutput is the JSON structure returned by --scan-mode
+type ScanModeOutput struct {
+	Name    string       `json:"name"`
+	Version string       `json:"version"`
+	Tools   []ScanTool   `json:"tools"`
+	Error   string       `json:"error,omitempty"`
+}
+
+// ScanTool represents a tool in scan mode output
+type ScanTool struct {
+	Name        string `json:"name"`
+	Description string `json:"description"`
+	Profile     *enforcer.EnforcerProfileFromFramework `json:"profile,omitempty"`
+}
+
+// ScanBackendToolsScanMode runs the backend with --scan-mode flag and returns
+// the JSON output containing tool definitions with self-reported profiles.
+// This is faster than the full MCP handshake for self-reporting backends.
+func ScanBackendToolsScanMode(command string, env []string, timeout time.Duration) (*ScanModeOutput, error) {
+	// Add --scan flag to command
+	scanCmd := command
+	if !strings.Contains(command, " --scan") && !strings.Contains(command, " --scan-mode") {
+		scanCmd = command + " --scan"
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+
+	cmd := exec.CommandContext(ctx, "sh", "-c", scanCmd)
+	cmd.Env = env
+
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+
+	err := cmd.Run()
+	if err != nil {
+		if ctx.Err() == context.DeadlineExceeded {
+			return nil, fmt.Errorf("scan timeout after %s", timeout)
+		}
+		return nil, fmt.Errorf("scan error: %w - stderr: %s", err, stderr.String())
+	}
+
+	var output ScanModeOutput
+	if err := json.Unmarshal(stdout.Bytes(), &output); err != nil {
+		return nil, fmt.Errorf("failed to parse scan output: %w - stdout: %s", err, stdout.String())
+	}
+
+	if output.Error != "" {
+		return nil, fmt.Errorf("backend scan error: %s", output.Error)
+	}
+
+	return &output, nil
 }

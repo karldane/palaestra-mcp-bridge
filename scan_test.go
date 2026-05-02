@@ -101,7 +101,7 @@ func TestScanSelfReportingBackendsFiltersCorrectly(t *testing.T) {
 	}
 }
 
-func TestBackendReadyCheck(t *testing.T) {
+func TestBackendReadyCheckIntegration(t *testing.T) {
 	type backendScanStatus struct {
 		scanned    bool
 		scanTime   time.Time
