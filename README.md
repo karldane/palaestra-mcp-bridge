@@ -60,22 +60,28 @@ legacy **SSE** transport (`/`).
 
 ### Supported Backends
 
-MCP Bridge manages these MCP server backends:
+MCP Bridge manages these MCP server backends (tested with; others work too):
 
-| Backend      | Description                          | Tools |
-|-------------|-------------------------------------|-------|
-| `appscan_asoc` | AppScan on Cloud security scanning     | 21   |
-| `atlassian`  | Jira + Confluence                 | 18   |
-| `aws`       | AWS CLI integration              | 28   |
-| `circleci`  | CircleCI CI/CD                   | 14   |
-| `github`    | GitHub API                     | 22   |
-| `k8s`      | Kubernetes                     | 40   |
-| `newrelic`  | New Relic monitoring             | 18   |
-| `oracle`   | Oracle database                 | 11   |
-| `qdrant`   | Qdrant vector database          | 25   |
-| `slack`    | Slack messaging                | 30   |
+| Backend | Description | Repository |
+|---------|-------------|------------|
+| **appscan_asoc** | AppScan on Cloud security scanning | [tusker-direct/appscan-asoc-mcp](https://github.com/tusker-direct/appscan-asoc-mcp) |
+| **argocd** | ArgoCD GitOps controller | [argocd-mcp](https://www.npmjs.com/package/argocd-mcp) (npm) |
+| **atlassian** | Jira + Confluence integration | [@xuandev/atlassian-mcp](https://www.npmjs.com/package/@xuandev/atlassian-mcp) (npm) |
+| **aws** | AWS API via awslabs | [awslabs/aws-api-mcp-server](https://github.com/awslabs/aws-api-mcp-server) |
+| **backoffice** | Git LSP for internal repos | [tusker-direct/git-lsp-mcp](https://github.com/tusker-direct/git-lsp-mcp) |
+| **circleci** | CircleCI CI/CD | [@circleci/mcp-server-circleci](https://www.npmjs.com/package/@circleci/mcp-server-circleci) (npm) |
+| **github** | GitHub API | [github/mcp-server-github](https://github.com/github/mcp-server-github) |
+| **k8s** | Kubernetes cluster management | [kubernetes-mcp-server](https://github.com/kubernetes-sigs/kubernetes-mcp-server) |
+| **mongodb** | MongoDB database (disabled) | [tusker-direct/mongodb-mcp](https://github.com/tusker-direct/mongodb-mcp) |
+| **newrelic** | New Relic monitoring & alerting | [tusker-direct/newrelic-mcp](https://github.com/tusker-direct/newrelic-mcp) |
+| **oracle** | Oracle database | [tusker-direct/oracle-mcp](https://github.com/tusker-direct/oracle-mcp) |
+| **qdrant** | Qdrant vector database | [tusker-direct/qdrant-mcp](https://github.com/tusker-direct/qdrant-mcp) |
+| **slack** | Slack messaging & workflows | [tusker-direct/slack-mcp](https://github.com/tusker-direct/slack-mcp) |
 
-Total: 227 self-reported safety profiles from enabled backends.
+Total: 227+ self-reported safety profiles from enabled backends.
+
+- **Custom backends** (written by maintainer): appscan_asoc, backoffice, mongodb, newrelic, oracle, qdrant, slack
+- **3rd party backends**: argocd, atlassian, aws, circleci, github, k8s
 
 Backends marked as `no_keys_required` (e.g., qdrant) use system credentials
 instead of per-user tokens.
@@ -101,46 +107,6 @@ go build -o mcp-bridge .
 # Default admin: admin@mcp-bridge.local / changeme
 # Web UI: http://localhost:8080/web/login
 ```
-
-## Project Structure
-
-```
-.
-├── main.go              # App struct, HTTP wiring, auth middleware
-├── main_test.go         # Integration tests
-├── v2handler.go         # MCP Streamable HTTP transport (/mcp/v2)
-├── v2handler_test.go    # V2 handler tests
-├── config/
-│   └── config.go        # YAML config loader
-├── store/
-│   ├── store.go         # SQLite store, schema migration
-│   ├── backend.go       # Backend definitions
-│   └── enforcer_store.go # Enforcer data (profiles, policies, overrides)
-├── auth/
-│   └── auth.go          # OAuth 2.1 server
-├── poolmgr/
-│   └── pool.go          # Per-user process pools, probe
-├── muxer/
-│   ├── muxer.go         # Tool-prefix routing
-│   └── augment.go       # Tool augmentation (instructions, justification)
-├── enforcer/
-│   ├── enforcer.go      # Core enforcer, HandleToolCall, interfaces
-│   ├── cel_engine.go    # CEL policy evaluator
-│   ├── resolver.go      # Tool profile resolution (3-tier chain)
-│   ├── types.go        # DecisionContext, EnforcerConfig, CallOptions
-│   └── enforcer_test.go # Unit tests
-├── web/
-│   └── web.go           # Admin/user web handlers
-├── scan.go             # Self-reporting profile scanner
-├── precache.go          # Tool + profile precaching
-├── templates/           # HTML templates (login, dashboard, admin, enforcer)
-├── Makefile            # Build automation
-├── config.yaml.example  # Annotated example
-├── seed.go            # Default data seeding
-└── devdocs/           # Design specs and specs
-```
-
-**100+ tests** across packages.
 
 ## API Reference
 
