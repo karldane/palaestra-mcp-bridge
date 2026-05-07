@@ -64,19 +64,19 @@ MCP Bridge manages these MCP server backends (tested with; others work too):
 
 | Backend | Description | Repository |
 |---------|-------------|------------|
-| **appscan_asoc** | AppScan on Cloud security scanning | [tusker-direct/appscan-asoc-mcp](https://github.com/tusker-direct/appscan-asoc-mcp) |
+| **appscan_asoc** | AppScan on Cloud security scanning | [karldane/appscan-asoc-mcp](https://github.com/karldane/appscan-asoc-mcp) |
 | **argocd** | ArgoCD GitOps controller | [argocd-mcp](https://www.npmjs.com/package/argocd-mcp) (npm) |
 | **atlassian** | Jira + Confluence integration | [@xuandev/atlassian-mcp](https://www.npmjs.com/package/@xuandev/atlassian-mcp) (npm) |
 | **aws** | AWS API via awslabs | [awslabs/aws-api-mcp-server](https://github.com/awslabs/aws-api-mcp-server) |
-| **backoffice** | Git LSP for internal repos | [tusker-direct/git-lsp-mcp](https://github.com/tusker-direct/git-lsp-mcp) |
+| **backoffice** | Git LSP for internal repos | [karldane/git-lsp-mcp](https://github.com/karldane/git-lsp-mcp) |
 | **circleci** | CircleCI CI/CD | [@circleci/mcp-server-circleci](https://www.npmjs.com/package/@circleci/mcp-server-circleci) (npm) |
 | **github** | GitHub API | [github/mcp-server-github](https://github.com/github/mcp-server-github) |
 | **k8s** | Kubernetes cluster management | [kubernetes-mcp-server](https://github.com/kubernetes-sigs/kubernetes-mcp-server) |
-| **mongodb** | MongoDB database (disabled) | [tusker-direct/mongodb-mcp](https://github.com/tusker-direct/mongodb-mcp) |
-| **newrelic** | New Relic monitoring & alerting | [tusker-direct/newrelic-mcp](https://github.com/tusker-direct/newrelic-mcp) |
-| **oracle** | Oracle database | [tusker-direct/oracle-mcp](https://github.com/tusker-direct/oracle-mcp) |
-| **qdrant** | Qdrant vector database | [tusker-direct/qdrant-mcp](https://github.com/tusker-direct/qdrant-mcp) |
-| **slack** | Slack messaging & workflows | [tusker-direct/slack-mcp](https://github.com/tusker-direct/slack-mcp) |
+| **mongodb** | MongoDB database (disabled) | [karldane/mongodb-mcp](https://github.com/karldane/mongodb-mcp) |
+| **newrelic** | New Relic monitoring & alerting | [karldane/newrelic-mcp](https://github.com/karldane/newrelic-mcp) |
+| **oracle** | Oracle database | [karldane/oracle-mcp](https://github.com/karldane/oracle-mcp) |
+| **qdrant** | Qdrant vector database | [karldane/qdrant-mcp](https://github.com/karldane/qdrant-mcp) |
+| **slack** | Slack messaging & workflows | [karldane/slack-mcp](https://github.com/tusker-direct/slack-mcp) |
 
 Total: 227+ self-reported safety profiles from enabled backends.
 
