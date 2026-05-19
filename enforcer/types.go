@@ -70,6 +70,7 @@ type SafetyProfile struct {
 	Cost         int // 1-10 resource cost
 	RequiresHITL bool
 	PIIExposure  bool
+	Idempotent   bool
 
 	// Source tracking
 	Source string // "config", "self_reported", "inferred"
