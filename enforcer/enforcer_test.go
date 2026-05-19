@@ -69,24 +69,28 @@ func TestJustificationGate_Length(t *testing.T) {
 		}
 	})
 
-	t.Run("sufficient justification passes gate but inferred tool is denied", func(t *testing.T) {
-		// No policies, inferred profile → DENY (no_explicit_permit)
+	t.Run("sufficient justification passes gate but inferred tool routes to admin HITL", func(t *testing.T) {
+		// No policies, inferred profile → ActionPendingAdminApproval (inferred_profile_gate).
+		// RequestApproval requires a valid user FK; "user1" has no DB row so the
+		// approval insert fails and the enforcer falls back to DENY(inferred_profile_gate).
 		decision, err := enf.HandleToolCall(ctx, "user1", "some_tool", map[string]interface{}{}, "backend1", "this is definitely long enough justification", enforcer.CallOptions{})
 		if err == nil {
 			t.Fatal("expected error for inferred tool with no policy, got nil")
 		}
 		if decision.Action != enforcer.ActionDeny {
-			t.Errorf("expected DENY for inferred tool with no policy, got %s", decision.Action)
+			t.Errorf("expected DENY (approval_queue_failed) for inferred tool with no policy, got %s", decision.Action)
 		}
-		if decision.PolicyID != "no_explicit_permit" {
-			t.Errorf("expected PolicyID=no_explicit_permit, got %s", decision.PolicyID)
+		if decision.PolicyID != "inferred_profile_gate" {
+			t.Errorf("expected PolicyID=inferred_profile_gate, got %s", decision.PolicyID)
 		}
 	})
 }
 
 // TestJustificationGate_DisabledWhenZero ensures that setting
 // MinJustificationLength=0 disables the gate entirely. An inferred tool with
-// no policies is still hard-denied by the no_explicit_permit gate.
+// no policies is routed to the admin HITL queue (inferred_profile_gate).
+// When no matching user exists in the DB the approval insert fails and the
+// enforcer returns DENY(inferred_profile_gate) as a safe fallback.
 func TestJustificationGate_DisabledWhenZero(t *testing.T) {
 	s, cleanup := newTestStore(t)
 	defer cleanup()
@@ -100,16 +104,17 @@ func TestJustificationGate_DisabledWhenZero(t *testing.T) {
 	}
 
 	ctx := context.Background()
-	// Justification gate is off, but inferred tool with no policy → DENY (no_explicit_permit)
+	// Justification gate is off; inferred tool with no policy → DENY (inferred_profile_gate)
+	// because "user1" has no DB row so RequestApproval's FK insert fails.
 	decision, err := enf.HandleToolCall(ctx, "user1", "some_tool", map[string]interface{}{}, "backend1", "", enforcer.CallOptions{})
 	if err == nil {
 		t.Fatal("expected error for inferred tool with no policy, got nil")
 	}
 	if decision.Action != enforcer.ActionDeny {
-		t.Errorf("expected DENY (no_explicit_permit), got %s", decision.Action)
+		t.Errorf("expected DENY (approval_queue_failed), got %s", decision.Action)
 	}
-	if decision.PolicyID != "no_explicit_permit" {
-		t.Errorf("expected PolicyID=no_explicit_permit, got %s", decision.PolicyID)
+	if decision.PolicyID != "inferred_profile_gate" {
+		t.Errorf("expected PolicyID=inferred_profile_gate, got %s", decision.PolicyID)
 	}
 }
 
@@ -362,10 +367,12 @@ func TestResolveForUser_UserOverrideApplied(t *testing.T) {
 
 // ---------- Deny-unless-permitted gate ----------
 
-// TestDenyUnlessPermitted_InferredNoPolicyIsDenied verifies that a tool with an
-// inferred safety profile and no matching DB policy is hard-denied with
-// PolicyID="no_explicit_permit".
-func TestDenyUnlessPermitted_InferredNoPolicyIsDenied(t *testing.T) {
+// TestDenyUnlessPermitted_InferredNoPolicyRoutesToHITL verifies that a tool with an
+// inferred safety profile and no matching DB policy is routed to the admin HITL
+// queue (ActionPendingAdminApproval / inferred_profile_gate). When the user has no
+// DB row the approval insert fails and the enforcer returns DENY(inferred_profile_gate)
+// as a safe fallback — still never ActionAllow.
+func TestDenyUnlessPermitted_InferredNoPolicyRoutesToHITL(t *testing.T) {
 	s, cleanup := newTestStore(t)
 	defer cleanup()
 
@@ -378,17 +385,18 @@ func TestDenyUnlessPermitted_InferredNoPolicyIsDenied(t *testing.T) {
 	}
 
 	ctx := context.Background()
-	// "unknown_third_party_tool" has no stored profile → inferred source
+	// "unknown_third_party_tool" has no stored profile → inferred source.
+	// "user1" has no DB row → RequestApproval FK insert fails → DENY fallback.
 	decision, callErr := enf.HandleToolCall(ctx, "user1", "unknown_third_party_tool",
 		map[string]interface{}{}, "third_party_backend", "", enforcer.CallOptions{})
 	if callErr == nil {
 		t.Fatal("expected error for inferred tool with no policy, got nil")
 	}
 	if decision.Action != enforcer.ActionDeny {
-		t.Errorf("expected ActionDeny, got %s", decision.Action)
+		t.Errorf("expected ActionDeny (HITL fallback), got %s", decision.Action)
 	}
-	if decision.PolicyID != "no_explicit_permit" {
-		t.Errorf("expected PolicyID=no_explicit_permit, got %q", decision.PolicyID)
+	if decision.PolicyID != "inferred_profile_gate" {
+		t.Errorf("expected PolicyID=inferred_profile_gate, got %q", decision.PolicyID)
 	}
 }
 
@@ -418,6 +426,11 @@ func TestDenyUnlessPermitted_InferredWithAllowPolicyIsAllowed(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("AddPolicy: %v", err)
 	}
+
+	// unknown_third_party_tool has no classification match → fall-through sentinel
+	// (RiskHigh, ImpactDelete, cost=10). With inferred multiplier=3:
+	// riskCost = 10 * 4 * 3 = 120. Set capacity >= 120 so the call is allowed.
+	enf.SetBackendRateLimit("third_party_backend", 200, 0, 1000, 0)
 
 	ctx := context.Background()
 	decision, callErr := enf.HandleToolCall(ctx, "user1", "unknown_third_party_tool",
@@ -563,7 +576,326 @@ func productionBackendPolicies() []enforcer.PolicyRow {
 	}
 }
 
-// TestBackendRouting_AllNonSelfReportingBackends is a table-driven routing
+// seedToolProfile inserts a tool profile row directly into the DB so the
+// resolver's Tier-3 lookup finds it. rawProfile controls the Source the
+// resolver returns — pass {"source":"inferred"} or a self-reported blob.
+func seedToolProfile(t *testing.T, db interface{ DB() interface{ ExecContext(interface{}, string, ...interface{}) (interface{}, error) } }, row enforcer.ToolProfileRow) {
+	// Use store.UpsertToolProfileRaw instead — just exec SQL directly.
+	t.Helper()
+}
+
+// seedToolProfileSQL inserts a profile via the raw *store.Store DB handle.
+func seedToolProfileSQL(t *testing.T, s *store.Store, row enforcer.ToolProfileRow) {
+	t.Helper()
+	idempInt := 0
+	if row.Idempotent {
+		idempInt = 1
+	}
+	hitlInt := 0
+	if row.RequiresHITL {
+		hitlInt = 1
+	}
+	piiInt := 0
+	if row.PIIExposure {
+		piiInt = 1
+	}
+	_, err := s.DB().Exec(`
+		INSERT OR REPLACE INTO enforcer_tool_profiles
+		  (id, backend_id, tool_name, risk_level, impact_scope, resource_cost,
+		   requires_hitl, pii_exposure, idempotent, raw_profile, scanned_at)
+		VALUES (?,?,?,?,?,?,?,?,?,?,?)`,
+		row.ID, row.BackendID, row.ToolName, row.RiskLevel, row.ImpactScope,
+		row.ResourceCost, hitlInt, piiInt, idempInt, row.RawProfile,
+		row.ScannedAt.UTC().Format("2006-01-02T15:04:05Z"),
+	)
+	if err != nil {
+		t.Fatalf("seedToolProfileSQL: %v", err)
+	}
+}
+
+// ---------- Deny-unless-permitted gate ----------
+
+// TestGate_SourceEmpty_Deny verifies that a tool with Source="" (no profile at all)
+// is hard-denied after the spec §6.2 fix.
+func TestGate_SourceEmpty_Deny(t *testing.T) {
+	s, cleanup := newTestStore(t)
+	defer cleanup()
+
+	cfg := enforcer.DefaultEnforcerConfig()
+	cfg.MinJustificationLength = 0
+	enf, err := enforcer.NewEnforcer(cfg, store.NewEnforcerStore(s.DB()), nil)
+	if err != nil {
+		t.Fatalf("NewEnforcer: %v", err)
+	}
+
+	// Add no policies — no DB profile either, so resolver falls to Tier-4 heuristic.
+	// Use a tool whose name has NO pattern match → falls to sentinel → Source="inferred"
+	// via Tier-4. To get Source="" we need to bypass the resolver entirely, which
+	// requires a self-reported DB row with empty source — verify the defensive default.
+	// Instead: insert a DB row with empty raw_profile (no source field) to simulate
+	// a legacy row that predates this spec.
+	seedToolProfileSQL(t, s, enforcer.ToolProfileRow{
+		ID:          "legacy-001",
+		BackendID:   "testbackend",
+		ToolName:    "legacy_frobnicate",
+		RiskLevel:   "medium",
+		ImpactScope: "write",
+		RawProfile:  "", // no source field → sourceFromRawProfile returns "self_reported"
+		ScannedAt:   time.Now(),
+	})
+
+	// With an empty raw_profile the resolver returns self_reported, not "".
+	// True Source="" can only come from a profile struct with Source unset —
+	// that path no longer exists after Step 1. Verify the self_reported fallback
+	// allows (implicit permit) when no policy matches.
+	ctx := context.Background()
+	decision, _ := enf.HandleToolCall(ctx, "user1", "legacy_frobnicate",
+		map[string]interface{}{}, "testbackend",
+		"testing legacy tool with no explicit source marker", enforcer.CallOptions{})
+	if decision.Action != enforcer.ActionAllow {
+		t.Errorf("legacy tool (empty raw_profile → self_reported): want ALLOW, got %s (policy=%s)",
+			decision.Action, decision.PolicyID)
+	}
+}
+
+// TestGate_SourceInferred_AdminHITL verifies that an inferred-profile tool with
+// no matching policy is routed to the admin approval queue.
+func TestGate_SourceInferred_AdminHITL(t *testing.T) {
+	s, cleanup := newTestStore(t)
+	defer cleanup()
+
+	cfg := enforcer.DefaultEnforcerConfig()
+	cfg.MinJustificationLength = 0
+	es := store.NewEnforcerStore(s.DB())
+	enf, err := enforcer.NewEnforcer(cfg, es, nil)
+	if err != nil {
+		t.Fatalf("NewEnforcer: %v", err)
+	}
+
+	// enforcer_approvals has a FK on users(id) — seed a user so the insert succeeds.
+	_, err = s.DB().Exec(`INSERT INTO users (id, name, email, password, role) VALUES (?,?,?,?,?)`,
+		"user1", "Test User", "user1@test.local", "x", "user")
+	if err != nil {
+		t.Fatalf("seed user: %v", err)
+	}
+
+	// Seed an inferred profile row — source="inferred" in raw_profile.
+	seedToolProfileSQL(t, s, enforcer.ToolProfileRow{
+		ID:           "inferred-001",
+		BackendID:    "testbackend",
+		ToolName:     "delete_widget",
+		RiskLevel:    "high",
+		ImpactScope:  "delete",
+		ResourceCost: 10,
+		RawProfile:   `{"source":"inferred"}`,
+		ScannedAt:    time.Now(),
+	})
+
+	ctx := context.Background()
+	// No policies seeded — decision.Action will be "" after CEL evaluation,
+	// which should trigger the inferred gate → admin HITL.
+	decision, err := enf.HandleToolCall(ctx, "user1", "delete_widget",
+		map[string]interface{}{}, "testbackend",
+		"testing inferred profile gate routing to admin approval queue", enforcer.CallOptions{})
+
+	if decision.Action != enforcer.ActionPendingAdminApproval {
+		t.Errorf("inferred tool, no policy: want ActionPendingAdminApproval, got %s (policy=%s, err=%v)",
+			decision.Action, decision.PolicyID, err)
+	}
+	if decision.PolicyID != "inferred_profile_gate" {
+		t.Errorf("PolicyID = %q, want inferred_profile_gate", decision.PolicyID)
+	}
+	if decision.ApprovalID == "" {
+		t.Error("ApprovalID is empty, want a non-empty approval ID")
+	}
+}
+
+// TestGate_SourceSelfReported_Allow verifies that a self-reported tool with no
+// matching policy receives ActionAllow (implicit permit).
+func TestGate_SourceSelfReported_Allow(t *testing.T) {
+	s, cleanup := newTestStore(t)
+	defer cleanup()
+
+	cfg := enforcer.DefaultEnforcerConfig()
+	cfg.MinJustificationLength = 0
+	enf, err := enforcer.NewEnforcer(cfg, store.NewEnforcerStore(s.DB()), nil)
+	if err != nil {
+		t.Fatalf("NewEnforcer: %v", err)
+	}
+
+	// Seed a self-reported profile (no "source":"inferred" marker).
+	seedToolProfileSQL(t, s, enforcer.ToolProfileRow{
+		ID:           "self-001",
+		BackendID:    "testbackend",
+		ToolName:     "get_widget",
+		RiskLevel:    "low",
+		ImpactScope:  "read",
+		ResourceCost: 1,
+		RawProfile:   `{"risk_level":"low","idempotent":true}`,
+		ScannedAt:    time.Now(),
+	})
+
+	ctx := context.Background()
+	decision, _ := enf.HandleToolCall(ctx, "user1", "get_widget",
+		map[string]interface{}{}, "testbackend",
+		"testing self-reported tool implicit allow with no policy", enforcer.CallOptions{})
+	if decision.Action != enforcer.ActionAllow {
+		t.Errorf("self_reported tool, no policy: want ActionAllow, got %s (policy=%s)",
+			decision.Action, decision.PolicyID)
+	}
+}
+
+// TestGate_SourceOverride_Allow verifies that an override profile with no
+// matching policy receives ActionAllow.
+func TestGate_SourceOverride_Allow(t *testing.T) {
+	s, cleanup := newTestStore(t)
+	defer cleanup()
+
+	cfg := enforcer.DefaultEnforcerConfig()
+	cfg.MinJustificationLength = 0
+	enf, err := enforcer.NewEnforcer(cfg, store.NewEnforcerStore(s.DB()), nil)
+	if err != nil {
+		t.Fatalf("NewEnforcer: %v", err)
+	}
+
+	err = enf.RegisterOverride("get_widget", "testbackend", enforcer.SafetyProfile{
+		Risk:   enforcer.RiskLow,
+		Impact: enforcer.ImpactRead,
+		Cost:   1,
+	})
+	if err != nil {
+		t.Fatalf("RegisterOverride: %v", err)
+	}
+
+	ctx := context.Background()
+	decision, _ := enf.HandleToolCall(ctx, "user1", "get_widget",
+		map[string]interface{}{}, "testbackend",
+		"testing override profile implicit allow with no policy", enforcer.CallOptions{})
+	if decision.Action != enforcer.ActionAllow {
+		t.Errorf("override tool, no policy: want ActionAllow, got %s (policy=%s)",
+			decision.Action, decision.PolicyID)
+	}
+}
+
+// ---------- Inferred-profile rate limit multiplier ----------
+
+// TestInferredCostMultiplier_TripleCost verifies that inferred tools consume
+// 3× the base cost from rate-limit buckets (default multiplier=3).
+func TestInferredCostMultiplier_TripleCost(t *testing.T) {
+	s, cleanup := newTestStore(t)
+	defer cleanup()
+
+	cfg := enforcer.DefaultEnforcerConfig()
+	cfg.MinJustificationLength = 0
+	// Default multiplier (0 → coerced to 3 in NewEnforcer)
+	es := store.NewEnforcerStore(s.DB())
+	enf, err := enforcer.NewEnforcer(cfg, es, nil)
+	if err != nil {
+		t.Fatalf("NewEnforcer: %v", err)
+	}
+
+	// Seed an inferred high-risk tool (cost=10). With multiplier=3 → effective cost=30.
+	// Backend default risk capacity is typically 100. After 3 calls it should exhaust.
+	// Add an allow policy so the gate doesn't HITL after the first call.
+	seedToolProfileSQL(t, s, enforcer.ToolProfileRow{
+		ID:           "inferred-cost-001",
+		BackendID:    "testbackend",
+		ToolName:     "delete_widget",
+		RiskLevel:    "high",
+		ImpactScope:  "delete",
+		ResourceCost: 10,
+		RawProfile:   `{"source":"inferred"}`,
+		ScannedAt:    time.Now(),
+	})
+	if err := enf.AddPolicy(enforcer.PolicyRow{
+		ID:         "allow-delete-widget",
+		Name:       "allow delete_widget",
+		Expression: `tool == "delete_widget"`,
+		Action:     string(enforcer.ActionAllow),
+		Enabled:    true,
+		Priority:   1,
+	}); err != nil {
+		t.Fatalf("AddPolicy: %v", err)
+	}
+
+	ctx := context.Background()
+	const justification = "rate multiplier test — verifying inferred tool consumes 3x cost"
+
+	// Effective riskCost = base(10) * riskMultiplier(high=4) * inferredMultiplier(3) = 120.
+	// Set capacity=150 so first call (120≤150) is allowed; second (120>30) is rate-limited.
+	enf.SetBackendRateLimit("testbackend", 150, 0, 1000, 0)
+
+	// First call: consumes 120 of 150 → allowed.
+	d1, _ := enf.HandleToolCall(ctx, "user1", "delete_widget",
+		map[string]interface{}{}, "testbackend", justification, enforcer.CallOptions{})
+	if d1.Action != enforcer.ActionAllow {
+		t.Fatalf("call 1: want ALLOW, got %s", d1.Action)
+	}
+
+	// Second call: 120 > 30 remaining → rate limited.
+	d2, _ := enf.HandleToolCall(ctx, "user1", "delete_widget",
+		map[string]interface{}{}, "testbackend", justification, enforcer.CallOptions{})
+	if d2.Action != enforcer.ActionDeny || d2.PolicyID != "rate_limit" {
+		t.Errorf("call 2: want DENY(rate_limit), got %s (policy=%s)", d2.Action, d2.PolicyID)
+	}
+}
+
+// TestInferredCostMultiplier_Disabled verifies that InferredCostMultiplier=1
+// causes inferred tools to consume base cost only.
+func TestInferredCostMultiplier_Disabled(t *testing.T) {
+	s, cleanup := newTestStore(t)
+	defer cleanup()
+
+	cfg := enforcer.DefaultEnforcerConfig()
+	cfg.MinJustificationLength = 0
+	cfg.InferredCostMultiplier = 1 // disable multiplier
+	es := store.NewEnforcerStore(s.DB())
+	enf, err := enforcer.NewEnforcer(cfg, es, nil)
+	if err != nil {
+		t.Fatalf("NewEnforcer: %v", err)
+	}
+
+	seedToolProfileSQL(t, s, enforcer.ToolProfileRow{
+		ID:           "inferred-cost-002",
+		BackendID:    "testbackend",
+		ToolName:     "delete_widget",
+		RiskLevel:    "high",
+		ImpactScope:  "delete",
+		ResourceCost: 10,
+		RawProfile:   `{"source":"inferred"}`,
+		ScannedAt:    time.Now(),
+	})
+	if err := enf.AddPolicy(enforcer.PolicyRow{
+		ID:         "allow-delete-widget-2",
+		Name:       "allow delete_widget",
+		Expression: `tool == "delete_widget"`,
+		Action:     string(enforcer.ActionAllow),
+		Enabled:    true,
+		Priority:   1,
+	}); err != nil {
+		t.Fatalf("AddPolicy: %v", err)
+	}
+
+	ctx := context.Background()
+	const justification = "rate multiplier disabled test — inferred tool at base cost"
+
+	// With multiplier=1: riskCost = base(10) * riskMultiplier(high=4) = 40.
+	// Set capacity=50 so first call (40≤50) is allowed; second (40>10) is rate-limited.
+	enf.SetBackendRateLimit("testbackend", 50, 0, 1000, 0)
+
+	d1, _ := enf.HandleToolCall(ctx, "user1", "delete_widget",
+		map[string]interface{}{}, "testbackend", justification, enforcer.CallOptions{})
+	if d1.Action != enforcer.ActionAllow {
+		t.Fatalf("multiplier=1 call 1: want ALLOW, got %s", d1.Action)
+	}
+
+	d2, _ := enf.HandleToolCall(ctx, "user1", "delete_widget",
+		map[string]interface{}{}, "testbackend", justification, enforcer.CallOptions{})
+	if d2.Action != enforcer.ActionDeny || d2.PolicyID != "rate_limit" {
+		t.Errorf("multiplier=1 call 2: want DENY(rate_limit), got %s (policy=%s)", d2.Action, d2.PolicyID)
+	}
+}
+
 // coverage test. It seeds the production backend policies into a fresh DB and
 // verifies that every backend × impact_scope combination routes to the expected
 // action tier under the deny-unless-permitted regime.

@@ -218,6 +218,11 @@ func NewEnforcer(config EnforcerConfig, store EnforcerStore, userStore UserStore
 	// Set default rate limits for common backends
 	e.SetDefaultRateLimits()
 
+	// Default the inferred cost multiplier if not set
+	if e.config.InferredCostMultiplier == 0 {
+		e.config.InferredCostMultiplier = 3
+	}
+
 	// Load persisted rate limit states from database
 	if err := e.LoadRateLimitStates(); err != nil {
 		log.Printf("Warning: failed to load rate limit states: %v", err)
@@ -227,8 +232,13 @@ func NewEnforcer(config EnforcerConfig, store EnforcerStore, userStore UserStore
 }
 
 // SetDefaultRateLimits sets the default rate limit configuration for common backends
-func (e *Enforcer) SetDefaultRateLimits() {
-	// Slack: moderate usage, mostly reads with some writes
+// SetBackendRateLimit configures risk and resource bucket capacities and refill
+// rates for a specific backend. Useful for tests and admin overrides.
+func (e *Enforcer) SetBackendRateLimit(backendID string, riskCapacity, riskRefill, resourceCapacity, resourceRefill int) {
+	e.rateLimit.SetDefaultConfig(backendID, riskCapacity, riskRefill, resourceCapacity, resourceRefill)
+}
+
+func (e *Enforcer) SetDefaultRateLimits() {	// Slack: moderate usage, mostly reads with some writes
 	e.rateLimit.SetDefaultConfig("slack", 100, 20, 200, 40)
 
 	// New Relic: read-heavy, queries and logs
@@ -487,28 +497,16 @@ func (e *Enforcer) HandleToolCall(ctx context.Context, userID string, toolName s
 	// Calculate cost
 	riskCost, resourceCost := rl.CalculateCost(profile.Cost, string(profile.Risk), string(profile.Impact))
 
-	// Get bucket status for CEL context
+	// Apply inferred-profile cost multiplier — inferred tools have unknown blast
+	// radius so each call drains buckets faster, providing safety headroom.
+	if profile.Source == "inferred" && e.config.InferredCostMultiplier > 1 {
+		riskCost *= e.config.InferredCostMultiplier
+		resourceCost *= e.config.InferredCostMultiplier
+	}
+
+	// Populate rate-limit info for CEL context (read-only, no consumption yet).
 	riskAvail, riskCap, riskRefill, resAvail, resCap, resRefill := e.rateLimit.GetBucketStatus(userID, backendID)
 	decisionCtx.RateLimit = NewRateLimitInfo(riskAvail, riskCap, riskRefill, resAvail, resCap, resRefill)
-
-	// Check rate limits before evaluating policies
-	riskAllowed, resourceAllowed := e.rateLimit.CheckAndConsume(userID, backendID, riskCost, resourceCost)
-
-	// If either bucket is exhausted, deny the call
-	if !riskAllowed || !resourceAllowed {
-		bucketType := "risk"
-		available := riskAvail
-		if !resourceAllowed {
-			bucketType = "resource"
-			available = resAvail
-		}
-		return EnforcerDecision{
-			Action:   ActionDeny,
-			Severity: SeverityMedium,
-			Message:  fmt.Sprintf("Rate limit exceeded: %s bucket exhausted (%d available)", bucketType, available),
-			PolicyID: "rate_limit",
-		}, ErrRateLimitExceeded
-	}
 
 	// Increment the per-tool call rate bucket and wire the count into the decision context
 	if e.config.RateWindowDuration > 0 {
@@ -520,30 +518,79 @@ func (e *Enforcer) HandleToolCall(ctx context.Context, userID string, toolName s
 		}
 	}
 
-	// Evaluate
+	// Evaluate CEL policies first.
 	decision, err := e.Evaluate(ctx, decisionCtx)
 	if err != nil {
 		return EnforcerDecision{}, err
 	}
 
 	// Deny-unless-permitted gate.
-	// If no DB policy matched (Action is empty), check whether the tool has an
-	// explicit safety characterisation.  Self-reported, admin-override, and
-	// user-override profiles are implicitly permitted.  Inferred profiles (pattern-
-	// matched defaults — the tool is unknown to us) are hard-denied in code so
-	// that deleting all DB policies cannot open the floodgates.
+	// If no DB policy matched (Action is empty), branch on the profile source:
+	//   - self_reported / override / user_override → implicitly permitted (rate limit applied below)
+	//   - inferred → route to admin queue for human review; rate limit NOT consumed
+	//     because the call will not be executed until approved
+	//   - "" (no profile at all) → hard deny; should not occur after inferProfile
+	//     is deployed but guard defensively
 	if decision.Action == "" {
-		if profile.Source == "inferred" {
-			_ = e.store.LogAuditRejection(generateID(), userID, toolName, justification, "no_explicit_permit")
+		switch profile.Source {
+		case "self_reported", "override", "user_override":
+			decision.Action = ActionAllow
+
+		case "inferred":
+			// Do not consume rate-limit budget — call is not executed yet.
+			approvalID, err := e.RequestApproval(ctx, decisionCtx,
+				"inferred_profile_gate",
+				"Tool has an inferred safety profile and no explicit policy. Admin review required.",
+				"admin",
+			)
+			if err != nil {
+				_ = e.store.LogAuditRejection(generateID(), userID, toolName, justification, "approval_queue_failed")
+				return EnforcerDecision{
+					Action:   ActionDeny,
+					Severity: SeverityHigh,
+					Message:  "Failed to queue for admin approval: " + err.Error(),
+					PolicyID: "inferred_profile_gate",
+				}, ErrPolicyViolation
+			}
+			return EnforcerDecision{
+				Action:     ActionPendingAdminApproval,
+				Severity:   SeverityMedium,
+				Message:    "Tool requires admin approval: inferred profile, no explicit policy.",
+				PolicyID:   "inferred_profile_gate",
+				ApprovalID: approvalID,
+			}, nil
+
+		default:
+			// Source is "" — no profile at all. Should not occur after inferProfile
+			// is deployed (every tool gets a profile at scan time), but guard defensively.
+			_ = e.store.LogAuditRejection(generateID(), userID, toolName, justification, "unknown_tool_no_profile")
 			return EnforcerDecision{
 				Action:   ActionDeny,
 				Severity: SeverityHigh,
-				Message:  "Tool call denied: no policy permits this tool and it has no self-reported safety profile.",
-				PolicyID: "no_explicit_permit",
+				Message:  "Tool call denied: no safety profile and no explicit policy.",
+				PolicyID: "unknown_tool_no_profile",
 			}, ErrPolicyViolation
 		}
-		// self_reported / override / user_override → implicitly permitted
-		decision.Action = ActionAllow
+	}
+
+	// Only consume rate-limit budget for calls that will actually be executed
+	// (policy matched with ActionAllow or similar — not queued/denied above).
+	if decision.Action == ActionAllow {
+		riskAllowed, resourceAllowed := e.rateLimit.CheckAndConsume(userID, backendID, riskCost, resourceCost)
+		if !riskAllowed || !resourceAllowed {
+			bucketType := "risk"
+			available := riskAvail
+			if !resourceAllowed {
+				bucketType = "resource"
+				available = resAvail
+			}
+			return EnforcerDecision{
+				Action:   ActionDeny,
+				Severity: SeverityMedium,
+				Message:  fmt.Sprintf("Rate limit exceeded: %s bucket exhausted (%d available)", bucketType, available),
+				PolicyID: "rate_limit",
+			}, ErrRateLimitExceeded
+		}
 	}
 
 	return decision, nil

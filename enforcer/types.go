@@ -96,6 +96,9 @@ type EnforcerDecision struct {
 	// Priority mirrors the DB priority of the policy that produced this decision.
 	// Lower = more specific. Used for tiebreaking in shouldUpdateDecision.
 	Priority int
+	// ApprovalID is set when Action == ActionPendingAdminApproval and the
+	// decision was produced by the inferred_profile_gate.
+	ApprovalID string
 }
 
 // DecisionContext provides all context for CEL evaluation
@@ -331,6 +334,10 @@ type EnforcerConfig struct {
 	MinJustificationLength      int           // Default: 40; set to 0 to disable length check
 	RateWindowDuration          time.Duration // Default: 60 seconds
 	RateDefaultThreshold        int           // Default: 10 calls per window
+	// InferredCostMultiplier scales risk and resource costs for tools whose
+	// safety profile was inferred rather than self-reported or manually overridden.
+	// Default: 3. Set to 1 to disable the multiplier.
+	InferredCostMultiplier int
 }
 
 // DefaultEnforcerConfig returns sensible defaults
