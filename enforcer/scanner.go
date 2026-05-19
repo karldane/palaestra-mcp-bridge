@@ -66,6 +66,9 @@ func (s *ToolProfileScanner) ScanBackend(backendID, command string, env []string
 	var profiles []ScannedProfile
 	for _, tool := range resp.Result.Tools {
 		profile := s.extractProfile(backendID, tool)
+		if profile == nil {
+			profile = s.inferProfile(backendID, tool)
+		}
 		if profile != nil {
 			profiles = append(profiles, *profile)
 		}
@@ -133,8 +136,38 @@ func (s *ToolProfileScanner) extractProfile(backendID string, tool map[string]in
 	}
 }
 
-func normalizeRisk(s string) string {
-	switch s {
+// inferProfile infers a safety profile for a tool that does not carry a
+// self-reported enforcer_profile in its _meta field. It delegates all
+// pattern logic to HeuristicProfile in heuristics.go.
+func (s *ToolProfileScanner) inferProfile(backendID string, tool map[string]interface{}) *ScannedProfile {
+	toolName, ok := tool["name"].(string)
+	if !ok || toolName == "" {
+		return nil
+	}
+	desc, _ := tool["description"].(string)
+	var schema map[string]interface{}
+	if raw, ok := tool["inputSchema"].(map[string]interface{}); ok {
+		if props, ok := raw["properties"].(map[string]interface{}); ok {
+			schema = props
+		}
+	}
+	p := HeuristicProfile(toolName, desc, schema)
+	return &ScannedProfile{
+		BackendID: backendID,
+		ToolName:  toolName,
+		Profile: EnforcerProfileFromFramework{
+			RiskLevel:    string(p.Risk),
+			ImpactScope:  string(p.Impact),
+			ResourceCost: p.Cost,
+			PIIExposure:  p.PIIExposure,
+			Idempotent:   p.Idempotent,
+			ApprovalReq:  p.RequiresHITL,
+		},
+		RawJSON: `{"source":"inferred"}`,
+	}
+}
+
+func normalizeRisk(s string) string {	switch s {
 	case "critical", "crit":
 		return "critical"
 	case "high", "hi":
