@@ -67,7 +67,7 @@ var classificationRules = []heuristicRule{
 	},
 	// Priority 5 — Medium write
 	{
-		patterns:     []string{"create", "add", "insert", "write", "post", "publish", "send", "submit", "upload", "import", "deploy", "provision", "onboard", "register", "invite"},
+		patterns:     []string{"create", "add", "insert", "write", "post", "publish", "send", "submit", "upload", "import", "deploy", "provision", "onboard", "register", "invite", "put"},
 		risk:         RiskMedium,
 		impact:       ImpactWrite,
 		idempotent:   false,

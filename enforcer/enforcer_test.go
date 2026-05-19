@@ -583,7 +583,7 @@ func TestBackendRouting_AllNonSelfReportingBackends(t *testing.T) {
 		{"aws", "aws_list_buckets", "read", enforcer.ActionAllow},
 		{"aws", "aws_put_object", "write", enforcer.ActionAllow},
 		{"aws", "aws_delete_object", "delete", enforcer.ActionPendingAdminApproval},
-		{"aws", "aws_configure_setting", "admin", enforcer.ActionPendingUserApproval},
+		{"aws", "aws_grant_access", "admin", enforcer.ActionPendingUserApproval},
 		// ── github ───────────────────────────────────────────────────
 		{"github", "github_list_issues", "read", enforcer.ActionAllow},
 		{"github", "github_create_pull_request", "write", enforcer.ActionAllow},
@@ -593,17 +593,17 @@ func TestBackendRouting_AllNonSelfReportingBackends(t *testing.T) {
 		{"k8s", "k8s_pods_list", "read", enforcer.ActionAllow},
 		{"k8s", "k8s_resources_create", "write", enforcer.ActionAllow},
 		{"k8s", "k8s_pods_delete", "delete", enforcer.ActionPendingAdminApproval},
-		{"k8s", "k8s_configure_setting", "admin", enforcer.ActionPendingUserApproval},
+		{"k8s", "k8s_grant_access", "admin", enforcer.ActionPendingUserApproval},
 		// ── circleci ─────────────────────────────────────────────────
 		{"circleci", "circleci_list_followed_projects", "read", enforcer.ActionAllow},
 		{"circleci", "circleci_create_branch", "write", enforcer.ActionAllow},
 		{"circleci", "circleci_delete_sprint", "delete", enforcer.ActionPendingUserApproval},
-		{"circleci", "circleci_admin_config", "admin", enforcer.ActionPendingUserApproval},
+		{"circleci", "circleci_grant_access", "admin", enforcer.ActionPendingUserApproval},
 		// ── atlassian ────────────────────────────────────────────────
 		{"atlassian", "atlassian_confluence_list_spaces", "read", enforcer.ActionAllow},
 		{"atlassian", "atlassian_jira_update_issue", "write", enforcer.ActionAllow},
 		{"atlassian", "atlassian_confluence_delete_page", "delete", enforcer.ActionPendingUserApproval},
-		{"atlassian", "atlassian_admin_configure", "admin", enforcer.ActionPendingUserApproval},
+		{"atlassian", "atlassian_grant_permission", "admin", enforcer.ActionPendingUserApproval},
 	}
 
 	s, cleanup := newTestStore(t)

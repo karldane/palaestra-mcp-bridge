@@ -2,7 +2,6 @@ package enforcer
 
 import (
 	"fmt"
-	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -92,7 +91,7 @@ func (r *MetadataResolver) Resolve(toolName string, backendID string) (SafetyPro
 				Cost:         profile.ResourceCost,
 				RequiresHITL: profile.RequiresHITL,
 				PIIExposure:  profile.PIIExposure,
-				Source:       "self_reported",
+				Source:       sourceFromRawProfile(profile.RawProfile),
 			}, nil
 		}
 	}
@@ -158,7 +157,7 @@ func (r *MetadataResolver) ResolveForUser(toolName string, backendID string, use
 				Cost:         profile.ResourceCost,
 				RequiresHITL: profile.RequiresHITL,
 				PIIExposure:  profile.PIIExposure,
-				Source:       "self_reported",
+				Source:       sourceFromRawProfile(profile.RawProfile),
 			}, nil
 		}
 	}
@@ -171,117 +170,19 @@ func (r *MetadataResolver) ResolveForUser(toolName string, backendID string, use
 	return inferred, nil
 }
 
-// inferDefaults uses pattern matching to determine safety for 3rd-party tools
+// sourceFromRawProfile determines the Source string from a stored RawProfile JSON blob.
+// DB rows written by inferProfile carry {"source":"inferred"}; self-reported rows do not.
+func sourceFromRawProfile(raw string) string {
+	if strings.Contains(raw, `"source":"inferred"`) {
+		return "inferred"
+	}
+	return "self_reported"
+}
+
+// inferDefaults is the Tier-4 runtime fallback. It delegates all pattern logic
+// to HeuristicProfile in heuristics.go so there is a single source of truth.
 func (r *MetadataResolver) inferDefaults(toolName string) SafetyProfile {
-	profile := SafetyProfile{
-		ToolName: toolName,
-		Cost:     5, // Default medium cost
-	}
-
-	toolLower := strings.ToLower(toolName)
-
-	// Risk inference — evaluated in priority order (most restrictive first).
-	// Using ordered slices avoids Go map iteration non-determinism.
-	type riskEntry struct {
-		level    RiskLevel
-		patterns []string
-	}
-	riskOrder := []riskEntry{
-		{RiskCritical, []string{
-			"delete", "drop", "remove", "destroy", "wipe", "purge",
-			"truncate", "kill", "terminate", "shutdown",
-		}},
-		{RiskHigh, []string{
-			"write", "update", "modify", "change", "edit",
-			"create", "insert", "add", "append",
-			"exec", "execute", "run", "call",
-		}},
-		{RiskMedium, []string{
-			"query", "search", "find", "list", "get", "fetch",
-			"read", "describe", "explain", "analyze",
-		}},
-		{RiskLow, []string{
-			"ping", "health", "status", "info", "version",
-			"help", "list.*tables", "list.*databases",
-		}},
-	}
-
-	for _, entry := range riskOrder {
-		for _, pattern := range entry.patterns {
-			if matched, _ := regexp.MatchString(pattern, toolLower); matched {
-				profile.Risk = entry.level
-				break
-			}
-		}
-		if profile.Risk != "" {
-			break
-		}
-	}
-
-	if profile.Risk == "" {
-		profile.Risk = RiskMedium
-	}
-
-	// Impact inference — evaluated in priority order: delete > admin > write > read.
-	// Admin is checked before write so that tool names containing both "set" (write)
-	// and "configure"/"setting"/"admin" (admin) resolve to admin as intended.
-	// Using ordered slices avoids Go map iteration non-determinism.
-	type impactEntry struct {
-		scope    ImpactScope
-		patterns []string
-	}
-	impactOrder := []impactEntry{
-		{ImpactDelete, []string{
-			"delete", "drop", "remove", "destroy", "wipe", "purge",
-			"truncate", "clear", "clean",
-		}},
-		{ImpactAdmin, []string{
-			"admin", "config", "configure", "setting",
-			"permission", "grant", "revoke", "role",
-			"user.*manage", "account.*manage",
-		}},
-		{ImpactWrite, []string{
-			"write", "update", "modify", "change", "edit",
-			"create", "insert", "add", "append", "put",
-			"patch", "replace", "set",
-		}},
-		{ImpactRead, []string{
-			"query", "search", "find", "list", "get", "fetch",
-			"read", "describe", "explain", "analyze", "view",
-		}},
-	}
-
-	for _, entry := range impactOrder {
-		for _, pattern := range entry.patterns {
-			if matched, _ := regexp.MatchString(pattern, toolLower); matched {
-				profile.Impact = entry.scope
-				break
-			}
-		}
-		if profile.Impact != "" {
-			break
-		}
-	}
-
-	if profile.Impact == "" {
-		profile.Impact = ImpactRead
-	}
-
-	// HITL requirement for high-risk operations
-	if profile.Risk == RiskHigh || profile.Risk == RiskCritical {
-		profile.RequiresHITL = true
-	}
-
-	// Cost adjustment based on impact
-	if profile.Impact == ImpactWrite {
-		profile.Cost = 8
-	} else if profile.Impact == ImpactAdmin {
-		profile.Cost = 6
-	} else if profile.Impact == ImpactDelete {
-		profile.Cost = 5
-	}
-
-	return profile
+	return HeuristicProfile(toolName, "", nil)
 }
 
 // RegisterOverride adds a manual config override for a tool
