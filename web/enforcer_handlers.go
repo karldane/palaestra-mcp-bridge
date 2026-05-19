@@ -1,6 +1,8 @@
 package web
 
 import (
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"html/template"
@@ -10,6 +12,17 @@ import (
 	"github.com/mcp-bridge/mcp-bridge/enforcer"
 	"github.com/mcp-bridge/mcp-bridge/store"
 )
+
+// generateRequestID returns a random 16-byte hex string suitable for use as a
+// request/approval ID within the web package.
+func generateRequestID() string {
+	b := make([]byte, 16)
+	if _, err := rand.Read(b); err != nil {
+		// Fallback: use time-based ID (should never happen)
+		return fmt.Sprintf("req-%d", time.Now().UnixNano())
+	}
+	return hex.EncodeToString(b)
+}
 
 type EnforcerHandler struct {
 	enforcer  *enforcer.Enforcer
@@ -455,11 +468,21 @@ func (h *EnforcerHandler) UserPoliciesPageHandler(w http.ResponseWriter, r *http
 	}
 }
 
-// PoliciesNewPageHandler displays the new policy form
+// PoliciesNewPageHandler displays the new policy form, optionally pre-filled
+// from an approval-request context via query parameters.
 func (h *EnforcerHandler) PoliciesNewPageHandler(w http.ResponseWriter, r *http.Request) {
 	user := userFromContext(r)
+	q := r.URL.Query()
 	data := map[string]interface{}{
 		"User": user,
+		"Prefill": map[string]string{
+			"tool":          q.Get("prefill_tool"),
+			"backend":       q.Get("prefill_backend"),
+			"action":        q.Get("prefill_action"),
+			"severity":      q.Get("prefill_severity"),
+			"expression":    q.Get("prefill_expression"),
+			"from_approval": q.Get("from_approval"),
+		},
 	}
 	if err := h.templates.ExecuteTemplate(w, "admin_enforcer_policies_new.html", data); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -500,6 +523,16 @@ func (h *EnforcerHandler) PoliciesCreateHandler(w http.ResponseWriter, r *http.R
 	if err := h.enforcer.AddPolicy(policy); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
+	}
+
+	// If this policy was created from an approval request, execute that request now.
+	fromApproval := r.FormValue("from_approval")
+	if fromApproval != "" {
+		if _, err := h.enforcer.ExecuteApprovedRequest(fromApproval, "admin", "Policy created from request"); err != nil {
+			// Non-fatal: policy was saved; execution failed. Redirect with warning.
+			http.Redirect(w, r, "/web/admin/enforcer/policies?warning=policy_created_execution_failed", http.StatusSeeOther)
+			return
+		}
 	}
 
 	http.Redirect(w, r, "/web/admin/enforcer/policies", http.StatusSeeOther)
@@ -1067,7 +1100,62 @@ func (h *EnforcerHandler) UserDenyRequest(w http.ResponseWriter, r *http.Request
 	})
 }
 
-// UserOverridesPageHandler displays the user's tool overrides
+// PolicyRequestHandler handles a user request to create a policy for an inferred tool.
+// It creates a policy_request item in the admin queue so an admin can review and
+// bootstrap a proper policy from the inferred profile.
+func (h *EnforcerHandler) PolicyRequestHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	user := userFromContext(r)
+	if user == nil {
+		http.Error(w, "Unauthorized", http.StatusUnauthorized)
+		return
+	}
+
+	if err := r.ParseForm(); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	toolName := r.FormValue("tool_name")
+	backendID := r.FormValue("backend_id")
+	justification := r.FormValue("justification")
+
+	if toolName == "" || backendID == "" {
+		http.Error(w, "tool_name and backend_id are required", http.StatusBadRequest)
+		return
+	}
+
+	enforcerStore := store.NewEnforcerStore(h.store.DB())
+	id := generateRequestID()
+	req := enforcer.ApprovalRequestRow{
+		ID:            id,
+		UserID:        user.ID,
+		UserEmail:     user.Email,
+		UserRole:      user.Role,
+		TrustLevel:    50,
+		ToolName:      toolName,
+		ToolArgs:      "{}",
+		BackendID:     backendID,
+		SafetyProfile: "{}",
+		Status:        "PENDING",
+		QueueType:     "policy_request",
+		Justification: justification,
+		RequestedAt:   time.Now(),
+		ExpiresAt:     time.Now().Add(7 * 24 * time.Hour),
+		PolicyID:      "user_policy_request",
+		ViolationMsg:  "User requested policy creation for this tool",
+	}
+	if err := enforcerStore.CreateApprovalRequest(req); err != nil {
+		http.Error(w, "Failed to submit request: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	http.Redirect(w, r, "/web/user/enforcer/queue?success=Policy+request+submitted", http.StatusSeeOther)
+}
 func (h *EnforcerHandler) UserOverridesPageHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)

@@ -30,15 +30,20 @@
           </div>
           <div class="approval-actions">
             {{if eq .Status "PENDING"}}
+            {{if eq .QueueType "policy_request"}}
+            <a href="/web/admin/enforcer/policies/new?prefill_tool={{.ToolName}}&prefill_backend={{.BackendID}}&prefill_action=allow&prefill_severity={{inferSeverity .SafetyProfile}}&prefill_expression=tool+%3D%3D+%22{{.ToolName}}%22+%26%26+backend_id+%3D%3D+%22{{.BackendID}}%22&from_approval={{.ID}}"
+               class="btn btn-sm btn-primary">Review &amp; Create Policy</a>
+            <button class="btn btn-sm btn-secondary" onclick="dismissPolicyRequest('{{.ID}}')">Dismiss</button>
+            {{else}}
             <button class="btn btn-sm btn-primary" onclick="approveRequest('{{.ID}}')">Approve</button>
             <button class="btn btn-sm btn-danger" onclick="denyRequest('{{.ID}}')">Deny</button>
+            <a href="/web/admin/enforcer/policies/new?prefill_tool={{.ToolName}}&prefill_backend={{.BackendID}}&prefill_action=allow&prefill_severity={{inferSeverity .SafetyProfile}}&prefill_expression=tool+%3D%3D+%22{{.ToolName}}%22+%26%26+backend_id+%3D%3D+%22{{.BackendID}}%22&from_approval={{.ID}}"
+               class="btn btn-sm btn-secondary">Create Policy &amp; Approve</a>
+            {{end}}
             {{else if eq .Status "FAILED"}}
             <button class="btn btn-sm btn-warning" onclick="retryRequest('{{.ID}}')">Retry</button>
             {{end}}
           </div>
-        </div>
-
-         <div class="approval-meta">
            <div class="meta-item">
              <span class="meta-label">Approval ID</span>
              <span class="meta-value" style="font-family: monospace; background: var(--code-bg); padding: 0.2rem 0.4rem; border-radius: 3px;">{{.ID}}</span>
@@ -430,6 +435,7 @@
   }
   .badge-queue-user { background: #9b59b6; color: white; }
   .badge-queue-admin { background: #2c3e50; color: white; }
+  .badge-queue-policy_request { background: #e67e22; color: white; }
 </style>
 
 <script>
@@ -528,6 +534,26 @@ async function retryRequest(id) {
     alert('Error: ' + e);
     btn.disabled = false;
     btn.textContent = 'Retry';
+  }
+}
+
+async function dismissPolicyRequest(id) {
+  if (!confirm('Dismiss this policy request?')) return;
+  
+  try {
+    const resp = await fetch('/web/admin/enforcer/api/deny', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({approval_id: id, reason: 'dismissed'})
+    });
+    const data = await resp.json();
+    if (data.success) {
+      location.reload();
+    } else {
+      alert('Error: ' + data.message);
+    }
+  } catch (e) {
+    alert('Error: ' + e);
   }
 }
 

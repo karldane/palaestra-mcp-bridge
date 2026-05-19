@@ -48,6 +48,24 @@ type Handler struct {
 func NewHandler(st *store.Store, templateDir string) (*Handler, error) {
 	// Create template with functions first, then parse
 	tmpl := template.New("").Funcs(template.FuncMap{
+		"inferSeverity": func(safetyProfileJSON string) string {
+			var p struct {
+				Risk string `json:"risk"`
+			}
+			if err := json.Unmarshal([]byte(safetyProfileJSON), &p); err != nil {
+				return "medium"
+			}
+			switch p.Risk {
+			case "critical":
+				return "critical"
+			case "high":
+				return "high"
+			case "low":
+				return "low"
+			default:
+				return "medium"
+			}
+		},
 		"js": func(s string) template.JS {
 			return template.JS(html.EscapeString(s))
 		},
@@ -156,6 +174,7 @@ func (h *Handler) Register(mux *http.ServeMux) {
 	mux.Handle("/web/user/enforcer/overrides/create", h.requireAuth(http.HandlerFunc(enforcerHandler.UserOverrideCreateHandler)))
 	mux.Handle("/web/user/enforcer/overrides/delete", h.requireAuth(http.HandlerFunc(enforcerHandler.UserOverrideDeleteHandler)))
 	mux.Handle("/web/user/enforcer/api/approve", h.requireAuth(http.HandlerFunc(enforcerHandler.UserApproveRequest)))
+	mux.Handle("/web/user/enforcer/policy-request", h.requireAuth(http.HandlerFunc(enforcerHandler.PolicyRequestHandler)))
 	mux.Handle("/web/user/enforcer/api/deny", h.requireAuth(http.HandlerFunc(enforcerHandler.UserDenyRequest)))
 	mux.Handle("/web/user/enforcer/events", h.requireAuth(http.HandlerFunc(enforcerHandler.UserSSEHandler)))
 

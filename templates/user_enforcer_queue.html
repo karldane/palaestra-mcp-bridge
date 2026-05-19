@@ -31,6 +31,14 @@
           <div class="approval-actions">
             <button class="btn btn-sm btn-primary" onclick="approveRequest('{{.ID}}')">Approve</button>
             <button class="btn btn-sm btn-danger" onclick="cancelRequest('{{.ID}}')">Cancel</button>
+            {{if eq .QueueType "user"}}
+            <form method="POST" action="/web/user/enforcer/policy-request" style="display:inline;">
+              <input type="hidden" name="tool_name" value="{{.ToolName}}">
+              <input type="hidden" name="backend_id" value="{{.BackendID}}">
+              <input type="hidden" name="approval_id" value="{{.ID}}">
+              <button type="submit" class="btn btn-sm btn-secondary">Request Policy</button>
+            </form>
+            {{end}}
           </div>
         </div>
 
