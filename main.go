@@ -189,9 +189,15 @@ func main() {
 		}
 	}
 
-	// Seed a default user if requested.
+	// Seed a default user if requested via flag, or automatically on fresh DB
+	// (seedDefaultUser is idempotent — skips if admin@localhost already exists).
 	if *seedUser {
 		seedDefaultUser(st)
+	} else {
+		// Auto-seed on first run when no users exist at all.
+		if users, err := st.ListUsers(); err == nil && len(users) == 0 {
+			seedDefaultUser(st)
+		}
 	}
 
 	// Seed backends from config into DB if the DB has none yet.
