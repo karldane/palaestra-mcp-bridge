@@ -2,7 +2,9 @@ package main
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"log"
@@ -152,13 +154,17 @@ func main() {
 	// Try to decrypt an existing token to verify the encryption key is valid
 	testToken, err := st.GetUserTokenDecrypted("58993e3001a71e9e8cd3a21fc1cd9430", "atlassian", "API_TOKEN")
 	if err != nil {
-		if strings.Contains(err.Error(), "keystore not initialized") || strings.Contains(err.Error(), "neither") {
+		if errors.Is(err, sql.ErrNoRows) {
+			// Fresh DB — no tokens stored yet, but the key loaded fine.
+			shared.Infof("Encryption key: OK (fresh database, no tokens to verify against)")
+		} else if strings.Contains(err.Error(), "keystore not initialized") || strings.Contains(err.Error(), "neither") {
 			shared.Errorf("FATAL: Encryption key not loaded - tokens cannot be decrypted")
 			shared.Errorf("Set ENCRYPTION_KEY (value) or ENCRYPTION_KEY_FILE (path) environment variable")
 			log.Fatalf("encryption key required")
+		} else {
+			shared.Errorf("FATAL: Encryption key error: %v", err)
+			log.Fatalf("encryption key error: %v", err)
 		}
-		shared.Errorf("FATAL: Encryption key error: %v", err)
-		log.Fatalf("encryption key error: %v", err)
 	} else if len(testToken) == 0 {
 		shared.Warnf("WARNING: Decryption succeeded but API_TOKEN is empty (no credentials stored)")
 		shared.Infof("Encryption key: OK (key is valid, tokens will be passed as empty)")
