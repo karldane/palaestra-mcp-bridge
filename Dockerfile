@@ -16,13 +16,17 @@ RUN CGO_ENABLED=1 GOOS=linux GOARCH=amd64 \
     go build -ldflags="-s -w" -trimpath -o /usr/local/bin/mcp-bridge .
 
 # Install all Go backends
-RUN GOBIN=/usr/local/bin go install github.com/karldane/qdrant-mcp@latest
-RUN GOBIN=/usr/local/bin go install github.com/karldane/newrelic-mcp@latest
-RUN GOBIN=/usr/local/bin go install github.com/karldane/oracle-mcp@latest
-RUN GOBIN=/usr/local/bin go install github.com/karldane/slack-mcp@latest
-RUN GOBIN=/usr/local/bin go install github.com/karldane/appscan-asoc-mcp@latest
-RUN GOBIN=/usr/local/bin go install github.com/karldane/git-lsp-mcp@latest
-RUN GOBIN=/usr/local/bin go install github.com/github/github-mcp-server@latest
+# GOPROXY=direct + GONOSUMDB bypasses proxy cache and sum DB for our private repos
+# (qdrant-mcp tag was re-pointed after initial registration - sum DB has stale hash)
+ENV GONOSUMDB=github.com/karldane/*
+ENV GONOSUMCHECK=github.com/karldane/*
+RUN GOPROXY=direct GONOSUMDB=github.com/karldane/* GOBIN=/usr/local/bin go install github.com/karldane/qdrant-mcp@v0.2.9
+RUN GOPROXY=direct GONOSUMDB=github.com/karldane/* GOBIN=/usr/local/bin go install github.com/karldane/newrelic-mcp@latest
+RUN GOPROXY=direct GONOSUMDB=github.com/karldane/* GOBIN=/usr/local/bin go install github.com/karldane/oracle-mcp@latest
+RUN GOPROXY=direct GONOSUMDB=github.com/karldane/* GOBIN=/usr/local/bin go install github.com/karldane/slack-mcp@latest
+RUN GOPROXY=direct GONOSUMDB=github.com/karldane/* GOBIN=/usr/local/bin go install github.com/karldane/appscan-asoc-mcp@latest
+RUN GOPROXY=direct GONOSUMDB=github.com/karldane/* GOBIN=/usr/local/bin go install github.com/karldane/git-lsp-mcp@latest
+RUN GOPROXY=direct GOBIN=/usr/local/bin go install github.com/github/github-mcp-server/cmd/github-mcp-server@v1.0.5
 
 # Stage 2: Final image
 FROM ubuntu:24.04

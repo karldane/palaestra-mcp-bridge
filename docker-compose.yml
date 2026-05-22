@@ -1,0 +1,141 @@
+# Local integration test environment for palaestra-mcp-bridge
+#
+# Mirrors the mcp-bridge-infra k8s namespace as closely as possible:
+#   - mcp-bridge   → Deployment (ghcr.io/karldane/palaestra-mcp-bridge:latest)
+#   - qdrant        → StatefulSet (qdrant/qdrant:v1.14.0)
+#   - ollama        → StatefulSet (ollama/ollama:latest) with nomic-embed-text
+#
+# Secrets that live in AWS Secrets Manager in k8s are supplied here via .env.local
+# (copy .env.local.example → .env.local and fill in values before running).
+#
+# k8s service DNS names are provided as network aliases so config.yaml.docker
+# works unmodified inside the container.
+#
+# Usage:
+#   cp .env.local.example .env.local   # fill in secrets
+#   docker compose up                  # starts all three services
+#   curl http://localhost:8080/healthz  # smoke test
+#   docker compose down -v             # tear down incl. volumes
+
+networks:
+  mcp-bridge-infra:
+    driver: bridge
+
+volumes:
+  mcp-bridge-db:
+  qdrant-data:
+  ollama-models:
+
+services:
+
+  # --------------------------------------------------------------------------
+  # qdrant — vector store
+  # Mirrors: base/mcp-bridge-infra/qdrant/statefulset.yaml
+  # --------------------------------------------------------------------------
+  qdrant:
+    image: qdrant/qdrant:v1.14.0
+    restart: unless-stopped
+    environment:
+      QDRANT__SERVICE__API_KEY:       "${QDRANT_API_KEY}"
+      QDRANT__SERVICE__READ_ONLY_API_KEY: "${QDRANT_READ_ONLY_KEY}"
+      QDRANT__SERVICE__JWT_RBAC:      "true"
+      QDRANT__LOG_LEVEL:              "INFO"
+    ports:
+      - "6333:6333"   # REST / health
+      - "6334:6334"   # gRPC
+    volumes:
+      - qdrant-data:/qdrant/storage
+    networks:
+      mcp-bridge-infra:
+        # Alias matches the k8s service DNS stem used in config.yaml.docker
+        aliases:
+          - qdrant
+          - qdrant.mcp-bridge-infra.svc.cluster.local
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:6333/healthz"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+  # --------------------------------------------------------------------------
+  # ollama — local embedding model server
+  # Mirrors: base/mcp-bridge-infra/ollama/statefulset.yaml
+  # The k8s init-container that pulls nomic-embed-text is replicated here via
+  # an entrypoint wrapper; the model is persisted in the ollama-models volume
+  # so subsequent starts skip the pull.
+  # --------------------------------------------------------------------------
+  ollama:
+    image: ollama/ollama:latest
+    restart: unless-stopped
+    entrypoint:
+      - /bin/sh
+      - -c
+      - |
+        ollama serve &
+        SERVER_PID=$$!
+        echo "Waiting for ollama to be ready..."
+        until wget -qO- http://localhost:11434/api/version >/dev/null 2>&1; do sleep 2; done
+        echo "Pulling nomic-embed-text (skipped if already cached)..."
+        ollama pull nomic-embed-text
+        echo "Model ready. ollama serving."
+        wait $$SERVER_PID
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama-models:/root/.ollama
+    networks:
+      mcp-bridge-infra:
+        aliases:
+          - ollama
+          - ollama.mcp-bridge-infra.svc.cluster.local
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:11434/api/version"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+      start_period: 60s   # model pull can take a while on first run
+
+  # --------------------------------------------------------------------------
+  # mcp-bridge — the main application
+  # Mirrors: base/mcp-bridge-infra/mcp-bridge/deployment.yaml
+  # Secrets that come from AWS Secrets Manager via CSI are injected as env vars.
+  # The EFS PV is replaced by a local named volume.
+  # --------------------------------------------------------------------------
+  mcp-bridge:
+    image: ghcr.io/karldane/palaestra-mcp-bridge:latest
+    restart: unless-stopped
+    depends_on:
+      qdrant:
+        condition: service_healthy
+      ollama:
+        condition: service_healthy
+    environment:
+      PORT:           "8080"
+      DB_PATH:        "/data/mcp-bridge.db"
+      CONFIG_FILE:    "/etc/mcp-bridge/config.yaml"
+      # Mirrors ISSUER from deployment.yaml (adjust if testing a different domain)
+      ISSUER:         "${ISSUER:-http://localhost:8080}"
+      # Mirrors mcp-bridge-app-secret / encryption-key from AWS Secrets Manager
+      ENCRYPTION_KEY: "${ENCRYPTION_KEY}"
+      # Qdrant backend env vars (used by qdrant-mcp child process)
+      QDRANT_ADMIN_URL:          "http://qdrant.mcp-bridge-infra.svc.cluster.local:6333"
+      QDRANT_ADMIN_KEY:          "${QDRANT_API_KEY}"
+      QDRANT_USERNAME:           "mcp"
+      QDRANT_COLLECTION:         "mcp-memory"
+      EMBEDDING_PROVIDER:        "ollama"
+      QDRANT_OLLAMA_URL:         "http://ollama.mcp-bridge-infra.svc.cluster.local:11434"
+      QDRANT_VECTOR_SIZE:        "768"
+      QDRANT_DEDUP_THRESHOLD:    "0.95"
+    ports:
+      - "8080:8080"
+    volumes:
+      - mcp-bridge-db:/data
+    networks:
+      - mcp-bridge-infra
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:8080/healthz"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
