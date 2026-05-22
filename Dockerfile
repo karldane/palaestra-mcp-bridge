@@ -61,9 +61,14 @@ COPY --from=builder /usr/local/bin/github-mcp-server /usr/local/bin/github-mcp-s
 RUN mkdir -p /etc/mcp-bridge
 COPY config.yaml.docker /etc/mcp-bridge/config.yaml
 
+# Bake in web UI templates
+RUN mkdir -p /etc/mcp-bridge/templates
+COPY --from=builder /build/templates /etc/mcp-bridge/templates
+
 ENV CONFIG_FILE=/etc/mcp-bridge/config.yaml
 ENV DB_PATH=/data/mcp-bridge.db
 ENV PORT=8080
+ENV TEMPLATE_DIR=/etc/mcp-bridge/templates
 
 EXPOSE 8080
 
