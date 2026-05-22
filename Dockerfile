@@ -35,13 +35,10 @@ FROM ubuntu:24.04
 ENV DEBIAN_FRONTEND=noninteractive
 
 # Install runtimes and tools
-RUN apt-get update && apt-get install -y \
-    ca-certificates \
-    nodejs \
-    npm \
-    python3 \
-    python3-pip \
-    sqlite3 \
+# Node 20 via NodeSource (Ubuntu 24.04 ships Node 18 which is too old for some MCP packages)
+RUN apt-get update && apt-get install -y ca-certificates curl && \
+    curl -fsSL https://deb.nodesource.com/setup_20.x | bash - && \
+    apt-get install -y nodejs python3 python3-pip sqlite3 \
     && rm -rf /var/lib/apt/lists/*
 
 # Install uv (for uvx / Python MCP servers)
