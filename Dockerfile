@@ -1,15 +1,66 @@
-FROM golang:1.19-alpine AS builder
+# Stage 1: Builder
+FROM golang:1.25 AS builder
 
 WORKDIR /build
-COPY go.mod ./
+
+# Install CGO dependencies for go-sqlite3
+RUN apt-get update && apt-get install -y gcc libc-dev && rm -rf /var/lib/apt/lists/*
+
+# Download dependencies first for layer caching
+COPY go.mod go.sum ./
 RUN go mod download
+
+# Build palaestra-mcp-bridge
 COPY . .
-RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o mcp-bridge .
+RUN CGO_ENABLED=1 GOOS=linux GOARCH=amd64 \
+    go build -ldflags="-s -w" -trimpath -o /usr/local/bin/mcp-bridge .
 
-FROM scratch
+# Install all Go backends
+RUN GOBIN=/usr/local/bin go install github.com/karldane/qdrant-mcp@latest
+RUN GOBIN=/usr/local/bin go install github.com/karldane/newrelic-mcp@latest
+RUN GOBIN=/usr/local/bin go install github.com/karldane/oracle-mcp@latest
+RUN GOBIN=/usr/local/bin go install github.com/karldane/slack-mcp@latest
+RUN GOBIN=/usr/local/bin go install github.com/karldane/appscan-asoc-mcp@latest
+RUN GOBIN=/usr/local/bin go install github.com/karldane/git-lsp-mcp@latest
+RUN GOBIN=/usr/local/bin go install github.com/github/github-mcp-server@latest
 
-WORKDIR /
-COPY --from=builder /build/mcp-bridge /mcp-bridge
+# Stage 2: Final image
+FROM ubuntu:24.04
+
+# Avoid interactive prompts during apt installs
+ENV DEBIAN_FRONTEND=noninteractive
+
+# Install runtimes and tools
+RUN apt-get update && apt-get install -y \
+    ca-certificates \
+    nodejs \
+    npm \
+    python3 \
+    python3-pip \
+    sqlite3 \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install uv (for uvx / Python MCP servers)
+RUN pip3 install --no-cache-dir uv --break-system-packages
+
+# Copy all binaries from builder
+COPY --from=builder /usr/local/bin/mcp-bridge /usr/local/bin/mcp-bridge
+COPY --from=builder /usr/local/bin/qdrant-mcp /usr/local/bin/qdrant-mcp
+COPY --from=builder /usr/local/bin/newrelic-mcp /usr/local/bin/newrelic-mcp
+COPY --from=builder /usr/local/bin/oracle-mcp /usr/local/bin/oracle-mcp
+COPY --from=builder /usr/local/bin/slack-mcp /usr/local/bin/slack-mcp
+COPY --from=builder /usr/local/bin/appscan-asoc-mcp /usr/local/bin/appscan-asoc-mcp
+COPY --from=builder /usr/local/bin/git-lsp-mcp /usr/local/bin/git-lsp-mcp
+COPY --from=builder /usr/local/bin/github-mcp-server /usr/local/bin/github-mcp-server
+
+# Bake in default config for first-run DB seeding
+RUN mkdir -p /etc/mcp-bridge
+COPY config.yaml.docker /etc/mcp-bridge/config.yaml
+
+ENV CONFIG_FILE=/etc/mcp-bridge/config.yaml
+ENV DB_PATH=/data/mcp-bridge.db
+ENV PORT=8080
 
 EXPOSE 8080
-ENTRYPOINT ["/mcp-bridge"]
+
+ENTRYPOINT ["/usr/local/bin/mcp-bridge"]

@@ -3,6 +3,8 @@
 BINARY_NAME=mcp-bridge
 BUILD_DIR=.
 LDFLAGS=-ldflags="-s -w" -trimpath
+DOCKER_IMAGE=ghcr.io/karldane/palaestra-mcp-bridge
+DOCKER_TAG=latest
 
 # Default target - downloads dependencies and builds
 .PHONY: all
@@ -55,6 +57,16 @@ clean:
 install: build
 	go install $(LDFLAGS) .
 
+# Build Docker image
+.PHONY: docker-build
+docker-build:
+	docker build -t $(DOCKER_IMAGE):$(DOCKER_TAG) .
+
+# Build and push Docker image to ghcr.io
+.PHONY: docker-push
+docker-push: docker-build
+	docker push $(DOCKER_IMAGE):$(DOCKER_TAG)
+
 # Show help
 .PHONY: help
 help:
@@ -68,4 +80,6 @@ help:
 	@echo "  make test         - Run tests"
 	@echo "  make clean        - Remove build artifacts"
 	@echo "  make install      - Install binary to GOPATH/bin"
+	@echo "  make docker-build - Build Docker image ($(DOCKER_IMAGE):$(DOCKER_TAG))"
+	@echo "  make docker-push  - Build and push Docker image to ghcr.io"
 	@echo "  make help         - Show this help message"

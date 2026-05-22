@@ -1,0 +1,75 @@
+# mcp-bridge Docker configuration
+# Baked into the image at /etc/mcp-bridge/config.yaml
+# Used ONLY for first-run DB seeding — after that the DB on the PV is the source of truth.
+# env, env_mappings, and secrets are configured via the web UI after first run.
+
+server:
+  port: "8080"
+  logLevel: info
+  authCodeTTL: "10m"
+  accessTokenTTL: "24h"
+
+encryption:
+  provider: envvar
+  keyEnv: ENCRYPTION_KEY
+
+backends:
+  atlassian:
+    command: "npx -y @xuandev/atlassian-mcp"
+    poolSize: 1
+    toolPrefix: "atlassian"
+
+  github:
+    command: "/usr/local/bin/github-mcp-server stdio"
+    poolSize: 1
+    toolPrefix: "github"
+
+  newrelic:
+    command: "/usr/local/bin/newrelic-mcp"
+    poolSize: 1
+    toolPrefix: "newrelic"
+
+  oracle:
+    command: "/usr/local/bin/oracle-mcp"
+    poolSize: 1
+    toolPrefix: "oracle"
+
+  circleci:
+    command: "npx -y @circleci/mcp-server-circleci@latest"
+    poolSize: 1
+    toolPrefix: "circleci"
+
+  slack:
+    command: "/usr/local/bin/slack-mcp --write-enabled"
+    poolSize: 1
+    toolPrefix: "slack"
+
+  k8s:
+    command: "npx -y kubernetes-mcp-server@latest"
+    poolSize: 1
+    toolPrefix: "k8s"
+
+  aws:
+    command: "uvx awslabs.aws-api-mcp-server@latest"
+    poolSize: 1
+    toolPrefix: "aws"
+
+  appscan_asoc:
+    command: "/usr/local/bin/appscan-asoc-mcp"
+    poolSize: 1
+    toolPrefix: "appscan_asoc"
+
+  qdrant:
+    command: "/usr/local/bin/qdrant-mcp"
+    poolSize: 1
+    toolPrefix: "qdrant"
+
+  backoffice:
+    command: "/usr/local/bin/git-lsp-mcp"
+    poolSize: 1
+    toolPrefix: "backoffice_repo_lsp"
+
+  argocd:
+    command: "npx -y argocd-mcp@latest stdio"
+    poolSize: 1
+    toolPrefix: "argocd"

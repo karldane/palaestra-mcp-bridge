@@ -1,0 +1,28 @@
+# Runtime files — never bake into image
+config.yaml
+.env
+mcp-bridge.db
+mcp-bridge.db-shm
+mcp-bridge.db-wal
+*.db
+*.db-shm
+*.db-wal
+
+# Build artifacts
+mcp-bridge
+mcp-bridge-linux-amd64
+mcp-bridge-darwin-arm64
+mcp-bridge-windows-amd64.exe
+bin/
+
+# Dev/local-only directories
+backups/
+devdocs/
+dev/
+
+# Git
+.git
+.gitignore
+
+# Misc
+*.md
