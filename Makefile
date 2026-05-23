@@ -67,6 +67,18 @@ docker-build:
 docker-push: docker-build
 	docker push $(DOCKER_IMAGE):$(DOCKER_TAG)
 
+# Staging ECR details
+ECR_REGISTRY=338476385965.dkr.ecr.eu-west-2.amazonaws.com
+ECR_IMAGE=palaestra-mcp-bridge
+ECR_TAG=latest
+
+# Push Docker image to staging ECR
+.PHONY: docker-push-ecr
+docker-push-ecr:
+	aws ecr get-login-password --region eu-west-2 | docker login --username AWS --password-stdin $(ECR_REGISTRY)
+	docker tag $(DOCKER_IMAGE):$(DOCKER_TAG) $(ECR_REGISTRY)/$(ECR_IMAGE):$(ECR_TAG)
+	docker push $(ECR_REGISTRY)/$(ECR_IMAGE):$(ECR_TAG)
+
 # Show help
 .PHONY: help
 help:
@@ -82,4 +94,5 @@ help:
 	@echo "  make install      - Install binary to GOPATH/bin"
 	@echo "  make docker-build - Build Docker image ($(DOCKER_IMAGE):$(DOCKER_TAG))"
 	@echo "  make docker-push  - Build and push Docker image to ghcr.io"
+	@echo "  make docker-push-ecr - Build and push to staging ECR"
 	@echo "  make help         - Show this help message"
