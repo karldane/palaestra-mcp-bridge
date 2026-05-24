@@ -75,6 +75,8 @@ func main() {
 	verify := flag.Bool("verify", false, "Verify all secrets can be decrypted")
 	status := flag.Bool("status", false, "Show migration status")
 	rollback := flag.Bool("rollback", false, "Rollback encrypted to plaintext")
+	adminEnv := flag.Bool("admin-env", false, "Migrate admin backend env vars to encrypted storage")
+	adminVerify := flag.Bool("admin-verify", false, "Verify admin backend env encryption")
 	dryRun := flag.Bool("dry-run", false, "Show what would be migrated without making changes")
 	flag.Parse()
 
@@ -101,7 +103,11 @@ func main() {
 	}
 	defer s.Close()
 
-	if *status {
+	if *adminVerify {
+		verifyAdminEnv(s)
+	} else if *adminEnv {
+		runAdminEnvMigration(s, *dryRun)
+	} else if *status {
 		showStatus(s)
 	} else if *verify {
 		verifyMigration(s)
@@ -394,6 +400,104 @@ func runMigration(s *store.Store, dryRun bool) {
 
 	if fail > 0 {
 		os.Exit(1)
+	}
+
+	_ = ctx
+}
+
+func runAdminEnvMigration(s *store.Store, dryRun bool) {
+	ctx := context.Background()
+
+	fmt.Println("=== Migrating Admin Environment ===")
+	if dryRun {
+		fmt.Println("DRY RUN - No changes will be made")
+	}
+	fmt.Println()
+
+	backends, err := s.ListBackends()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error listing backends: %v\n", err)
+		os.Exit(1)
+	}
+
+	type migratable struct {
+		id  string
+		env string
+	}
+	var items []migratable
+	for _, b := range backends {
+		if b.EncryptedEnv == "" && b.Env != "" && b.Env != "{}" {
+			items = append(items, migratable{id: b.ID, env: b.Env})
+		}
+	}
+
+	if len(items) == 0 {
+		fmt.Println("No backends with plaintext env to migrate.")
+		return
+	}
+
+	fmt.Printf("Found %d backends with plaintext env to encrypt\n\n", len(items))
+
+	success := 0
+	fail := 0
+
+	for _, item := range items {
+		if dryRun {
+			fmt.Printf("🔍 Would encrypt: %s\n", item.id)
+			success++
+			continue
+		}
+
+		encrypted, err := s.KeyStore().EncryptSecret([]byte(item.env))
+		if err != nil {
+			fmt.Printf("❌ FAIL: %s - %v\n", item.id, err)
+			fail++
+			continue
+		}
+
+		_, err = s.DB().Exec(`UPDATE backends SET encrypted_env=?, env='{}' WHERE id=?`, string(encrypted), item.id)
+		if err != nil {
+			fmt.Printf("❌ FAIL: %s - %v\n", item.id, err)
+			fail++
+			continue
+		}
+
+		success++
+		fmt.Printf("✅ Encrypted: %s\n", item.id)
+	}
+
+	fmt.Println()
+	if dryRun {
+		fmt.Printf("Dry run complete: %d backends would be migrated, %d would fail\n", success, fail)
+	} else {
+		fmt.Printf("Migration complete: %d succeeded, %d failed\n", success, fail)
+	}
+
+	if fail > 0 {
+		os.Exit(1)
+	}
+
+	_ = ctx
+}
+
+func verifyAdminEnv(s *store.Store) {
+	ctx := context.Background()
+
+	success, fail, err := s.VerifyAdminEnvEncryption(ctx)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error verifying admin env encryption: %v\n", err)
+		os.Exit(1)
+	}
+
+	fmt.Println("=== Admin Environment Encryption Status ===")
+	fmt.Printf("Encrypted: %d\n", success)
+	fmt.Printf("Plaintext: %d\n", fail)
+	fmt.Println()
+
+	if fail > 0 {
+		fmt.Printf("⚠️  %d backend(s) still have plaintext env. Run --admin-env to encrypt.\n", fail)
+	} else {
+		fmt.Println("✅ All backend envs are encrypted.")
 	}
 
 	_ = ctx

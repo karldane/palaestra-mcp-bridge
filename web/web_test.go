@@ -1173,6 +1173,34 @@ func TestAdminBackends_ListsBackends(t *testing.T) {
 	}
 }
 
+func TestAdminBackends_EncryptionBadge(t *testing.T) {
+	h, st := testHandlerWithCrypto(t)
+	defer st.Close()
+
+	seedAdmin(t, st)
+	st.CreateBackend(&store.Backend{
+		ID: "enc-be", Command: "cmd", PoolSize: 1, Env: `{"SECRET":"s3cr3t"}`, Enabled: true,
+	})
+	mux := http.NewServeMux()
+	h.Register(mux)
+	cookie := loginCookie(t, h, mux, "admin@test.com", "secret")
+
+	req := authedRequest(http.MethodGet, "/web/admin/backends", "", cookie)
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+	body := w.Body.String()
+	if !strings.Contains(body, "badge-encrypted") {
+		t.Error("expected encrypted badge on admin backends page")
+	}
+	if !strings.Contains(body, "encrypted") {
+		t.Error("expected 'encrypted' text in badge")
+	}
+}
+
 func TestAdminBackends_RequiresAdmin(t *testing.T) {
 	h, st := testHandler(t)
 	defer st.Close()

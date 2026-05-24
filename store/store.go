@@ -71,6 +71,7 @@ func (s *Store) migrate() error {
 	s.db.Exec(`ALTER TABLE backends ADD COLUMN self_reporting INTEGER NOT NULL DEFAULT 0`)
 	s.db.Exec(`ALTER TABLE backends ADD COLUMN no_keys_required INTEGER NOT NULL DEFAULT 0`)
 	s.db.Exec(`ALTER TABLE backends ADD COLUMN skip_justification INTEGER NOT NULL DEFAULT 0`)
+	s.db.Exec(`ALTER TABLE backends ADD COLUMN encrypted_env TEXT`)
 	s.db.Exec(`ALTER TABLE enforcer_audit_log ADD COLUMN arguments TEXT NOT NULL DEFAULT ''`)
 	s.db.Exec(`CREATE TABLE IF NOT EXISTS settings (
 		key TEXT PRIMARY KEY,
@@ -277,6 +278,7 @@ CREATE TABLE IF NOT EXISTS backends (
 	pool_size   INTEGER NOT NULL DEFAULT 1,
 	tool_prefix TEXT NOT NULL DEFAULT '',
 	env         TEXT NOT NULL DEFAULT '{}',
+	encrypted_env TEXT,
 	env_mappings TEXT NOT NULL DEFAULT '{}',
 	tool_hints  TEXT NOT NULL DEFAULT '',
 	backend_instructions TEXT NOT NULL DEFAULT '',

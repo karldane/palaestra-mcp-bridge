@@ -1,6 +1,7 @@
 package store
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
 	"time"
@@ -17,12 +18,79 @@ type Backend struct {
 	ToolHints           string // Plain text - usage hints for the README tool (per-backend guidance)
 	BackendInstructions string // Plain text - instructions provided by backend during initialize
 	Enabled             bool
-	IsSystem            bool // true for mcpbridge - system backend that can't be deleted by non-admins
-	MinPoolSize         int  // Minimum warm processes to maintain
-	MaxPoolSize         int  // Maximum warm processes allowed (0 = unlimited)
-	SelfReporting       bool // true if the backend supports self-reporting EnforcerProfile via Meta
-	NoKeysRequired      bool // true if the backend doesn't require user-level tokens (e.g., qdrant-mcp)
-	SkipJustification   bool // true if tools from this backend do not require a justification field
+	IsSystem            bool   // true for mcpbridge - system backend that can't be deleted by non-admins
+	MinPoolSize         int    // Minimum warm processes to maintain
+	MaxPoolSize         int    // Maximum warm processes allowed (0 = unlimited)
+	SelfReporting       bool   // true if the backend supports self-reporting EnforcerProfile via Meta
+	NoKeysRequired      bool   // true if the backend doesn't require user-level tokens (e.g., qdrant-mcp)
+	SkipJustification   bool   // true if tools from this backend do not require a justification field
+	EncryptedEnv        string // encrypted JSON blob of env vars (empty = plaintext/legacy)
+}
+
+// encryptBackendEnv encrypts the Env JSON blob and stores it in EncryptedEnv.
+// If encryption fails (e.g. no key available) the fields are left unchanged.
+func (s *Store) encryptBackendEnv(b *Backend) {
+	if b.Env == "" || b.Env == "{}" || s.keyStore == nil {
+		return
+	}
+	encrypted, err := s.keyStore.EncryptSecret([]byte(b.Env))
+	if err != nil {
+		// Encryption unavailable — store as plaintext (backward compat for tests / no-key setups)
+		return
+	}
+	b.EncryptedEnv = string(encrypted)
+	b.Env = "{}"
+}
+
+// decryptBackendEnv decrypts EncryptedEnv into the Env field.
+func (s *Store) decryptBackendEnv(b *Backend) {
+	if b.EncryptedEnv == "" || s.keyStore == nil {
+		return
+	}
+	decrypted, err := s.keyStore.DecryptSecret([]byte(b.EncryptedEnv))
+	if err != nil {
+		// Decryption unavailable — leave b.Env as-is (plaintext fallback)
+		return
+	}
+	b.Env = string(decrypted)
+}
+
+// MigrateAdminEnv encrypts all backends that still have plaintext env (no encrypted_env).
+// Returns the number of backends migrated.
+func (s *Store) MigrateAdminEnv(ctx context.Context) (int, error) {
+	rows, err := s.db.Query(`SELECT id, env FROM backends WHERE (encrypted_env IS NULL OR encrypted_env = '') AND env != '{}'`)
+	if err != nil {
+		return 0, err
+	}
+	defer rows.Close()
+
+	count := 0
+	for rows.Next() {
+		var id, env string
+		if err := rows.Scan(&id, &env); err != nil {
+			return count, err
+		}
+		encrypted, err := s.keyStore.EncryptSecret([]byte(env))
+		if err != nil {
+			return count, err
+		}
+		if _, err := s.db.Exec(`UPDATE backends SET encrypted_env=?, env='{}' WHERE id=?`, string(encrypted), id); err != nil {
+			return count, err
+		}
+		count++
+	}
+	return count, rows.Err()
+}
+
+// VerifyAdminEnvEncryption counts backends with and without encrypted env.
+// Returns (success, fail, error) where success = encrypted, fail = plaintext/legacy.
+func (s *Store) VerifyAdminEnvEncryption(ctx context.Context) (int, int, error) {
+	var total, encrypted int
+	err := s.db.QueryRow(`SELECT COUNT(*), SUM(CASE WHEN COALESCE(encrypted_env, '') != '' THEN 1 ELSE 0 END) FROM backends`).Scan(&total, &encrypted)
+	if err != nil {
+		return 0, 0, err
+	}
+	return encrypted, total - encrypted, nil
 }
 
 // CreateBackend inserts a new backend into the database.
@@ -53,10 +121,11 @@ func (s *Store) CreateBackend(b *Backend) error {
 	if b.MinPoolSize == 0 {
 		b.MinPoolSize = 1
 	}
+	s.encryptBackendEnv(b)
 	_, err := s.db.Exec(
-		`INSERT INTO backends (id, command, pool_size, min_pool_size, max_pool_size, tool_prefix, env, env_mappings, tool_hints, backend_instructions, enabled, is_system, self_reporting, no_keys_required, skip_justification)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		b.ID, b.Command, b.PoolSize, b.MinPoolSize, b.MaxPoolSize, b.ToolPrefix, b.Env, b.EnvMappings, b.ToolHints, b.BackendInstructions, enabled, isSystem, selfReporting, noKeysRequired, skipJustification,
+		`INSERT INTO backends (id, command, pool_size, min_pool_size, max_pool_size, tool_prefix, env, encrypted_env, env_mappings, tool_hints, backend_instructions, enabled, is_system, self_reporting, no_keys_required, skip_justification)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		b.ID, b.Command, b.PoolSize, b.MinPoolSize, b.MaxPoolSize, b.ToolPrefix, b.Env, b.EncryptedEnv, b.EnvMappings, b.ToolHints, b.BackendInstructions, enabled, isSystem, selfReporting, noKeysRequired, skipJustification,
 	)
 	return err
 }
@@ -66,8 +135,8 @@ func (s *Store) GetBackend(id string) (*Backend, error) {
 	b := &Backend{}
 	var enabled, isSystem, selfReporting, noKeysRequired, skipJustification int
 	err := s.db.QueryRow(
-		`SELECT id, command, pool_size, min_pool_size, max_pool_size, tool_prefix, env, env_mappings, tool_hints, backend_instructions, enabled, is_system, self_reporting, no_keys_required, skip_justification FROM backends WHERE id = ?`, id,
-	).Scan(&b.ID, &b.Command, &b.PoolSize, &b.MinPoolSize, &b.MaxPoolSize, &b.ToolPrefix, &b.Env, &b.EnvMappings, &b.ToolHints, &b.BackendInstructions, &enabled, &isSystem, &selfReporting, &noKeysRequired, &skipJustification)
+		`SELECT id, command, pool_size, min_pool_size, max_pool_size, tool_prefix, env, COALESCE(encrypted_env, ''), env_mappings, tool_hints, backend_instructions, enabled, is_system, self_reporting, no_keys_required, skip_justification FROM backends WHERE id = ?`, id,
+	).Scan(&b.ID, &b.Command, &b.PoolSize, &b.MinPoolSize, &b.MaxPoolSize, &b.ToolPrefix, &b.Env, &b.EncryptedEnv, &b.EnvMappings, &b.ToolHints, &b.BackendInstructions, &enabled, &isSystem, &selfReporting, &noKeysRequired, &skipJustification)
 	if err != nil {
 		return nil, err
 	}
@@ -76,13 +145,14 @@ func (s *Store) GetBackend(id string) (*Backend, error) {
 	b.SelfReporting = selfReporting != 0
 	b.NoKeysRequired = noKeysRequired != 0
 	b.SkipJustification = skipJustification != 0
+	s.decryptBackendEnv(b)
 	return b, nil
 }
 
 // ListBackends returns all backends ordered by ID.
 func (s *Store) ListBackends() ([]*Backend, error) {
 	rows, err := s.db.Query(
-		`SELECT id, command, pool_size, min_pool_size, max_pool_size, tool_prefix, env, env_mappings, tool_hints, backend_instructions, enabled, is_system, self_reporting, no_keys_required, skip_justification FROM backends ORDER BY id`,
+		`SELECT id, command, pool_size, min_pool_size, max_pool_size, tool_prefix, env, COALESCE(encrypted_env, ''), env_mappings, tool_hints, backend_instructions, enabled, is_system, self_reporting, no_keys_required, skip_justification FROM backends ORDER BY id`,
 	)
 	if err != nil {
 		return nil, err
@@ -93,7 +163,7 @@ func (s *Store) ListBackends() ([]*Backend, error) {
 	for rows.Next() {
 		b := &Backend{}
 		var enabled, isSystem, selfReporting, noKeysRequired, skipJustification int
-		if err := rows.Scan(&b.ID, &b.Command, &b.PoolSize, &b.MinPoolSize, &b.MaxPoolSize, &b.ToolPrefix, &b.Env, &b.EnvMappings, &b.ToolHints, &b.BackendInstructions, &enabled, &isSystem, &selfReporting, &noKeysRequired, &skipJustification); err != nil {
+		if err := rows.Scan(&b.ID, &b.Command, &b.PoolSize, &b.MinPoolSize, &b.MaxPoolSize, &b.ToolPrefix, &b.Env, &b.EncryptedEnv, &b.EnvMappings, &b.ToolHints, &b.BackendInstructions, &enabled, &isSystem, &selfReporting, &noKeysRequired, &skipJustification); err != nil {
 			return nil, err
 		}
 		b.Enabled = enabled != 0
@@ -104,6 +174,7 @@ func (s *Store) ListBackends() ([]*Backend, error) {
 		if b.MinPoolSize == 0 {
 			b.MinPoolSize = 1
 		}
+		s.decryptBackendEnv(b)
 		backends = append(backends, b)
 	}
 	return backends, rows.Err()
@@ -137,9 +208,10 @@ func (s *Store) UpdateBackend(b *Backend) error {
 	if b.MinPoolSize == 0 {
 		b.MinPoolSize = 1
 	}
+	s.encryptBackendEnv(b)
 	_, err := s.db.Exec(
-		`UPDATE backends SET command=?, pool_size=?, min_pool_size=?, max_pool_size=?, tool_prefix=?, env=?, env_mappings=?, tool_hints=?, backend_instructions=?, enabled=?, is_system=?, self_reporting=?, no_keys_required=?, skip_justification=? WHERE id=?`,
-		b.Command, b.PoolSize, b.MinPoolSize, b.MaxPoolSize, b.ToolPrefix, b.Env, b.EnvMappings, b.ToolHints, b.BackendInstructions, enabled, isSystem, selfReporting, noKeysRequired, skipJustification, b.ID,
+		`UPDATE backends SET command=?, pool_size=?, min_pool_size=?, max_pool_size=?, tool_prefix=?, env=?, encrypted_env=?, env_mappings=?, tool_hints=?, backend_instructions=?, enabled=?, is_system=?, self_reporting=?, no_keys_required=?, skip_justification=? WHERE id=?`,
+		b.Command, b.PoolSize, b.MinPoolSize, b.MaxPoolSize, b.ToolPrefix, b.Env, b.EncryptedEnv, b.EnvMappings, b.ToolHints, b.BackendInstructions, enabled, isSystem, selfReporting, noKeysRequired, skipJustification, b.ID,
 	)
 	return err
 }

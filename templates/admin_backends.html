@@ -102,6 +102,7 @@
           {{if .NoKeysRequired}}<span class="badge badge-enabled">no keys</span>{{end}}
           {{if .SkipJustification}}<span class="badge badge-enabled">no justification</span>{{end}}
           {{if .ToolPrefix}}<span class="badge badge-user">{{.ToolPrefix}}</span>{{end}}
+          {{if .EncryptedEnv}}<span class="badge badge-encrypted">encrypted</span>{{end}}
           <span class="text-muted">Pool: {{.MinPoolSize}}-{{.MaxPoolSize}}</span>
         </div>
       </div>
