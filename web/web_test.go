@@ -561,24 +561,24 @@ func TestTokensSave_WithEncryption(t *testing.T) {
 	}
 }
 
-func TestTokensSave_WithoutEncryption(t *testing.T) {
-	h, st := testHandler(t)
+func TestTokensSave_MasterKeyFallback_Encrypts(t *testing.T) {
+	h, st := testHandlerWithCrypto(t)
 	defer st.Close()
 
 	user := seedAdmin(t, st)
 	st.CreateBackend(&store.Backend{
-		ID: "no-enc-be", Command: "echo", PoolSize: 1, Env: "{}", Enabled: true,
+		ID: "mk-be", Command: "echo", PoolSize: 1, Env: "{}", Enabled: true,
 	})
 
 	mux := http.NewServeMux()
 	h.Register(mux)
 	cookie := loginCookie(t, h, mux, "admin@test.com", "secret")
 
-	// Save a token via the web UI (no keystore)
+	// Save a token via the web UI — should use master-key fallback
 	form := url.Values{
-		"backend_id": {"no-enc-be"},
-		"env_key":    {"PLAIN_SECRET"},
-		"value":      {"plaintextvalue"},
+		"backend_id": {"mk-be"},
+		"env_key":    {"MASTER_KEY_SECRET"},
+		"value":      {"saved-with-master-key"},
 	}
 	req := authedRequest(http.MethodPost, "/web/tokens/save", form.Encode(), cookie)
 	w := httptest.NewRecorder()
@@ -588,20 +588,27 @@ func TestTokensSave_WithoutEncryption(t *testing.T) {
 		t.Fatalf("expected 303, got %d", w.Code)
 	}
 
-	// Verify token was stored as plaintext
-	tokens, _ := st.GetUserTokens(user.ID, "no-enc-be")
+	// Verify token was stored encrypted
+	tokens, _ := st.GetUserTokens(user.ID, "mk-be")
 	if len(tokens) != 1 {
 		t.Fatalf("expected 1 token, got %d", len(tokens))
 	}
 	tok := tokens[0]
 
-	// value should have the plaintext
-	if tok.Value != "plaintextvalue" {
-		t.Errorf("expected value=%q, got %q", "plaintextvalue", tok.Value)
+	if tok.Value != "" {
+		t.Errorf("expected empty value column (should be encrypted), got %q", tok.Value)
 	}
-	// encrypted_value should be empty
-	if tok.Encrypted != "" {
-		t.Errorf("expected empty encrypted_value, got %q", tok.Encrypted)
+	if tok.Encrypted == "" {
+		t.Error("expected non-empty encrypted_value, got empty")
+	}
+
+	// Decrypt and verify
+	decrypted, err := st.GetUserTokenDecrypted(user.ID, "mk-be", "MASTER_KEY_SECRET")
+	if err != nil {
+		t.Fatalf("failed to decrypt token: %v", err)
+	}
+	if decrypted != "saved-with-master-key" {
+		t.Errorf("decrypted value mismatch: got %q, want %q", decrypted, "saved-with-master-key")
 	}
 }
 

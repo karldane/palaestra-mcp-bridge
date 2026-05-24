@@ -234,8 +234,17 @@ func (h *Handler) TokensSaveHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Session DEK not in memory (service restarted since login).
-	// Show warning: user needs to re-login for user-derived encryption.
+	// No session DEK available — fall back to master-key encryption if available.
+	if ks := h.Store.KeyStore(); ks != nil {
+		if encrypted, encErr := ks.EncryptSecret([]byte(value)); encErr == nil {
+			if err := h.Store.SetUserTokenEncrypted(user.ID, backendID, envKey, string(encrypted)); err == nil {
+				log.Printf("web: saved token %s/%s with master-key encryption", backendID, envKey)
+				http.Redirect(w, r, "/web/tokens?backend="+backendID+"&success=Token+saved", http.StatusSeeOther)
+				return
+			}
+		}
+	}
+	// No encryption available at all.
 	http.Redirect(w, r, "/web/tokens?backend="+backendID+"&warning=Session+expired+re-login+to+save+with+user+encryption", http.StatusSeeOther)
 	return
 }
