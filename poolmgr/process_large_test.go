@@ -116,29 +116,6 @@ func generateLargeToolsList(count int) string {
 	return sb.String()
 }
 
-// formatMCPPacket formats a message as MCP packet with Content-Length
-func formatMCPPacket(body string) string {
-	return "Content-Length: " + intToString(len(body)) + "\r\n\r\n" + body
-}
-
-// intToString converts int to string without importing strconv
-func intToString(n int) string {
-	if n == 0 {
-		return "0"
-	}
-	var sb strings.Builder
-	for n > 0 {
-		sb.WriteRune(rune('0' + n%10))
-		n /= 10
-	}
-	// Reverse
-	result := sb.String()
-	runes := []rune(result)
-	for i, j := 0, len(runes)-1; i < j; i, j = i+1, j-1 {
-		runes[i], runes[j] = runes[j], runes[i]
-	}
-	return string(runes)
-}
 
 // readMCPMessages reads MCP messages from a bufio.Reader, properly handling
 // Content-Length headers. This is the FIX for the token-too-long issue.

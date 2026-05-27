@@ -87,13 +87,15 @@ func TestV2ToolsListInitial(t *testing.T) {
 		t.Fatalf("Response 'result.tools' not found or not an array: %v", result)
 	}
 
-	// For lazy-loading, tools/list returns expand + call tools for each enabled backend
-	// Expected: 2 backends * 2 (expand+call) = 4 tools
-	if len(tools) != 4 {
-		t.Errorf("Expected 4 lazy-load tools (2 backends × 2), got %d", len(tools))
+	// tools/list returns generic namespace_expand/tool_call plus expand+call for each backend
+	// Expected: 2 generics + 2 backends × 2 (expand+call) = 6 tools
+	if len(tools) != 6 {
+		t.Errorf("Expected 6 tools (2 generics + 2 backends × 2), got %d", len(tools))
 	}
 
-	// Check for expected lazy-load tools
+	// Check for expected tools
+	foundNamespaceExpand := false
+	foundToolCall := false
 	foundBackend1Expand := false
 	foundBackend1Call := false
 	foundBackend2Expand := false
@@ -110,6 +112,12 @@ func TestV2ToolsListInitial(t *testing.T) {
 		}
 
 		switch name {
+		case "namespace_expand":
+			foundNamespaceExpand = true
+			t.Logf("Found namespace_expand")
+		case "tool_call":
+			foundToolCall = true
+			t.Logf("Found tool_call")
 		case "test_backend_1_expand":
 			expectedDesc := "Returns the full list of available tools in the Test_Backend_1 namespace, including parameter names, types, and descriptions. You MUST call this tool before calling MCP_Bridge_test_backend_1_call. Do not attempt to guess tool names — call this first."
 			if description == expectedDesc {
@@ -147,6 +155,12 @@ func TestV2ToolsListInitial(t *testing.T) {
 		}
 	}
 
+	if !foundNamespaceExpand {
+		t.Error("Did not find 'namespace_expand' tool")
+	}
+	if !foundToolCall {
+		t.Error("Did not find 'tool_call' tool")
+	}
 	if !foundBackend1Expand {
 		t.Error("Did not find 'test_backend_1_expand' tool")
 	}

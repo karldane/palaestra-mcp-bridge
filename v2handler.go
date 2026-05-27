@@ -281,7 +281,37 @@ func v2toolsList(a *app, w http.ResponseWriter, r *http.Request, userID string, 
 	}
 	shared.Debugf("v2toolsList: found %d backends in DB", len(backends))
 
-	var toolsList []map[string]interface{}
+	toolsList := make([]map[string]interface{}, 0)
+
+	// Add generic namespace tool descriptors (used for multi-backend routing)
+	toolsList = append(toolsList, map[string]interface{}{
+		"name":        "namespace_expand",
+		"description": "Returns the full list of available tools in a given namespace. Call this with {\"namespace\": \"<backend_id>\"} to discover available tools in that namespace. You MUST call this before calling tool_call for a backend you haven't used yet.",
+		"inputSchema": map[string]interface{}{
+			"type": "object",
+			"properties": map[string]interface{}{
+				"namespace": map[string]interface{}{
+					"type":        "string",
+					"description": "The backend namespace to expand (e.g., default, qdrant, github)",
+				},
+			},
+			"required": []string{"namespace"},
+		},
+	})
+	toolsList = append(toolsList, map[string]interface{}{
+		"name":        "tool_call",
+		"description": "Executes a named tool in a given namespace. See namespace_expand for available tools in each namespace.",
+		"inputSchema": map[string]interface{}{
+			"type": "object",
+			"properties": map[string]interface{}{
+				"namespace":     map[string]interface{}{"type": "string", "description": "Backend namespace"},
+				"tool":          map[string]interface{}{"type": "string", "description": "Tool name to execute"},
+				"params":        map[string]interface{}{"type": "object", "description": "Tool parameters"},
+				"justification": map[string]interface{}{"type": "string", "description": "Reason for the tool call"},
+			},
+			"required": []string{"namespace", "tool"},
+		},
+	})
 
 	// Add tool entry for each backend namespace pointing to namespace_expand
 	for _, backend := range backends {

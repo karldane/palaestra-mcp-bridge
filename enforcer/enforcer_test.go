@@ -71,14 +71,14 @@ func TestJustificationGate_Length(t *testing.T) {
 
 	t.Run("sufficient justification passes gate but inferred tool routes to admin HITL", func(t *testing.T) {
 		// No policies, inferred profile → ActionPendingAdminApproval (inferred_profile_gate).
-		// RequestApproval requires a valid user FK; "user1" has no DB row so the
-		// approval insert fails and the enforcer falls back to DENY(inferred_profile_gate).
+		// The approval record is now created by mcpbridge_routing.go, so HandleToolCall
+		// never attempts a DB insert and always succeeds here.
 		decision, err := enf.HandleToolCall(ctx, "user1", "some_tool", map[string]interface{}{}, "backend1", "this is definitely long enough justification", enforcer.CallOptions{})
-		if err == nil {
-			t.Fatal("expected error for inferred tool with no policy, got nil")
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
 		}
-		if decision.Action != enforcer.ActionDeny {
-			t.Errorf("expected DENY (approval_queue_failed) for inferred tool with no policy, got %s", decision.Action)
+		if decision.Action != enforcer.ActionPendingAdminApproval {
+			t.Errorf("expected ActionPendingAdminApproval for inferred tool with no policy, got %s", decision.Action)
 		}
 		if decision.PolicyID != "inferred_profile_gate" {
 			t.Errorf("expected PolicyID=inferred_profile_gate, got %s", decision.PolicyID)
@@ -89,8 +89,8 @@ func TestJustificationGate_Length(t *testing.T) {
 // TestJustificationGate_DisabledWhenZero ensures that setting
 // MinJustificationLength=0 disables the gate entirely. An inferred tool with
 // no policies is routed to the admin HITL queue (inferred_profile_gate).
-// When no matching user exists in the DB the approval insert fails and the
-// enforcer returns DENY(inferred_profile_gate) as a safe fallback.
+// The approval record is created by mcpbridge_routing.go, so HandleToolCall
+// never attempts a DB insert.
 func TestJustificationGate_DisabledWhenZero(t *testing.T) {
 	s, cleanup := newTestStore(t)
 	defer cleanup()
@@ -104,14 +104,12 @@ func TestJustificationGate_DisabledWhenZero(t *testing.T) {
 	}
 
 	ctx := context.Background()
-	// Justification gate is off; inferred tool with no policy → DENY (inferred_profile_gate)
-	// because "user1" has no DB row so RequestApproval's FK insert fails.
 	decision, err := enf.HandleToolCall(ctx, "user1", "some_tool", map[string]interface{}{}, "backend1", "", enforcer.CallOptions{})
-	if err == nil {
-		t.Fatal("expected error for inferred tool with no policy, got nil")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
 	}
-	if decision.Action != enforcer.ActionDeny {
-		t.Errorf("expected DENY (approval_queue_failed), got %s", decision.Action)
+	if decision.Action != enforcer.ActionPendingAdminApproval {
+		t.Errorf("expected ActionPendingAdminApproval for inferred tool with no policy, got %s", decision.Action)
 	}
 	if decision.PolicyID != "inferred_profile_gate" {
 		t.Errorf("expected PolicyID=inferred_profile_gate, got %s", decision.PolicyID)
@@ -369,9 +367,9 @@ func TestResolveForUser_UserOverrideApplied(t *testing.T) {
 
 // TestDenyUnlessPermitted_InferredNoPolicyRoutesToHITL verifies that a tool with an
 // inferred safety profile and no matching DB policy is routed to the admin HITL
-// queue (ActionPendingAdminApproval / inferred_profile_gate). When the user has no
-// DB row the approval insert fails and the enforcer returns DENY(inferred_profile_gate)
-// as a safe fallback — still never ActionAllow.
+// queue (ActionPendingAdminApproval / inferred_profile_gate). The approval record
+// is now created by the caller (mcpbridge_routing.go) so HandleToolCall itself
+// never attempts a DB insert and cannot fail with a FK violation.
 func TestDenyUnlessPermitted_InferredNoPolicyRoutesToHITL(t *testing.T) {
 	s, cleanup := newTestStore(t)
 	defer cleanup()
@@ -385,15 +383,13 @@ func TestDenyUnlessPermitted_InferredNoPolicyRoutesToHITL(t *testing.T) {
 	}
 
 	ctx := context.Background()
-	// "unknown_third_party_tool" has no stored profile → inferred source.
-	// "user1" has no DB row → RequestApproval FK insert fails → DENY fallback.
 	decision, callErr := enf.HandleToolCall(ctx, "user1", "unknown_third_party_tool",
 		map[string]interface{}{}, "third_party_backend", "", enforcer.CallOptions{})
-	if callErr == nil {
-		t.Fatal("expected error for inferred tool with no policy, got nil")
+	if callErr != nil {
+		t.Fatalf("unexpected error: %v", callErr)
 	}
-	if decision.Action != enforcer.ActionDeny {
-		t.Errorf("expected ActionDeny (HITL fallback), got %s", decision.Action)
+	if decision.Action != enforcer.ActionPendingAdminApproval {
+		t.Errorf("expected ActionPendingAdminApproval (HITL routing), got %s", decision.Action)
 	}
 	if decision.PolicyID != "inferred_profile_gate" {
 		t.Errorf("expected PolicyID=inferred_profile_gate, got %q", decision.PolicyID)
@@ -705,9 +701,8 @@ func TestGate_SourceInferred_AdminHITL(t *testing.T) {
 	if decision.PolicyID != "inferred_profile_gate" {
 		t.Errorf("PolicyID = %q, want inferred_profile_gate", decision.PolicyID)
 	}
-	if decision.ApprovalID == "" {
-		t.Error("ApprovalID is empty, want a non-empty approval ID")
-	}
+	// ApprovalID is no longer set by HandleToolCall — the caller creates the
+	// approval record so it can include the full request body for replay.
 }
 
 // TestGate_SourceSelfReported_Allow verifies that a self-reported tool with no

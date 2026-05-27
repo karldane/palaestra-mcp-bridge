@@ -96,8 +96,8 @@ type EnforcerDecision struct {
 	// Priority mirrors the DB priority of the policy that produced this decision.
 	// Lower = more specific. Used for tiebreaking in shouldUpdateDecision.
 	Priority int
-	// ApprovalID is set when Action == ActionPendingAdminApproval and the
-	// decision was produced by the inferred_profile_gate.
+	// ApprovalID is no longer set by HandleToolCall — the caller creates the
+	// approval record so it can include the full request body for replay.
 	ApprovalID string
 }
 

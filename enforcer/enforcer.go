@@ -537,27 +537,15 @@ func (e *Enforcer) HandleToolCall(ctx context.Context, userID string, toolName s
 			decision.Action = ActionAllow
 
 		case "inferred":
-			// Do not consume rate-limit budget — call is not executed yet.
-			approvalID, err := e.RequestApproval(ctx, decisionCtx,
-				"inferred_profile_gate",
-				"Tool has an inferred safety profile and no explicit policy. Admin review required.",
-				"admin",
-			)
-			if err != nil {
-				_ = e.store.LogAuditRejection(generateID(), userID, toolName, justification, "approval_queue_failed")
-				return EnforcerDecision{
-					Action:   ActionDeny,
-					Severity: SeverityHigh,
-					Message:  "Failed to queue for admin approval: " + err.Error(),
-					PolicyID: "inferred_profile_gate",
-				}, ErrPolicyViolation
-			}
+			// Do not consume rate-limit budget or create an approval here.
+			// The caller (mcpbridge_routing.go) has the full request body and
+			// will create a single approval record with the correct RequestBody
+			// for replay when the request is approved.
 			return EnforcerDecision{
-				Action:     ActionPendingAdminApproval,
-				Severity:   SeverityMedium,
-				Message:    "Tool requires admin approval: inferred profile, no explicit policy.",
-				PolicyID:   "inferred_profile_gate",
-				ApprovalID: approvalID,
+				Action:   ActionPendingAdminApproval,
+				Severity: SeverityMedium,
+				Message:  "Tool requires admin approval: inferred profile, no explicit policy.",
+				PolicyID: "inferred_profile_gate",
 			}, nil
 
 		default:

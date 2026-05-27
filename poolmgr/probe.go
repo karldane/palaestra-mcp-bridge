@@ -97,7 +97,8 @@ func ProbeBackend(command string, env []string, timeout time.Duration) *ProbeRes
 	}
 
 	respCh := pool.RegisterRequest(initID)
-	proc.Stdin.Write([]byte(formatMCPPacket(buf.String())))
+	packet := formatMCPPacket(buf.String()) + "\n"
+	proc.Stdin.Write([]byte(packet))
 
 	select {
 	case resp, ok := <-respCh:

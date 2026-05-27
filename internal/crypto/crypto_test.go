@@ -928,7 +928,7 @@ func TestEncryptDecrypt_Concurrent(t *testing.T) {
 		}()
 	}
 
-	for i := 0; i < numOps*2; i++ {
+	for i := 0; i < numOps; i++ {
 		select {
 		case err := <-errCh:
 			if err != nil {
