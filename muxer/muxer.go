@@ -114,7 +114,7 @@ func (tm *ToolMuxer) HandleToolsCall(userID string, body []byte) ([]byte, *PoolR
 		return nil, nil, err
 	}
 
-	command, _, minPoolSize, maxPoolSize, _, _, ok := tm.getBackendConfig(backendID)
+	command, _, minPoolSize, maxPoolSize, _, _, ok, stdioFraming := tm.getBackendConfig(backendID)
 	if !ok {
 		return nil, nil, fmt.Errorf("backend %q not found in store or config", backendID)
 	}
@@ -126,8 +126,8 @@ func (tm *ToolMuxer) HandleToolsCall(userID string, body []byte) ([]byte, *PoolR
 	}
 
 	// Get or create a per-user pool with the user's credentials in the env.
-	pool := tm.poolManager.GetOrCreateUserPool(
-		backendID, userID, command, minPoolSize, maxPoolSize, env,
+	pool := tm.poolManager.GetOrCreateUserPoolWithFraming(
+		backendID, userID, command, minPoolSize, maxPoolSize, env, stdioFraming,
 	)
 
 	router := &PoolRouter{
@@ -175,7 +175,7 @@ func (tm *ToolMuxer) BuildEnvForUser(userID, backendID string) ([]string, error)
 	shared.Debugf("Starting with %d essential system env vars", len(envMap))
 
 	// Get backend configuration including env mappings.
-	_, _, _, _, systemwideEnv, envMappings, ok := tm.getBackendConfig(backendID)
+	_, _, _, _, systemwideEnv, envMappings, ok, _ := tm.getBackendConfig(backendID)
 	if !ok {
 		shared.Debugf("No backend config found for %s, using legacy path", backendID)
 		// Fallback: no backend config, just use legacy path.
@@ -401,7 +401,7 @@ func (tm *ToolMuxer) GetPrefixForBackend(backendID string) string {
 // getBackendConfig retrieves backend configuration. It checks the SQLite store
 // first (DB is source of truth), then falls back to the config map.
 // Returns command, poolSize, minPoolSize, maxPoolSize, env (systemwide), envMappings (key mappings), and ok.
-func (tm *ToolMuxer) getBackendConfig(backendID string) (command string, poolSize, minPoolSize, maxPoolSize int, env map[string]string, envMappings map[string]string, ok bool) {
+func (tm *ToolMuxer) getBackendConfig(backendID string) (command string, poolSize, minPoolSize, maxPoolSize int, env map[string]string, envMappings map[string]string, ok bool, stdioFraming string) {
 	// Try store first.
 	if tm.store != nil {
 		b, err := tm.store.GetBackend(backendID)
@@ -452,16 +452,24 @@ func (tm *ToolMuxer) getBackendConfig(backendID string) (command string, poolSiz
 				maxSize = minSize // 0 means unlimited, but we'll use min for default
 			}
 
-			return b.Command, b.PoolSize, minSize, maxSize, envMap, mappings, true
+			framing := b.StdioFraming
+			if framing == "" {
+				framing = "newline"
+			}
+			return b.Command, b.PoolSize, minSize, maxSize, envMap, mappings, true, framing
 		}
 	}
 
 	// Fallback to config.
 	if bc, found := tm.config.Backends[backendID]; found {
-		return bc.Command, bc.PoolSize, bc.PoolSize, bc.PoolSize, bc.Env, nil, true
+		framing := bc.StdioFraming
+		if framing == "" {
+			framing = "newline"
+		}
+		return bc.Command, bc.PoolSize, bc.PoolSize, bc.PoolSize, bc.Env, nil, true, framing
 	}
 
-	return "", 0, 0, 0, nil, nil, false
+	return "", 0, 0, 0, nil, nil, false, "newline"
 }
 
 // listBackendIDs returns all backend IDs, preferring the DB store.
