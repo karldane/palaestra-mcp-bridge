@@ -135,9 +135,11 @@ backends table:
 
 Backends created before encryption was enabled have `encrypted_env = ''` and their plaintext env in the `env` column. These continue to work — `GetBackend`/`ListBackends` return the `env` column as-is when `encrypted_env` is empty.
 
-### No-Key Fallback
+### No-Key Enforcement
 
-If no `ENCRYPTION_KEY` is configured (e.g., dev/test), `encryptBackendEnv` returns silently and the env is stored as plaintext in the `env` column. This ensures backward compatibility.
+If no `ENCRYPTION_KEY` is configured (e.g., dev/test), `encryptBackendEnv` returns an error and `CreateBackend`/`UpdateBackend` fail for any backend with non-empty `Env`. This is deliberate — encryption is **required** to store environment variable values.
+
+Backends with `Env = "{}"` (empty) are exempt and can be created without encryption. Legacy backends with plaintext env in the `env` column (and no `encrypted_env`) remain readable — the decryption path falls back to the `env` column when `encrypted_env` is empty.
 
 ### Migration
 

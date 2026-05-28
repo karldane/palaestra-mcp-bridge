@@ -1227,7 +1227,7 @@ func TestAdminBackends_RequiresAdmin(t *testing.T) {
 }
 
 func TestAdminBackends_Create(t *testing.T) {
-	h, st := testHandler(t)
+	h, st := testHandlerWithCrypto(t)
 	defer st.Close()
 
 	seedAdmin(t, st)
@@ -1314,7 +1314,7 @@ func TestAdminBackends_Create_DefaultValues(t *testing.T) {
 }
 
 func TestAdminBackends_Edit_DEBUG(t *testing.T) {
-	h, st := testHandler(t)
+	h, st := testHandlerWithCrypto(t)
 	defer st.Close()
 
 	seedAdmin(t, st)
@@ -1361,7 +1361,7 @@ func TestAdminBackends_Edit_DEBUG(t *testing.T) {
 }
 
 func TestAdminBackends_Create_WithJSONEnv(t *testing.T) {
-	h, st := testHandler(t)
+	h, st := testHandlerWithCrypto(t)
 	defer st.Close()
 
 	seedAdmin(t, st)
@@ -1441,7 +1441,7 @@ func TestAdminBackends_Create_WithEmptyEnv(t *testing.T) {
 }
 
 func TestAdminBackends_ListBackends_RoundTripsJSON(t *testing.T) {
-	h, st := testHandler(t)
+	h, st := testHandlerWithCrypto(t)
 	defer st.Close()
 
 	seedAdmin(t, st)
@@ -1563,7 +1563,7 @@ func TestAdminBackends_Create_CallsOnBackendChange(t *testing.T) {
 	cookie := loginCookie(t, h, mux, "admin@test.com", "secret")
 
 	var calledWith string
-	h.OnBackendChange = func(backendID string) {
+	h.OnBackendChange = func(backendID string, triggerUserID string) {
 		calledWith = backendID
 	}
 
@@ -1598,7 +1598,7 @@ func TestAdminBackends_Edit_CallsOnBackendChange(t *testing.T) {
 	cookie := loginCookie(t, h, mux, "admin@test.com", "secret")
 
 	var calledWith string
-	h.OnBackendChange = func(backendID string) {
+	h.OnBackendChange = func(backendID string, triggerUserID string) {
 		calledWith = backendID
 	}
 
@@ -1633,7 +1633,7 @@ func TestAdminBackends_Delete_CallsOnBackendChange(t *testing.T) {
 	cookie := loginCookie(t, h, mux, "admin@test.com", "secret")
 
 	var calledWith string
-	h.OnBackendChange = func(backendID string) {
+	h.OnBackendChange = func(backendID string, triggerUserID string) {
 		calledWith = backendID
 	}
 

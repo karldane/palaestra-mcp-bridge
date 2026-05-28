@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"net/url"
 	"strings"
 
 	"github.com/mcp-bridge/mcp-bridge/shared"
@@ -271,7 +272,7 @@ func (h *Handler) AdminBackendsCreateHandler(w http.ResponseWriter, r *http.Requ
 		http.Redirect(w, r, "/web/admin/backends?error=Failed+to+create+backend+(ID+may+already+exist)", http.StatusSeeOther)
 		return
 	}
-	h.notifyBackendChange(id)
+	h.notifyBackendChange(id, userFromContext(r).ID)
 	http.Redirect(w, r, "/web/admin/backends?success=Backend+created", http.StatusSeeOther)
 }
 
@@ -373,7 +374,7 @@ func (h *Handler) AdminBackendsEditHandler(w http.ResponseWriter, r *http.Reques
 		http.Redirect(w, r, "/web/admin/backends?error=Failed+to+update+backend", http.StatusSeeOther)
 		return
 	}
-	h.notifyBackendChange(id)
+	h.notifyBackendChange(id, userFromContext(r).ID)
 	http.Redirect(w, r, "/web/admin/backends?success=Backend+updated", http.StatusSeeOther)
 }
 
@@ -397,7 +398,7 @@ func (h *Handler) AdminBackendsDeleteHandler(w http.ResponseWriter, r *http.Requ
 		http.Redirect(w, r, "/web/admin/backends?error=Failed+to+delete+backend", http.StatusSeeOther)
 		return
 	}
-	h.notifyBackendChange(id)
+	h.notifyBackendChange(id, userFromContext(r).ID)
 	http.Redirect(w, r, "/web/admin/backends?success=Backend+deleted", http.StatusSeeOther)
 }
 
@@ -449,10 +450,46 @@ func (h *Handler) AdminBackendsProbeHandler(w http.ResponseWriter, r *http.Reque
 	w.Write(result)
 }
 
+func (h *Handler) AdminBackendsRefreshToolsHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	if h.OnRefreshTools == nil {
+		http.Redirect(w, r, "/web/admin/backends?error=Refresh+not+configured", http.StatusSeeOther)
+		return
+	}
+
+	backendID := r.FormValue("id")
+	if backendID == "" {
+		http.Redirect(w, r, "/web/admin/backends?error=Missing+backend+id", http.StatusSeeOther)
+		return
+	}
+
+	user := userFromContext(r)
+	if user == nil {
+		http.Redirect(w, r, "/web/admin/backends?error=Not+authenticated", http.StatusSeeOther)
+		return
+	}
+
+	n, err := h.OnRefreshTools(backendID, user.ID)
+	if err != nil {
+		h.Store.SetBackendPrecacheError(backendID, err.Error())
+		http.Redirect(w, r,
+			"/web/admin/backends?error="+url.QueryEscape(err.Error()),
+			http.StatusSeeOther)
+		return
+	}
+	http.Redirect(w, r,
+		"/web/admin/backends?success="+url.QueryEscape(fmt.Sprintf("%d tool(s) cached successfully", n)),
+		http.StatusSeeOther)
+}
+
 // notifyBackendChange invokes the OnBackendChange callback if set.
-func (h *Handler) notifyBackendChange(backendID string) {
+func (h *Handler) notifyBackendChange(backendID string, triggerUserID string) {
 	if h.OnBackendChange != nil {
-		h.OnBackendChange(backendID)
+		h.OnBackendChange(backendID, triggerUserID)
 	}
 }
 

@@ -67,12 +67,12 @@ docker-build:
 docker-push: docker-build
 	docker push $(DOCKER_IMAGE):$(DOCKER_TAG)
 
-# Staging ECR details
-ECR_REGISTRY=338476385965.dkr.ecr.eu-west-2.amazonaws.com
-ECR_IMAGE=palaestra-mcp-bridge
+# Production ECR details (cross-account pull from staging)
+ECR_REGISTRY=100732956864.dkr.ecr.eu-west-2.amazonaws.com
+ECR_IMAGE=tusker-direct/mcp-bridge
 ECR_TAG=latest
 
-# Push Docker image to staging ECR
+# Push Docker image to production ECR
 .PHONY: docker-push-ecr
 docker-push-ecr:
 	aws ecr get-login-password --region eu-west-2 | docker login --username AWS --password-stdin $(ECR_REGISTRY)

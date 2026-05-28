@@ -85,11 +85,21 @@ func (pm *PoolManager) GetOrCreateUserPool(backendID, userID, command string, mi
 	return pm.GetOrCreateUserPoolWithSecrets(backendID, userID, command, minPoolSize, maxPoolSize, env, nil)
 }
 
+// GetOrCreateUserPoolWithFraming is like GetOrCreateUserPool but also sets
+// the stdio framing on the pool for backends that use Content-Length framing.
+func (pm *PoolManager) GetOrCreateUserPoolWithFraming(backendID, userID, command string, minPoolSize, maxPoolSize int, env []string, stdioFraming string) *Pool {
+	return pm.GetOrCreateUserPoolWithSecrets(backendID, userID, command, minPoolSize, maxPoolSize, env, nil, stdioFraming)
+}
+
 // GetOrCreateUserPoolWithSecrets returns an existing pool keyed by "backendID:userID",
 // or creates a new one with the given command, min/max pool sizes, environment, and secrets.
 // If the env or secrets have changed, the existing pool is shut down and recreated.
-func (pm *PoolManager) GetOrCreateUserPoolWithSecrets(backendID, userID, command string, minPoolSize, maxPoolSize int, env []string, secrets map[string]string) *Pool {
+func (pm *PoolManager) GetOrCreateUserPoolWithSecrets(backendID, userID, command string, minPoolSize, maxPoolSize int, env []string, secrets map[string]string, stdioFraming ...string) *Pool {
 	key := backendID + ":" + userID
+	framing := "newline"
+	if len(stdioFraming) > 0 && stdioFraming[0] != "" {
+		framing = stdioFraming[0]
+	}
 
 	pm.mu.RLock()
 	if pool, ok := pm.pools[key]; ok {
@@ -146,6 +156,7 @@ func (pm *PoolManager) GetOrCreateUserPoolWithSecrets(backendID, userID, command
 	} else {
 		pool = NewPoolWithEnv(key, minPoolSize, maxPoolSize, command, env)
 	}
+	pool.StdioFraming = framing
 	pool.SetDedicated(userID)
 	pm.pools[key] = pool
 	pool.TouchLastUsed()

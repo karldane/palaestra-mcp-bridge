@@ -26,11 +26,14 @@ type ProbeResult struct {
 // the MCP initialize + notifications/initialized handshake, captures stderr,
 // and returns a ProbeResult. The process is always killed before returning.
 // The timeout controls how long to wait for the handshake response.
-func ProbeBackend(command string, env []string, timeout time.Duration) *ProbeResult {
+func ProbeBackend(command string, env []string, timeout time.Duration, stdioFraming string) *ProbeResult {
 	start := time.Now()
 
 	// Create a minimal pool for the response dispatcher (size 0, not added
 	// to any manager).
+	if stdioFraming == "" {
+		stdioFraming = "newline"
+	}
 	pool := &Pool{
 		Warm:            make(chan *ManagedProcess, 1),
 		Spawning:        make(chan struct{}, 1),
@@ -41,6 +44,7 @@ func ProbeBackend(command string, env []string, timeout time.Duration) *ProbeRes
 		broadcastCh:     make(chan []byte, 100),
 		BackendID:       "__probe__",
 		lastUsed:        time.Now(),
+		StdioFraming:    stdioFraming,
 	}
 	go pool.responseDispatcher()
 
@@ -97,8 +101,12 @@ func ProbeBackend(command string, env []string, timeout time.Duration) *ProbeRes
 	}
 
 	respCh := pool.RegisterRequest(initID)
-	packet := formatMCPPacket(buf.String()) + "\n"
-	proc.Stdin.Write([]byte(packet))
+	if stdioFraming == "content_length" {
+		proc.Stdin.Write([]byte(formatMCPPacket(buf.String())))
+	} else {
+		buf.WriteByte('\n')
+		proc.Stdin.Write(buf.Bytes())
+	}
 
 	select {
 	case resp, ok := <-respCh:
@@ -124,8 +132,12 @@ func ProbeBackend(command string, env []string, timeout time.Duration) *ProbeRes
 		if compErr := json.Compact(buf, notifBody); compErr != nil {
 			buf.Write(notifBody)
 		}
-		buf.WriteByte('\n')
-		proc.Stdin.Write(buf.Bytes())
+		if stdioFraming == "content_length" {
+			proc.Stdin.Write([]byte(formatMCPPacket(buf.String())))
+		} else {
+			buf.WriteByte('\n')
+			proc.Stdin.Write(buf.Bytes())
+		}
 
 		// Give stderr a moment to flush.
 		time.Sleep(50 * time.Millisecond)
@@ -151,7 +163,10 @@ func ProbeBackend(command string, env []string, timeout time.Duration) *ProbeRes
 // ScanBackendTools spawns a backend, performs MCP handshake, calls tools/list,
 // and returns the raw JSON-RPC response containing the tools array.
 // This is used by the enforcer scanner to extract self-reported EnforcerProfile data.
-func ScanBackendTools(command string, env []string, timeout time.Duration) ([]byte, error) {
+func ScanBackendTools(command string, env []string, timeout time.Duration, stdioFraming string) ([]byte, error) {
+	if stdioFraming == "" {
+		stdioFraming = "newline"
+	}
 	pool := &Pool{
 		Warm:            make(chan *ManagedProcess, 1),
 		Spawning:        make(chan struct{}, 1),
@@ -162,6 +177,7 @@ func ScanBackendTools(command string, env []string, timeout time.Duration) ([]by
 		broadcastCh:     make(chan []byte, 100),
 		BackendID:       "__scan__",
 		lastUsed:        time.Now(),
+		StdioFraming:    stdioFraming,
 	}
 	go pool.responseDispatcher()
 
@@ -193,10 +209,14 @@ func ScanBackendTools(command string, env []string, timeout time.Duration) ([]by
 	if compErr := json.Compact(buf, initBody); compErr != nil {
 		buf.Write(initBody)
 	}
-	buf.WriteByte('\n')
 
 	respCh := pool.RegisterRequest(initID)
-	proc.Stdin.Write(buf.Bytes())
+	if stdioFraming == "content_length" {
+		proc.Stdin.Write([]byte(formatMCPPacket(buf.String())))
+	} else {
+		buf.WriteByte('\n')
+		proc.Stdin.Write(buf.Bytes())
+	}
 
 	select {
 	case _, ok := <-respCh:
@@ -218,7 +238,12 @@ func ScanBackendTools(command string, env []string, timeout time.Duration) ([]by
 	if compErr := json.Compact(buf, notifBody); compErr != nil {
 		buf.Write(notifBody)
 	}
-	proc.Stdin.Write([]byte(formatMCPPacket(buf.String())))
+	if stdioFraming == "content_length" {
+		proc.Stdin.Write([]byte(formatMCPPacket(buf.String())))
+	} else {
+		buf.WriteByte('\n')
+		proc.Stdin.Write(buf.Bytes())
+	}
 
 	time.Sleep(100 * time.Millisecond)
 
@@ -235,10 +260,14 @@ func ScanBackendTools(command string, env []string, timeout time.Duration) ([]by
 	if compErr := json.Compact(buf, toolsBody); compErr != nil {
 		buf.Write(toolsBody)
 	}
-	buf.WriteByte('\n')
 
 	toolsCh := pool.RegisterRequest(toolsID)
-	proc.Stdin.Write(buf.Bytes())
+	if stdioFraming == "content_length" {
+		proc.Stdin.Write([]byte(formatMCPPacket(buf.String())))
+	} else {
+		buf.WriteByte('\n')
+		proc.Stdin.Write(buf.Bytes())
+	}
 
 	select {
 	case resp, ok := <-toolsCh:

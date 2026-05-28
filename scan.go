@@ -52,7 +52,10 @@ func scanSelfReportingBackends(st *store.Store, logf, warnf LogFn) {
 			if err != nil {
 				logf("scanSelfReporting: backend %s scan-mode failed: %v, falling back to MCP handshake", b.ID, err)
 				// Fall back to MCP handshake approach
-				scanner := enforcer.NewToolProfileScanner(poolmgr.ScanBackendTools)
+				framing := b.StdioFraming
+				scanner := enforcer.NewToolProfileScanner(func(command string, env []string, timeout time.Duration) ([]byte, error) {
+					return poolmgr.ScanBackendTools(command, env, timeout, framing)
+				})
 				profiles, err := scanner.ScanBackend(b.ID, b.Command, env)
 				if err != nil {
 					warnf("scanSelfReporting: backend %s scan failed: %v", b.ID, err)

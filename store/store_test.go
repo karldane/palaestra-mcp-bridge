@@ -185,6 +185,120 @@ func TestBackend_GetNotFound(t *testing.T) {
 	}
 }
 
+func TestBackend_PrecacheError(t *testing.T) {
+	s, dir := testStore(t)
+	defer os.RemoveAll(dir)
+	defer s.Close()
+
+	b := &Backend{
+		ID:      "test-precache",
+		Command: "echo test",
+		PoolSize: 1,
+		Env:     "{}",
+		Enabled: true,
+	}
+	if err := s.CreateBackend(b); err != nil {
+		t.Fatalf("CreateBackend: %v", err)
+	}
+
+	// Initially precache_error should be empty
+	got, err := s.GetBackend("test-precache")
+	if err != nil {
+		t.Fatalf("GetBackend: %v", err)
+	}
+	if got.PrecacheError != "" {
+		t.Errorf("PrecacheError = %q, want empty", got.PrecacheError)
+	}
+
+	// Set precache error
+	if err := s.SetBackendPrecacheError("test-precache", "test error message"); err != nil {
+		t.Fatalf("SetBackendPrecacheError: %v", err)
+	}
+
+	got, err = s.GetBackend("test-precache")
+	if err != nil {
+		t.Fatalf("GetBackend: %v", err)
+	}
+	if got.PrecacheError != "test error message" {
+		t.Errorf("PrecacheError = %q, want %q", got.PrecacheError, "test error message")
+	}
+	if got.PrecacheErrorAt == nil {
+		t.Error("PrecacheErrorAt is nil, want non-nil")
+	}
+
+	// SetBackendAvailable should clear it
+	if err := s.SetBackendAvailable("test-precache"); err != nil {
+		t.Fatalf("SetBackendAvailable: %v", err)
+	}
+
+	got, err = s.GetBackend("test-precache")
+	if err != nil {
+		t.Fatalf("GetBackend: %v", err)
+	}
+	if got.PrecacheError != "" {
+		t.Errorf("after SetBackendAvailable, PrecacheError = %q, want empty", got.PrecacheError)
+	}
+	if got.PrecacheErrorAt != nil {
+		t.Error("after SetBackendAvailable, PrecacheErrorAt is non-nil, want nil")
+	}
+}
+
+func TestFirstAdminUser_NoAdmin(t *testing.T) {
+	s, dir := testStore(t)
+	defer os.RemoveAll(dir)
+	defer s.Close()
+
+	// Create a non-admin user
+	u1 := &User{Name: "Alice", Email: "alice@example.com", Password: "secret", Role: "user"}
+	if err := s.CreateUser(u1); err != nil {
+		t.Fatalf("CreateUser: %v", err)
+	}
+
+	// No admin yet — should return nil
+	admin := s.FirstAdminUser()
+	if admin != nil {
+		t.Errorf("FirstAdminUser with no admin = %v, want nil", admin)
+	}
+}
+
+func TestFirstAdminUser_ReturnsFirstAdmin(t *testing.T) {
+	s, dir := testStore(t)
+	defer os.RemoveAll(dir)
+	defer s.Close()
+
+	// Create admin
+	u := &User{Name: "Admin", Email: "admin@example.com", Password: "secret", Role: "admin"}
+	if err := s.CreateUser(u); err != nil {
+		t.Fatalf("CreateUser: %v", err)
+	}
+
+	// Should return the admin
+	admin := s.FirstAdminUser()
+	if admin == nil {
+		t.Fatal("FirstAdminUser = nil, want non-nil")
+	}
+	if admin.Email != "admin@example.com" {
+		t.Errorf("FirstAdminUser.Email = %q, want %q", admin.Email, "admin@example.com")
+	}
+	if admin.Role != "admin" {
+		t.Errorf("FirstAdminUser.Role = %q, want admin", admin.Role)
+	}
+
+	// Create another admin — first should still be returned
+	u2 := &User{Name: "Admin2", Email: "admin2@example.com", Password: "secret", Role: "admin"}
+	if err := s.CreateUser(u2); err != nil {
+		t.Fatalf("CreateUser: %v", err)
+	}
+
+	admin = s.FirstAdminUser()
+	if admin == nil {
+		t.Fatal("FirstAdminUser = nil after second admin")
+	}
+	if admin.Email != "admin@example.com" {
+		t.Errorf("FirstAdminUser.Email = %q, want %q (first admin)", admin.Email, "admin@example.com")
+	}
+}
+
 // ---------- Backend Capabilities ----------
 
 func TestBackendCapabilities_SetAndGet(t *testing.T) {

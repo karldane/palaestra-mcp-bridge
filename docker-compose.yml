@@ -41,8 +41,8 @@ services:
       QDRANT__SERVICE__JWT_RBAC:      "true"
       QDRANT__LOG_LEVEL:              "INFO"
     ports:
-      - "6333:6333"   # REST / health
-      - "6334:6334"   # gRPC
+      - "6433:6333"   # REST / health  (host 6433 → container 6333, avoids clash with local qdrant)
+      - "6434:6334"   # gRPC            (host 6434 → container 6334)
     volumes:
       - qdrant-data:/qdrant/storage
     networks:
@@ -52,7 +52,7 @@ services:
           - qdrant
           - qdrant.mcp-bridge-infra.svc.cluster.local
     healthcheck:
-      test: ["CMD", "wget", "-qO-", "http://localhost:6333/healthz"]
+      test: ["CMD-SHELL", "timeout 3 bash -c 'echo > /dev/tcp/localhost/6333' 2>/dev/null"]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -81,7 +81,7 @@ services:
         echo "Model ready. ollama serving."
         wait $$SERVER_PID
     ports:
-      - "11434:11434"
+      - "11534:11434"   # host 11534 → container 11434 (avoids clash with local ollama)
     volumes:
       - ollama-models:/root/.ollama
     networks:
@@ -90,7 +90,7 @@ services:
           - ollama
           - ollama.mcp-bridge-infra.svc.cluster.local
     healthcheck:
-      test: ["CMD", "wget", "-qO-", "http://localhost:11434/api/version"]
+      test: ["CMD-SHELL", "ollama list >/dev/null 2>&1"]
       interval: 15s
       timeout: 5s
       retries: 10
@@ -128,7 +128,7 @@ services:
       QDRANT_VECTOR_SIZE:        "768"
       QDRANT_DEDUP_THRESHOLD:    "0.95"
     ports:
-      - "8080:8080"
+      - "8001:8080"
     volumes:
       - mcp-bridge-db:/data
     networks:

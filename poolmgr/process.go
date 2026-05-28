@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -282,6 +283,11 @@ func captureStdout(pool *Pool, proc *ManagedProcess) {
 		}
 	}()
 
+	if pool.StdioFraming == "content_length" {
+		captureStdoutContentLength(pool, proc)
+		return
+	}
+
 	// Use bufio.Reader instead of Scanner to handle large responses.
 	// Scanner splits on lines which fails when JSON bodies exceed buffer size.
 	reader := bufio.NewReader(proc.Stdout)
@@ -319,6 +325,73 @@ func captureStdout(pool *Pool, proc *ManagedProcess) {
 		pool.BroadcastToSSE(data)
 	}
 	shared.Debug("captureStdout exiting")
+}
+
+// captureStdoutContentLength reads MCP messages using Content-Length framing
+// (the LSP/JSON-RPC transport protocol). This is used for backends that
+// communicate via content-length headers rather than newline-delimited JSON.
+func captureStdoutContentLength(pool *Pool, proc *ManagedProcess) {
+	defer func() {
+		if r := recover(); r != nil {
+		}
+	}()
+
+	reader := bufio.NewReader(proc.Stdout)
+
+	for {
+		line, err := reader.ReadString('\n')
+		if err != nil {
+			if err == io.EOF {
+				break
+			}
+			shared.Debugf("captureStdoutContentLength read error: %v", err)
+			break
+		}
+
+		line = strings.TrimRight(line, "\r\n")
+
+		if !strings.HasPrefix(line, "Content-Length: ") {
+			continue
+		}
+
+		lenStr := strings.TrimPrefix(line, "Content-Length: ")
+		contentLen, err := strconv.Atoi(strings.TrimSpace(lenStr))
+		if err != nil || contentLen <= 0 {
+			shared.Debugf("captureStdoutContentLength invalid Content-Length: %q", line)
+			continue
+		}
+
+		for {
+			b, err := reader.ReadByte()
+			if err != nil {
+				if err == io.EOF {
+					break
+				}
+				shared.Debugf("captureStdoutContentLength read blank line error: %v", err)
+				return
+			}
+			if b == '\n' {
+				break
+			}
+		}
+
+		body := make([]byte, contentLen)
+		_, err = io.ReadFull(reader, body)
+		if err != nil {
+			shared.Debugf("captureStdoutContentLength read body error: %v", err)
+			break
+		}
+
+		proc.mu.Lock()
+		select {
+		case proc.LineChan <- body:
+		default:
+		}
+		proc.mu.Unlock()
+
+		pool.BroadcastToSSE(body)
+	}
+	shared.Debug("captureStdoutContentLength exiting")
 }
 
 func captureStderr(proc *ManagedProcess) {

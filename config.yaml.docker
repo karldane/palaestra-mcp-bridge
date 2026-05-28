@@ -1,7 +1,7 @@
 # mcp-bridge Docker configuration
 # Baked into the image at /etc/mcp-bridge/config.yaml
 # Used ONLY for first-run DB seeding — after that the DB on the PV is the source of truth.
-# env, env_mappings, and secrets are configured via the web UI after first run.
+# Secret values are NOT included here — they are configured via the web UI and stored encrypted.
 
 server:
   port: "8080"
@@ -14,62 +14,139 @@ encryption:
   keyEnv: ENCRYPTION_KEY
 
 backends:
-  atlassian:
-    command: "npx -y @xuandev/atlassian-mcp"
-    poolSize: 1
-    toolPrefix: "atlassian"
-
-  github:
-    command: "/usr/local/bin/github-mcp-server stdio"
-    poolSize: 1
-    toolPrefix: "github"
-
-  newrelic:
-    command: "/usr/local/bin/newrelic-mcp"
-    poolSize: 1
-    toolPrefix: "newrelic"
-
-  oracle:
-    command: "/usr/local/bin/oracle-mcp"
-    poolSize: 1
-    toolPrefix: "oracle"
-
-  circleci:
-    command: "npx -y @circleci/mcp-server-circleci@latest"
-    poolSize: 1
-    toolPrefix: "circleci"
-
-  slack:
-    command: "/usr/local/bin/slack-mcp --write-enabled"
-    poolSize: 1
-    toolPrefix: "slack"
-
-  k8s:
-    command: "npx -y kubernetes-mcp-server@latest"
-    poolSize: 1
-    toolPrefix: "k8s"
-
-  aws:
-    command: "uvx awslabs.aws-api-mcp-server@latest"
-    poolSize: 1
-    toolPrefix: "aws"
-
   appscan_asoc:
     command: "/usr/local/bin/appscan-asoc-mcp"
     poolSize: 1
+    minPoolSize: 1
+    maxPoolSize: 3
     toolPrefix: "appscan_asoc"
-
-  qdrant:
-    command: "/usr/local/bin/qdrant-mcp"
-    poolSize: 1
-    toolPrefix: "qdrant"
-
-  backoffice:
-    command: "/usr/local/bin/git-lsp-mcp"
-    poolSize: 1
-    toolPrefix: "backoffice_repo_lsp"
+    selfReporting: true
+    env:
+      APPSCAN_BASE_URL: "https://eu.cloud.appscan.com/api/v4"
+    secrets:
+      - name: API_KEY
+        envKey: APPSCAN_KEY_ID
+      - name: API_SECRET
+        envKey: APPSCAN_KEY_SECRET
 
   argocd:
     command: "npx -y argocd-mcp@latest stdio"
     poolSize: 1
+    minPoolSize: 1
+    maxPoolSize: 1
     toolPrefix: "argocd"
+    env:
+      ARGOCD_BASE_URL: "https://argocd.tuskerdirect.com"
+    secrets:
+      - name: API_TOKEN
+        envKey: ARGOCD_API_TOKEN
+
+  atlassian:
+    command: "npx -y @xuandev/atlassian-mcp"
+    poolSize: 2
+    minPoolSize: 2
+    maxPoolSize: 3
+    toolPrefix: "atlassian"
+    env:
+      ATLASSIAN_DOMAIN: "tuskerit.atlassian.net"
+    secrets:
+      - name: API_TOKEN
+        envKey: ATLASSIAN_API_TOKEN
+      - name: EMAIL
+        envKey: ATLASSIAN_EMAIL
+      - name: DOMAIN
+        envKey: ATLASSIAN_DOMAIN
+
+  aws:
+    command: "uvx awslabs.aws-api-mcp-server@latest"
+    poolSize: 1
+    minPoolSize: 1
+    maxPoolSize: 3
+    toolPrefix: "aws"
+
+  backoffice:
+    command: "/usr/local/bin/git-lsp-mcp"
+    poolSize: 1
+    minPoolSize: 1
+    maxPoolSize: 1
+    toolPrefix: "backoffice_repo_lsp"
+    selfReporting: true
+    noKeysRequired: true
+    skipJustification: true
+    stdioFraming: content_length
+    env:
+      REPO_URL: "git@github.com:tusker-direct/backoffice.git"
+      CACHE_DIR: "/tmp"
+      BACKEND_ID: "backoffice"
+      LSP: "perlnavigator"
+      BRANCH: "master"
+      DEBUG: "true"
+
+  circleci:
+    command: "npx -y @circleci/mcp-server-circleci@latest"
+    poolSize: 1
+    minPoolSize: 1
+    maxPoolSize: 1
+    toolPrefix: "circleci"
+    secrets:
+      - name: API_TOKEN
+        envKey: CIRCLECI_TOKEN
+
+  github:
+    command: "/usr/local/bin/github-mcp-server stdio"
+    poolSize: 1
+    minPoolSize: 1
+    maxPoolSize: 3
+    toolPrefix: "github"
+    secrets:
+      - name: API_TOKEN
+        envKey: GITHUB_PERSONAL_ACCESS_TOKEN
+
+  k8s:
+    command: "npx -y kubernetes-mcp-server@latest"
+    poolSize: 1
+    minPoolSize: 1
+    maxPoolSize: 3
+    toolPrefix: "k8s"
+
+  newrelic:
+    command: "/usr/local/bin/newrelic-mcp"
+    poolSize: 1
+    minPoolSize: 1
+    maxPoolSize: 3
+    toolPrefix: "newrelic"
+    selfReporting: true
+    env:
+      NEWRELIC_REGION: "eu"
+    secrets:
+      - name: API_TOKEN
+        envKey: NEWRELIC_API_KEY
+
+  oracle:
+    command: "/usr/local/bin/oracle-mcp"
+    poolSize: 1
+    minPoolSize: 1
+    maxPoolSize: 3
+    toolPrefix: "oracle"
+    selfReporting: true
+
+  qdrant:
+    command: "/usr/local/bin/qdrant-mcp"
+    poolSize: 2
+    minPoolSize: 2
+    maxPoolSize: 4
+    toolPrefix: "qdrant"
+    selfReporting: true
+    noKeysRequired: true
+    skipJustification: true
+    env:
+      QDRANT_VECTOR_SIZE: "768"
+      QDRANT_OLLAMA_URL: "http://ollama.mcp-bridge-infra.svc.cluster.local:11434"
+
+  slack:
+    command: "/usr/local/bin/slack-mcp --write-enabled"
+    poolSize: 1
+    minPoolSize: 1
+    maxPoolSize: 3
+    toolPrefix: "slack"
+    selfReporting: true

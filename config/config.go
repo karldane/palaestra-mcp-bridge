@@ -30,12 +30,19 @@ type ServerConfig struct {
 }
 
 type BackendConfig struct {
-	Command       string            `yaml:"command"`
-	PoolSize      int               `yaml:"poolSize"`
-	Env           map[string]string `yaml:"env"`
-	Secrets       []SecretRef       `yaml:"secrets"`
-	ToolPrefix    string            `yaml:"toolPrefix"`
-	SelfReporting bool              `yaml:"selfReporting"`
+	Command           string            `yaml:"command"`
+	PoolSize          int               `yaml:"poolSize"`
+	MinPoolSize       int               `yaml:"minPoolSize"`
+	MaxPoolSize       int               `yaml:"maxPoolSize"`
+	Env               map[string]string `yaml:"env"`
+	Secrets           []SecretRef       `yaml:"secrets"`
+	ToolPrefix        string            `yaml:"toolPrefix"`
+	SelfReporting     bool              `yaml:"selfReporting"`
+	NoKeysRequired    bool              `yaml:"noKeysRequired"`
+	SkipJustification bool              `yaml:"skipJustification"`
+	IsSystem          bool              `yaml:"isSystem"`
+	StdioFraming      string            `yaml:"stdioFraming"`
+	Enabled           *bool             `yaml:"enabled"`
 }
 
 type SecretRef struct {

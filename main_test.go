@@ -1124,7 +1124,7 @@ func TestIntegration_LiveReload_EditBackendTearsDownPools(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewHandler: %v", err)
 	}
-	wh.OnBackendChange = func(backendID string) {
+	wh.OnBackendChange = func(backendID string, triggerUserID string) {
 		a.toolMuxer.RefreshPrefixes()
 		a.poolManager.RemovePoolsByBackend(backendID)
 	}
@@ -1198,7 +1198,7 @@ func TestIntegration_LiveReload_DeleteBackendTearsDownPools(t *testing.T) {
 	a.store.CreateUser(admin)
 
 	wh, _ := web.NewHandler(a.store, "templates")
-	wh.OnBackendChange = func(backendID string) {
+	wh.OnBackendChange = func(backendID string, triggerUserID string) {
 		a.toolMuxer.RefreshPrefixes()
 		a.poolManager.RemovePoolsByBackend(backendID)
 	}
@@ -1943,4 +1943,361 @@ func TestIntegration_V2FullFlow(t *testing.T) {
 	}
 	// namespace_expand returns tools directly in result (not wrapped)
 	t.Logf("namespace_expand result type: %T", expandResp["result"])
+}
+
+// ---------- Precache tests ----------
+
+func testPrecacheStore(t *testing.T) (*store.Store, string) {
+	t.Helper()
+	dir, err := ioutil.TempDir("", "precache-test-*")
+	if err != nil {
+		t.Fatalf("temp dir: %v", err)
+	}
+	st, err := store.New(filepath.Join(dir, "test.db"))
+	if err != nil {
+		os.RemoveAll(dir)
+		t.Fatalf("store.New: %v", err)
+	}
+	return st, dir
+}
+
+func TestRunPrecacheForBackend_DisabledBackend(t *testing.T) {
+	st, dir := testPrecacheStore(t)
+	defer os.RemoveAll(dir)
+	defer st.Close()
+
+	b := &store.Backend{ID: "disabled-be", Command: "echo", PoolSize: 1, Env: "{}", Enabled: false}
+	if err := st.CreateBackend(b); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := PrecacheConfig{Store: st}
+	n, err := RunPrecacheForBackend(context.Background(), cfg, "disabled-be")
+	if err != nil {
+		t.Fatalf("RunPrecacheForBackend: %v", err)
+	}
+	if n != 0 {
+		t.Errorf("n = %d, want 0 for disabled backend", n)
+	}
+}
+
+func TestRunPrecacheForBackend_UserIDPath(t *testing.T) {
+	orig := fetchToolsForPrecacheFn
+	fetchToolsForPrecacheFn = func(ctx context.Context, command string, env map[string]string) ([]map[string]interface{}, error) {
+		return []map[string]interface{}{{"name": "tool-1", "description": "A test tool"}}, nil
+	}
+	defer func() { fetchToolsForPrecacheFn = orig }()
+
+	st, dir := testPrecacheStore(t)
+	defer os.RemoveAll(dir)
+	defer st.Close()
+
+	u := &store.User{Name: "Admin", Email: "admin@test.com", Password: "secret", Role: "admin"}
+	if err := st.CreateUser(u); err != nil {
+		t.Fatal(err)
+	}
+	b := &store.Backend{ID: "test-be", Command: "echo", PoolSize: 1, Env: "{}", Enabled: true}
+	if err := st.CreateBackend(b); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := PrecacheConfig{UserID: u.ID, Store: st}
+	n, err := RunPrecacheForBackend(context.Background(), cfg, "test-be")
+	if err != nil {
+		t.Fatalf("RunPrecacheForBackend: %v", err)
+	}
+	if n != 1 {
+		t.Errorf("n = %d, want 1", n)
+	}
+
+	// Verify capabilities were cached
+	caps, err := st.GetBackendCapabilities("test-be")
+	if err != nil {
+		t.Fatalf("GetBackendCapabilities: %v", err)
+	}
+	if caps.ToolCount != 1 {
+		t.Errorf("ToolCount = %d, want 1", caps.ToolCount)
+	}
+
+	// Verify precache_error is cleared (SetBackendAvailable was called)
+	be, err := st.GetBackend("test-be")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if be.PrecacheError != "" {
+		t.Errorf("PrecacheError = %q, want empty after successful precache", be.PrecacheError)
+	}
+}
+
+func TestRunPrecacheForBackend_UserEmailPath(t *testing.T) {
+	orig := fetchToolsForPrecacheFn
+	fetchToolsForPrecacheFn = func(ctx context.Context, command string, env map[string]string) ([]map[string]interface{}, error) {
+		return []map[string]interface{}{{"name": "email-tool"}}, nil
+	}
+	defer func() { fetchToolsForPrecacheFn = orig }()
+
+	st, dir := testPrecacheStore(t)
+	defer os.RemoveAll(dir)
+	defer st.Close()
+
+	u := &store.User{Name: "Alice", Email: "alice@test.com", Password: "secret", Role: "user"}
+	if err := st.CreateUser(u); err != nil {
+		t.Fatal(err)
+	}
+	b := &store.Backend{ID: "email-be", Command: "echo", PoolSize: 1, Env: "{}", Enabled: true}
+	if err := st.CreateBackend(b); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := PrecacheConfig{UserEmail: "alice@test.com", Store: st}
+	n, err := RunPrecacheForBackend(context.Background(), cfg, "email-be")
+	if err != nil {
+		t.Fatalf("RunPrecacheForBackend: %v", err)
+	}
+	if n != 1 {
+		t.Errorf("n = %d, want 1", n)
+	}
+}
+
+func TestRunPrecacheForBackend_StartupFallbackStaticEnv(t *testing.T) {
+	orig := fetchToolsForPrecacheFn
+	callCount := 0
+	fetchToolsForPrecacheFn = func(ctx context.Context, command string, env map[string]string) ([]map[string]interface{}, error) {
+		callCount++
+		// First call (static env) succeeds
+		if callCount == 1 {
+			return []map[string]interface{}{{"name": "static-tool"}}, nil
+		}
+		return nil, nil
+	}
+	defer func() { fetchToolsForPrecacheFn = orig }()
+
+	st, dir := testPrecacheStore(t)
+	defer os.RemoveAll(dir)
+	defer st.Close()
+
+	b := &store.Backend{ID: "fallback-be", Command: "echo", PoolSize: 1, Env: "{}", Enabled: true}
+	if err := st.CreateBackend(b); err != nil {
+		t.Fatal(err)
+	}
+
+	// No UserID or UserEmail — startup fallback chain
+	cfg := PrecacheConfig{Store: st}
+	n, err := RunPrecacheForBackend(context.Background(), cfg, "fallback-be")
+	if err != nil {
+		t.Fatalf("RunPrecacheForBackend: %v", err)
+	}
+	if n != 1 {
+		t.Errorf("n = %d, want 1", n)
+	}
+	// Should have called fetchToolsForPrecacheFn exactly once (static env succeeded)
+	if callCount != 1 {
+		t.Errorf("callCount = %d, want 1", callCount)
+	}
+}
+
+func TestRunPrecacheForBackend_StartupFallbackAdminUser(t *testing.T) {
+	orig := fetchToolsForPrecacheFn
+	callCount := 0
+	fetchToolsForPrecacheFn = func(ctx context.Context, command string, env map[string]string) ([]map[string]interface{}, error) {
+		callCount++
+		if callCount == 1 {
+			// Static env returns no tools
+			return nil, nil
+		}
+		// Admin user tokens succeed
+		return []map[string]interface{}{{"name": "admin-tool"}}, nil
+	}
+	defer func() { fetchToolsForPrecacheFn = orig }()
+
+	st, dir := testPrecacheStore(t)
+	defer os.RemoveAll(dir)
+	defer st.Close()
+
+	admin := &store.User{Name: "Admin", Email: "admin@test.com", Password: "secret", Role: "admin"}
+	if err := st.CreateUser(admin); err != nil {
+		t.Fatal(err)
+	}
+	b := &store.Backend{ID: "admin-fb", Command: "echo", PoolSize: 1, Env: "{}", Enabled: true}
+	if err := st.CreateBackend(b); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := PrecacheConfig{Store: st}
+	n, err := RunPrecacheForBackend(context.Background(), cfg, "admin-fb")
+	if err != nil {
+		t.Fatalf("RunPrecacheForBackend: %v", err)
+	}
+	if n != 1 {
+		t.Errorf("n = %d, want 1", n)
+	}
+	if callCount != 2 {
+		t.Errorf("callCount = %d, want 2 (static env + admin tokens)", callCount)
+	}
+}
+
+func TestRunPrecacheForBackend_StartupFallbackNoCredentials(t *testing.T) {
+	orig := fetchToolsForPrecacheFn
+	fetchToolsForPrecacheFn = func(ctx context.Context, command string, env map[string]string) ([]map[string]interface{}, error) {
+		return nil, nil
+	}
+	defer func() { fetchToolsForPrecacheFn = orig }()
+
+	st, dir := testPrecacheStore(t)
+	defer os.RemoveAll(dir)
+	defer st.Close()
+
+	b := &store.Backend{ID: "no-creds", Command: "echo", PoolSize: 1, Env: "{}", Enabled: true}
+	if err := st.CreateBackend(b); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := PrecacheConfig{Store: st}
+	n, err := RunPrecacheForBackend(context.Background(), cfg, "no-creds")
+	if err != nil {
+		t.Fatalf("RunPrecacheForBackend: %v", err)
+	}
+	if n != 0 {
+		t.Errorf("n = %d, want 0 (no credentials)", n)
+	}
+
+	// Should have set precache_error
+	be, err := st.GetBackend("no-creds")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if be.PrecacheError == "" {
+		t.Error("PrecacheError is empty, want error message about no credentials")
+	}
+}
+
+func TestRunPrecacheForBackend_FetchError(t *testing.T) {
+	orig := fetchToolsForPrecacheFn
+	fetchToolsForPrecacheFn = func(ctx context.Context, command string, env map[string]string) ([]map[string]interface{}, error) {
+		return nil, fmt.Errorf("process crashed")
+	}
+	defer func() { fetchToolsForPrecacheFn = orig }()
+
+	st, dir := testPrecacheStore(t)
+	defer os.RemoveAll(dir)
+	defer st.Close()
+
+	u := &store.User{Name: "Admin", Email: "admin@test.com", Password: "secret", Role: "admin"}
+	if err := st.CreateUser(u); err != nil {
+		t.Fatal(err)
+	}
+	b := &store.Backend{ID: "crash-be", Command: "nonexistent", PoolSize: 1, Env: "{}", Enabled: true}
+	if err := st.CreateBackend(b); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := PrecacheConfig{UserID: u.ID, Store: st}
+	_, err := RunPrecacheForBackend(context.Background(), cfg, "crash-be")
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	if err.Error() != "process crashed" {
+		t.Errorf("err = %q, want %q", err.Error(), "process crashed")
+	}
+
+	// Should have set precache_error
+	be, err := st.GetBackend("crash-be")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if be.PrecacheError != "process crashed" {
+		t.Errorf("PrecacheError = %q, want %q", be.PrecacheError, "process crashed")
+	}
+}
+
+func TestBuildEnvForPrecache_Basic(t *testing.T) {
+	b := &store.Backend{
+		ID:          "env-test",
+		Command:     "echo",
+		Env:         `{"MY_KEY": "my_value", "ANOTHER": "val2"}`,
+		EnvMappings: `{}`,
+	}
+	tokens := []store.UserToken{
+		{EnvKey: "USER_TOKEN", Value: "secret123"},
+	}
+
+	env, err := buildEnvForPrecache(b, tokens)
+	if err != nil {
+		t.Fatalf("buildEnvForPrecache: %v", err)
+	}
+	if env["MY_KEY"] != "my_value" {
+		t.Errorf("MY_KEY = %q, want %q", env["MY_KEY"], "my_value")
+	}
+	if env["USER_TOKEN"] != "secret123" {
+		t.Errorf("USER_TOKEN = %q, want %q", env["USER_TOKEN"], "secret123")
+	}
+	if env["MCP_PRECACHE"] != "true" {
+		t.Errorf("MCP_PRECACHE = %q, want true", env["MCP_PRECACHE"])
+	}
+}
+
+func TestBuildEnvForPrecache_WithMappings(t *testing.T) {
+	b := &store.Backend{
+		ID:          "mapping-test",
+		Command:     "echo",
+		Env:         `{"BACKEND_KEY": "backend_val"}`,
+		EnvMappings: `{"USER_KEY": "BACKEND_KEY"}`,
+	}
+	tokens := []store.UserToken{
+		{EnvKey: "USER_KEY", Value: "user_val"},
+	}
+
+	env, err := buildEnvForPrecache(b, tokens)
+	if err != nil {
+		t.Fatalf("buildEnvForPrecache: %v", err)
+	}
+	// USER_KEY should be mapped to BACKEND_KEY
+	// Note: map iteration order is non-deterministic, so either value is valid
+	if env["BACKEND_KEY"] != "user_val" && env["BACKEND_KEY"] != "backend_val" {
+		t.Errorf("BACKEND_KEY = %q, want either 'user_val' or 'backend_val'", env["BACKEND_KEY"])
+	}
+	if env["MCP_PRECACHE"] != "true" {
+		t.Errorf("MCP_PRECACHE = %q, want true", env["MCP_PRECACHE"])
+	}
+}
+
+func TestRunPrecache_AllBackends(t *testing.T) {
+	orig := fetchToolsForPrecacheFn
+	fetchToolsForPrecacheFn = func(ctx context.Context, command string, env map[string]string) ([]map[string]interface{}, error) {
+		return []map[string]interface{}{{"name": "tool"}}, nil
+	}
+	defer func() { fetchToolsForPrecacheFn = orig }()
+
+	st, dir := testPrecacheStore(t)
+	defer os.RemoveAll(dir)
+	defer st.Close()
+
+	u := &store.User{Name: "Admin", Email: "admin@test.com", Password: "secret", Role: "admin"}
+	if err := st.CreateUser(u); err != nil {
+		t.Fatal(err)
+	}
+
+	be1 := &store.Backend{ID: "be-a", Command: "echo", PoolSize: 1, Env: "{}", Enabled: true}
+	be2 := &store.Backend{ID: "be-b", Command: "echo", PoolSize: 1, Env: "{}", Enabled: true}
+	if err := st.CreateBackend(be1); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.CreateBackend(be2); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := PrecacheConfig{UserEmail: "admin@test.com", Store: st}
+	if err := RunPrecache(context.Background(), cfg); err != nil {
+		t.Fatalf("RunPrecache: %v", err)
+	}
+
+	// Both should have cached capabilities
+	for _, id := range []string{"be-a", "be-b"} {
+		caps, err := st.GetBackendCapabilities(id)
+		if err != nil {
+			t.Errorf("GetBackendCapabilities(%s): %v", id, err)
+		} else if caps.ToolCount != 1 {
+			t.Errorf("backends[%s] ToolCount = %d, want 1", id, caps.ToolCount)
+		}
+	}
 }

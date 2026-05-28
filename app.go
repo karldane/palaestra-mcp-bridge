@@ -29,6 +29,7 @@ func (a *app) getPoolForUser(userID, backendID string) *poolmgr.Pool {
 	// Look up backend from DB first, fall back to config.
 	var command string
 	var poolSize, minPoolSize, maxPoolSize int
+	stdioFraming := "newline"
 
 	if b, err := a.store.GetBackend(backendID); err == nil {
 		command = b.Command
@@ -42,12 +43,18 @@ func (a *app) getPoolForUser(userID, backendID string) *poolmgr.Pool {
 		if maxPoolSize == 0 {
 			maxPoolSize = minPoolSize
 		}
+		if b.StdioFraming != "" {
+			stdioFraming = b.StdioFraming
+		}
 		shared.Debugf("getPoolForUser: backend %s found in DB: command=%q, minPoolSize=%d, maxPoolSize=%d", backendID, command, minPoolSize, maxPoolSize)
 	} else if bc, ok := a.config.Backends[backendID]; ok {
 		command = bc.Command
 		poolSize = bc.PoolSize
 		minPoolSize = bc.PoolSize
 		maxPoolSize = bc.PoolSize
+		if bc.StdioFraming != "" {
+			stdioFraming = bc.StdioFraming
+		}
 		shared.Debugf("getPoolForUser: backend %s found in config: command=%q, poolSize=%d", backendID, command, poolSize)
 	} else {
 		// Shouldn't happen, but fall back to defaults.
@@ -64,8 +71,8 @@ func (a *app) getPoolForUser(userID, backendID string) *poolmgr.Pool {
 		return nil
 	}
 	shared.Debugf("getPoolForUser: get-or-create pool for backendID=%s, userID=%s, command=%q, min=%d, max=%d, envCount=%d", backendID, userID, command, minPoolSize, maxPoolSize, len(env))
-	return a.poolManager.GetOrCreateUserPool(
-		backendID, userID, command, minPoolSize, maxPoolSize, env,
+	return a.poolManager.GetOrCreateUserPoolWithFraming(
+		backendID, userID, command, minPoolSize, maxPoolSize, env, stdioFraming,
 	)
 }
 

@@ -33,15 +33,21 @@ type Handler struct {
 	Enforcer    *enforcer.Enforcer
 
 	// OnBackendChange is called after a backend is created, edited, or
-	// deleted. The callback receives the backend ID so the caller can
-	// refresh routing tables and tear down stale pools. It may be nil.
-	OnBackendChange func(backendID string)
+	// deleted. The callback receives the backend ID and the ID of the user
+	// who triggered the change, so the caller can refresh routing tables,
+	// tear down stale pools, and optionally trigger a precache. It may be nil.
+	OnBackendChange func(backendID string, triggerUserID string)
 
 	// OnProbeBackend is called to probe/test a backend. The callback
 	// receives the backend ID, looks up the command, spawns a temporary
 	// process, attempts the MCP handshake, and returns JSON-encoded result
 	// bytes. It may be nil (probe endpoint returns 501).
 	OnProbeBackend func(backendID string) ([]byte, error)
+
+	// OnRefreshTools is called to refresh cached tools for a backend.
+	// The callback receives the backend ID and the triggering user's ID.
+	// Returns the number of tools cached and any error. May be nil.
+	OnRefreshTools func(backendID string, triggerUserID string) (int, error)
 }
 
 // NewHandler creates a Handler by parsing templates from the given directory.
@@ -139,6 +145,7 @@ func (h *Handler) Register(mux *http.ServeMux) {
 	mux.Handle("/web/admin/backends/edit", h.requireAdmin(http.HandlerFunc(h.AdminBackendsEditHandler)))
 	mux.Handle("/web/admin/backends/delete", h.requireAdmin(http.HandlerFunc(h.AdminBackendsDeleteHandler)))
 	mux.Handle("/web/admin/backends/probe", h.requireAdmin(http.HandlerFunc(h.AdminBackendsProbeHandler)))
+	mux.Handle("/web/admin/backends/refresh-tools", h.requireAdmin(http.HandlerFunc(h.AdminBackendsRefreshToolsHandler)))
 	mux.Handle("/web/admin/settings/global_hints", h.requireAdmin(http.HandlerFunc(h.AdminSettingsGlobalHintsHandler)))
 	mux.Handle("/web/admin/oauth-clients", h.requireAdmin(http.HandlerFunc(h.AdminOAuthClientsHandler)))
 	mux.Handle("/web/admin/oauth-clients/create", h.requireAdmin(http.HandlerFunc(h.AdminOAuthClientsCreateHandler)))

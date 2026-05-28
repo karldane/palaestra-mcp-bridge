@@ -89,7 +89,7 @@
     <h2>Backends</h2>
     {{if .Data}}
     {{range .Data}}
-    <div class="backend-card" data-env='{{.Env | rawjson}}' data-env-mappings='{{.EnvMappings | rawjson}}' data-tool-hints='{{.ToolHints | js}}' data-is-system="{{.IsSystem}}" data-min-pool="{{.MinPoolSize}}" data-max-pool="{{.MaxPoolSize}}" data-self-reporting="{{.SelfReporting}}" data-no-keys-required="{{.NoKeysRequired}}" data-skip-justification="{{.SkipJustification}}" data-id="{{.ID}}" data-command="{{.Command | js}}">
+    <div class="backend-card" data-env='{{.Env | rawjson}}' data-env-mappings='{{.EnvMappings | rawjson}}' data-tool-hints='{{.ToolHints | js}}' data-is-system="{{.IsSystem}}" data-min-pool="{{.MinPoolSize}}" data-max-pool="{{.MaxPoolSize}}" data-self-reporting="{{.SelfReporting}}" data-no-keys-required="{{.NoKeysRequired}}" data-skip-justification="{{.SkipJustification}}" data-id="{{.ID}}" data-command="{{.Command | js}}" data-precache-error='{{.PrecacheError | js}}'>
       <div class="backend-info">
         <div class="backend-title">
           {{.ID}}
@@ -103,6 +103,7 @@
           {{if .SkipJustification}}<span class="badge badge-enabled">no justification</span>{{end}}
           {{if .ToolPrefix}}<span class="badge badge-user">{{.ToolPrefix}}</span>{{end}}
           {{if .EncryptedEnv}}<span class="badge badge-encrypted">encrypted</span>{{end}}
+          {{if .PrecacheError}}<span class="badge badge-disabled" title="{{.PrecacheError}}">precache error</span>{{end}}
           <span class="text-muted">Pool: {{.MinPoolSize}}-{{.MaxPoolSize}}</span>
         </div>
       </div>
@@ -117,6 +118,10 @@
         <div class="btn-group">
           <button type="button" class="btn btn-sm btn-secondary" onclick="probeBackend('{{.ID | js}}')" id="probe-btn-{{.ID}}">Test</button>
           <button type="button" class="btn btn-sm btn-secondary" onclick="editBackend('{{.ID | js}}')">Edit</button>
+          <form method="post" action="/web/admin/backends/refresh-tools" style="display:inline;">
+            <input type="hidden" name="id" value="{{.ID}}">
+            <button type="submit" class="btn btn-sm btn-secondary">Refresh Tools</button>
+          </form>
         </div>
         <form method="post" action="/web/admin/backends/delete">
           <input type="hidden" name="id" value="{{.ID}}">

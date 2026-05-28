@@ -41,7 +41,7 @@ func main() {
 	seedUser := flag.Bool("seed", false, "Seed a default test user (admin@localhost / admin) if no users exist")
 	versionFlag := flag.Bool("version", false, "Print version and exit")
 	insecureTesting := flag.Bool("INSECURE_TESTING_MODE", false, "Enable insecure testing mode on port 8081 (no auth, admin user)")
-	precacheEmail := flag.String("precache-tooling", "", "User email to use for precaching backend tools (runs precache and exits)")
+	precacheEmail := flag.String("precache-tooling", "", "User email for manual backend tool precaching (runs precache and exits). In normal operation, precaching is triggered automatically via the admin UI.")
 	flag.Parse()
 
 	if *versionFlag {
@@ -284,10 +284,20 @@ func main() {
 		enf.SetExecutor(executor)
 	}
 
-	// Check for uncached backends and warn
+	// Auto-precache backends that have no cached tools at startup
 	if uncached, err := st.GetUncachedBackends(); err == nil && len(uncached) > 0 {
-		shared.Warnf("WARNING: The following backends have no cached tools: %s", strings.Join(uncached, ", "))
-		shared.Warnf("Run './mcp-bridge --precache-tooling=YOUR_EMAIL' to cache tools for these backends")
+		shared.Infof("Auto-precaching %d backend(s) with missing tool cache: %s", len(uncached), strings.Join(uncached, ", "))
+		go func() {
+			pcCtx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+			defer cancel()
+			pcCfg := PrecacheConfig{Store: st, EnforcerStore: store.NewEnforcerStore(st.DB())}
+			for _, backendID := range uncached {
+				if _, err := RunPrecacheForBackend(pcCtx, pcCfg, backendID); err != nil {
+					shared.Warnf("Startup precache failed for %s: %v", backendID, err)
+					st.SetBackendPrecacheError(backendID, err.Error())
+				}
+			}
+		}()
 	}
 
 	// Start background retry loop for unavailable backends
@@ -313,11 +323,42 @@ func main() {
 	// Wire live reload: when an admin creates/edits/deletes a backend via the
 	// web UI, refresh the muxer prefix map and tear down stale pools so that
 	// subsequent requests pick up the new configuration immediately.
-	webHandler.OnBackendChange = func(backendID string) {
+	webHandler.OnBackendChange = func(backendID string, triggerUserID string) {
 		toolMuxer.RefreshPrefixes()
 		removed := pm.RemovePoolsByBackend(backendID)
 		shared.Infof("backend %s changed: refreshed prefixes, removed %d pool(s)", backendID, removed)
+
+		if triggerUserID != "" {
+			go func() {
+				pcCtx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+				defer cancel()
+				pcCfg := PrecacheConfig{
+					UserID:        triggerUserID,
+					Store:         st,
+					EnforcerStore: store.NewEnforcerStore(st.DB()),
+				}
+				n, err := RunPrecacheForBackend(pcCtx, pcCfg, backendID)
+				if err != nil {
+					shared.Warnf("backend %s: precache failed: %v", backendID, err)
+					st.SetBackendPrecacheError(backendID, err.Error())
+				} else {
+					shared.Infof("backend %s: precached %d tool(s) after change", backendID, n)
+				}
+			}()
+		}
 	}
+	// Wire refresh-tools: when admin clicks "Refresh Tools", run precache synchronously.
+	webHandler.OnRefreshTools = func(backendID string, triggerUserID string) (int, error) {
+		pcCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		pcCfg := PrecacheConfig{
+			UserID:        triggerUserID,
+			Store:         st,
+			EnforcerStore: store.NewEnforcerStore(st.DB()),
+		}
+		return RunPrecacheForBackend(pcCtx, pcCfg, backendID)
+	}
+
 	// Wire probe: when admin clicks "Test" on a backend, spawn a temporary
 	// process and attempt the MCP handshake, returning JSON result bytes.
 	webHandler.OnProbeBackend = func(backendID string) ([]byte, error) {
@@ -355,7 +396,7 @@ func main() {
 		// Debug: log backend being probed (don't log env var values)
 		shared.Debugf("ProbeBackend: backend=%s, command=%q, env_count=%d", backendID, b.Command, len(env))
 
-		result := poolmgr.ProbeBackend(b.Command, env, 30*time.Second)
+		result := poolmgr.ProbeBackend(b.Command, env, 30*time.Second, b.StdioFraming)
 		return json.Marshal(result)
 	}
 	webHandler.Register(mux)
@@ -479,7 +520,7 @@ func StartBackendRetryLoop(ctx context.Context, st *store.Store) {
 				// Quick test spawn — only mark available on success.
 				// Don't mark unavailable on failure because this probe lacks user
 				// tokens; real requests handle marking unavailable when they fail.
-				result := poolmgr.ProbeBackend(backend.Command, env, 30*time.Second)
+				result := poolmgr.ProbeBackend(backend.Command, env, 30*time.Second, backend.StdioFraming)
 				if result.Status == "ok" {
 					shared.Infof("Backend retry: %s reconnected successfully", backendID)
 					st.SetBackendAvailable(backendID)

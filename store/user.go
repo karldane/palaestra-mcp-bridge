@@ -66,6 +66,18 @@ func (s *Store) GetUser(id string) (*User, error) {
 	return u, nil
 }
 
+// FirstAdminUser returns the first admin user ordered by created_at, or nil if none exists.
+func (s *Store) FirstAdminUser() *User {
+	var u User
+	err := s.db.QueryRow(
+		`SELECT id, email, role FROM users WHERE role = 'admin' ORDER BY created_at ASC LIMIT 1`,
+	).Scan(&u.ID, &u.Email, &u.Role)
+	if err != nil {
+		return nil
+	}
+	return &u
+}
+
 // GetUserByEmail retrieves a user by email address.
 func (s *Store) GetUserByEmail(email string) (*User, error) {
 	u := &User{}

@@ -356,45 +356,15 @@ func TestBackendEnvEncryption_NoKeyFallback(t *testing.T) {
 	defer os.RemoveAll(dir)
 	defer s.Close()
 
-	// Without encryption key, env should be stored as plaintext
-	envJSON := `{"NO_ENCRYPTION":"plaintext-stored"}`
 	b := &Backend{
 		ID:      "no-key-be",
 		Command: "echo test",
-		Env:     envJSON,
+		Env:     `{"SHOULD":"FAIL"}`,
 		Enabled: true,
 	}
-	if err := s.CreateBackend(b); err != nil {
-		t.Fatalf("CreateBackend failed: %v", err)
-	}
-
-	// Verify encrypted_env is empty
-	var encryptedEnv string
-	err := s.db.QueryRow(`SELECT COALESCE(encrypted_env, '') FROM backends WHERE id = ?`, b.ID).Scan(&encryptedEnv)
-	if err != nil {
-		t.Fatalf("query failed: %v", err)
-	}
-	if encryptedEnv != "" {
-		t.Error("encrypted_env should be empty when no encryption key is available")
-	}
-
-	// Verify env column has the plaintext
-	var envCol string
-	err = s.db.QueryRow(`SELECT env FROM backends WHERE id = ?`, b.ID).Scan(&envCol)
-	if err != nil {
-		t.Fatalf("query env column failed: %v", err)
-	}
-	if envCol != envJSON {
-		t.Errorf("env column mismatch:\n  want: %s\n  got:  %s", envJSON, envCol)
-	}
-
-	// GetBackend should still return the correct env
-	got, err := s.GetBackend(b.ID)
-	if err != nil {
-		t.Fatalf("GetBackend failed: %v", err)
-	}
-	if got.Env != envJSON {
-		t.Errorf("GetBackend.Env mismatch:\n  want: %s\n  got:  %s", envJSON, got.Env)
+	err := s.CreateBackend(b)
+	if err == nil {
+		t.Fatal("expected error when creating backend with env but no encryption key")
 	}
 }
 

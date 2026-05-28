@@ -18,22 +18,115 @@ import (
 
 // PrecacheConfig holds configuration for precaching
 type PrecacheConfig struct {
-	UserEmail     string
+	UserEmail     string                    // CLI mode only (--precache-tooling flag)
+	UserID        string                    // UI mode: logged-in user's ID; takes precedence over fallback chain
 	Store         *store.Store
 	EnforcerStore enforcer.EnforcerStore
 }
 
-// RunPrecache scans all enabled backends for a user and caches their tool definitions
+// fetchToolsForPrecacheFn is a package-level variable so tests can replace it.
+var fetchToolsForPrecacheFn = fetchToolsForPrecacheImpl
+
+// RunPrecacheForBackend precaches tools for a single backend.
+// If cfg.UserID is set, that user's tokens are used (UI-triggered path).
+// If cfg.UserEmail is set, that user's tokens are used (CLI path).
+// Otherwise the startup fallback chain is used (static env -> first admin -> no tokens).
+// Returns the number of tools cached and any error encountered.
+func RunPrecacheForBackend(ctx context.Context, cfg PrecacheConfig, backendID string) (int, error) {
+	backend, err := cfg.Store.GetBackend(backendID)
+	if err != nil {
+		return 0, fmt.Errorf("get backend %s: %w", backendID, err)
+	}
+	if !backend.Enabled {
+		return 0, nil
+	}
+
+	// Resolve tokens based on config
+	var tokens []store.UserToken
+	useStartupFallback := false
+
+	switch {
+	case cfg.UserID != "":
+		tokens, err = cfg.Store.GetUserTokensDecrypted(cfg.UserID, backendID)
+		if err != nil {
+			return 0, fmt.Errorf("get tokens for user %s: %w", cfg.UserID, err)
+		}
+	case cfg.UserEmail != "":
+		user, err := cfg.Store.GetUserByEmail(cfg.UserEmail)
+		if err != nil {
+			return 0, fmt.Errorf("get user by email: %w", err)
+		}
+		tokens, err = cfg.Store.GetUserTokensDecrypted(user.ID, backendID)
+		if err != nil {
+			shared.Warnf("Failed to get tokens for %s: %v", backendID, err)
+			tokens = nil
+		}
+	default:
+		useStartupFallback = true
+	}
+
+	env, err := buildEnvForPrecache(backend, tokens)
+	if err != nil {
+		return 0, fmt.Errorf("build env: %w", err)
+	}
+
+	var tools []map[string]interface{}
+	tools, err = fetchToolsForPrecacheFn(ctx, backend.Command, env)
+	if err == nil && len(tools) == 0 {
+		err = fmt.Errorf("no tools returned")
+	}
+
+	// Startup fallback chain: static env -> first admin -> no tokens
+	if useStartupFallback && (err != nil || len(tools) == 0) {
+		shared.Infof("Startup precache %s: static env returned %d tools, trying admin user", backendID, len(tools))
+		admin := cfg.Store.FirstAdminUser()
+		if admin != nil {
+			adminTokens, tokenErr := cfg.Store.GetUserTokensDecrypted(admin.ID, backendID)
+			if tokenErr == nil {
+				adminEnv, envErr := buildEnvForPrecache(backend, adminTokens)
+				if envErr == nil {
+					adminTools, spawnErr := fetchToolsForPrecacheFn(ctx, backend.Command, adminEnv)
+					if spawnErr == nil {
+						tools = adminTools
+						err = nil
+					}
+				}
+			}
+		}
+	}
+
+	if useStartupFallback && (err != nil || len(tools) == 0) {
+		shared.Warnf("Startup precache %s: no credentials available, storing 0 tools", backendID)
+		cfg.Store.SetBackendPrecacheError(backendID, "no credentials available for precache")
+		return 0, nil
+	}
+
+	if err != nil {
+		cfg.Store.SetBackendPrecacheError(backendID, err.Error())
+		return 0, err
+	}
+
+	// Cache the tools
+	if err := cacheBackendCapabilities(cfg.Store, backendID, tools); err != nil {
+		cfg.Store.SetBackendPrecacheError(backendID, err.Error())
+		return 0, fmt.Errorf("cache capabilities: %w", err)
+	}
+
+	// Cache safety profiles from tool metadata
+	if cfg.EnforcerStore != nil {
+		cacheEnforcerProfiles(cfg.EnforcerStore, backendID, tools)
+	}
+
+	// Mark as available (also clears precache_error)
+	cfg.Store.SetBackendAvailable(backendID)
+	return len(tools), nil
+}
+
+// RunPrecache scans all enabled backends and caches their tool definitions.
+// Refactored to call RunPrecacheForBackend per backend.
 func RunPrecache(ctx context.Context, cfg PrecacheConfig) error {
 	shared.Infof("Starting tool precache for user %s", cfg.UserEmail)
 
-	// Get user
-	user, err := cfg.Store.GetUserByEmail(cfg.UserEmail)
-	if err != nil {
-		return fmt.Errorf("get user: %w", err)
-	}
-
-	// Get enabled backends
 	backends, err := cfg.Store.ListBackends()
 	if err != nil {
 		return fmt.Errorf("list backends: %w", err)
@@ -46,113 +139,81 @@ func RunPrecache(ctx context.Context, cfg PrecacheConfig) error {
 		if !backend.Enabled {
 			continue
 		}
-
-		shared.Infof("Precaching tools for backend: %s", backend.ID)
-
-		// Get user tokens for this backend (with decryption)
-		tokens, err := cfg.Store.GetUserTokensDecrypted(user.ID, backend.ID)
-		if err != nil {
-			shared.Warnf("Failed to get tokens for %s: %v", backend.ID, err)
+		if _, err := RunPrecacheForBackend(ctx, cfg, backend.ID); err != nil {
+			shared.Warnf("Precache failed for %s: %v", backend.ID, err)
 			failed = append(failed, backend.ID)
-			continue
+		} else {
+			succeeded = append(succeeded, backend.ID)
 		}
-
-		// Build environment for the backend
-		env, err := buildEnvForPrecache(backend, tokens)
-		if err != nil {
-			shared.Warnf("Failed to build env for %s: %v", backend.ID, err)
-			failed = append(failed, backend.ID)
-			continue
-		}
-
-		// Spawn and get tools
-		tools, err := fetchToolsForPrecache(ctx, backend.Command, env)
-		if err != nil {
-			shared.Warnf("Failed to fetch tools for %s: %v", backend.ID, err)
-			cfg.Store.SetBackendUnavailable(backend.ID, err.Error())
-			failed = append(failed, backend.ID)
-			continue
-		}
-
-		// Cache the tools
-		if err := cacheBackendCapabilities(cfg.Store, backend.ID, tools); err != nil {
-			shared.Warnf("Failed to cache tools for %s: %v", backend.ID, err)
-			failed = append(failed, backend.ID)
-			continue
-		}
-
-		// Cache safety profiles from tool metadata
-		if cfg.EnforcerStore != nil {
-			for _, tool := range tools {
-				if meta, ok := tool["_meta"].(map[string]interface{}); ok {
-					if profile, ok := meta["enforcer_profile"].(map[string]interface{}); ok {
-						getStr := func(k string) string {
-							if v, ok := profile[k]; ok {
-								if s, ok := v.(string); ok {
-									return s
-								}
-							}
-							return ""
-						}
-						getFloat := func(k string) float64 {
-							if v, ok := profile[k]; ok {
-								if f, ok := v.(float64); ok {
-									return f
-								}
-							}
-							return 0
-						}
-						getBool := func(k string) bool {
-							if v, ok := profile[k]; ok {
-								if b, ok := v.(bool); ok {
-									return b
-								}
-							}
-							return false
-						}
-						toolName := ""
-						if n, ok := tool["name"].(string); ok {
-							toolName = n
-						}
-						toolProfile := enforcer.ToolProfileRow{
-							ID:           uuid.NewString(),
-							BackendID:    backend.ID,
-							ToolName:     toolName,
-							RiskLevel:    getStr("risk_level"),
-							ImpactScope:  getStr("impact_scope"),
-							ResourceCost: int(getFloat("resource_cost")),
-							RequiresHITL: getBool("requires_hitl"),
-							PIIExposure:  getBool("pii_exposure"),
-							Idempotent:   getBool("idempotent"),
-							RawProfile:   "",
-							ScannedAt:    time.Now(),
-						}
-						// Convert raw profile to JSON string if it's a map
-						if profileJSON, err := json.Marshal(profile); err == nil {
-							toolProfile.RawProfile = string(profileJSON)
-						}
-						if err := cfg.EnforcerStore.UpsertToolProfile(toolProfile); err != nil {
-							shared.Warnf("Failed to cache safety profile for %s/%s: %v", backend.ID, tool["name"], err)
-							// Continue anyway - tool cache succeeded
-						}
-					}
-				}
-			}
-		}
-
-		// Mark as available
-		cfg.Store.SetBackendAvailable(backend.ID)
-		shared.Infof("Cached %d tools for backend %s", len(tools), backend.ID)
-		succeeded = append(succeeded, backend.ID)
 	}
 
-	// Summary
 	shared.Infof("Precache complete: %d succeeded, %d failed", len(succeeded), len(failed))
 	if len(failed) > 0 {
 		shared.Warnf("Failed backends: %s", strings.Join(failed, ", "))
+		return fmt.Errorf("precache failed for backends: %s", strings.Join(failed, ", "))
 	}
-
 	return nil
+}
+
+// cacheEnforcerProfiles stores safety profiles from tool metadata into the enforcer store.
+func cacheEnforcerProfiles(es enforcer.EnforcerStore, backendID string, tools []map[string]interface{}) {
+	for _, tool := range tools {
+		meta, ok := tool["_meta"].(map[string]interface{})
+		if !ok {
+			continue
+		}
+		profile, ok := meta["enforcer_profile"].(map[string]interface{})
+		if !ok {
+			continue
+		}
+		getStr := func(k string) string {
+			if v, ok := profile[k]; ok {
+				if s, ok := v.(string); ok {
+					return s
+				}
+			}
+			return ""
+		}
+		getFloat := func(k string) float64 {
+			if v, ok := profile[k]; ok {
+				if f, ok := v.(float64); ok {
+					return f
+				}
+			}
+			return 0
+		}
+		getBool := func(k string) bool {
+			if v, ok := profile[k]; ok {
+				if b, ok := v.(bool); ok {
+					return b
+				}
+			}
+			return false
+		}
+		toolName := ""
+		if n, ok := tool["name"].(string); ok {
+			toolName = n
+		}
+		toolProfile := enforcer.ToolProfileRow{
+			ID:           uuid.NewString(),
+			BackendID:    backendID,
+			ToolName:     toolName,
+			RiskLevel:    getStr("risk_level"),
+			ImpactScope:  getStr("impact_scope"),
+			ResourceCost: int(getFloat("resource_cost")),
+			RequiresHITL: getBool("requires_hitl"),
+			PIIExposure:  getBool("pii_exposure"),
+			Idempotent:   getBool("idempotent"),
+			RawProfile:   "",
+			ScannedAt:    time.Now(),
+		}
+		if profileJSON, err := json.Marshal(profile); err == nil {
+			toolProfile.RawProfile = string(profileJSON)
+		}
+		if err := es.UpsertToolProfile(toolProfile); err != nil {
+			shared.Warnf("Failed to cache safety profile for %s/%s: %v", backendID, toolName, err)
+		}
+	}
 }
 
 // buildEnvForPrecache builds environment variables for a backend
@@ -234,8 +295,8 @@ func buildEnvForPrecache(backend *store.Backend, tokens []store.UserToken) (map[
 	return env, nil
 }
 
-// fetchToolsForPrecache spawns a backend process and requests its tools
-func fetchToolsForPrecache(ctx context.Context, command string, env map[string]string) ([]map[string]interface{}, error) {
+// fetchToolsForPrecacheImpl spawns a backend process and requests its tools
+func fetchToolsForPrecacheImpl(ctx context.Context, command string, env map[string]string) ([]map[string]interface{}, error) {
 	// Parse command
 	parts := strings.Fields(command)
 	if len(parts) == 0 {

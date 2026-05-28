@@ -742,7 +742,7 @@ func TestPoolManager_RemovePoolsByBackend_OnlyUserPools(t *testing.T) {
 
 func TestProbeBackend_SpawnError(t *testing.T) {
 	// Use an explicit empty PATH so that "sh" cannot be found by exec.
-	result := ProbeBackend("/nonexistent-command-xyz", []string{"PATH="}, 2*time.Second)
+	result := ProbeBackend("/nonexistent-command-xyz", []string{"PATH="}, 2*time.Second, "newline")
 	if result == nil {
 		t.Fatal("expected non-nil ProbeResult")
 	}
@@ -759,7 +759,7 @@ func TestProbeBackend_OK(t *testing.T) {
 	// JSON-RPC message is echoed back as-is — which is a valid JSON-RPC
 	// response (it has an "id" field). The response dispatcher will route
 	// it to the pending request channel.
-	result := ProbeBackend("cat", nil, 3*time.Second)
+	result := ProbeBackend("cat", nil, 3*time.Second, "newline")
 	if result == nil {
 		t.Fatal("expected non-nil ProbeResult")
 	}
@@ -773,7 +773,7 @@ func TestProbeBackend_OK(t *testing.T) {
 
 func TestProbeBackend_Timeout(t *testing.T) {
 	// sleep never writes anything to stdout, so the handshake times out.
-	result := ProbeBackend("sleep 60", nil, 500*time.Millisecond)
+	result := ProbeBackend("sleep 60", nil, 500*time.Millisecond, "newline")
 	if result == nil {
 		t.Fatal("expected non-nil ProbeResult")
 	}

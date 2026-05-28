@@ -71,7 +71,16 @@ func (s *Store) UpdateBackendStatus(bs BackendStatus) error {
 	return err
 }
 
-// SetBackendAvailable marks a backend as available and resets retry count
+// SetBackendPrecacheError records a precache failure message with timestamp on the backends table.
+func (s *Store) SetBackendPrecacheError(backendID, message string) error {
+	_, err := s.db.Exec(
+		`UPDATE backends SET precache_error = ?, precache_error_at = CURRENT_TIMESTAMP WHERE id = ?`,
+		message, backendID,
+	)
+	return err
+}
+
+// SetBackendAvailable marks a backend as available, resets retry count, and clears precache errors.
 func (s *Store) SetBackendAvailable(backendID string) error {
 	now := time.Now()
 	_, err := s.db.Exec(`
@@ -83,6 +92,10 @@ func (s *Store) SetBackendAvailable(backendID string) error {
 			retry_count = 0,
 			updated_at = CURRENT_TIMESTAMP`,
 		backendID, now)
+	if err != nil {
+		return err
+	}
+	_, err = s.db.Exec(`UPDATE backends SET precache_error = NULL, precache_error_at = NULL WHERE id = ?`, backendID)
 	return err
 }
 

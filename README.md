@@ -108,6 +108,9 @@ go build -o mcp-bridge .
 # Web UI: http://localhost:8080/web/login
 ```
 
+For a detailed walkthrough including encryption setup, adding backends,
+authentication, and enforcer policies, see [Getting Started](docs/GETTING_STARTED.md).
+
 ## API Reference
 
 ### MCP Endpoints (OAuth / API key protected)
@@ -263,5 +266,6 @@ export ENCRYPTION_KEY=$ENCRYPTION_KEY
 ```
 
 For detailed encryption documentation:
+- [Getting Started](docs/GETTING_STARTED.md) - Full setup guide with encryption, backends, auth, and policies
 - [Encryption Setup Guide](docs/ENCRYPTION.md) - Setup, migration, and troubleshooting
 - [Security Architecture](docs/SECURITY.md) - Architecture details and threat model

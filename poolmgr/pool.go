@@ -50,6 +50,7 @@ type Pool struct {
 	lastFailureReason string // Last failure reason (e.g. stderr from failed process)
 	secretInjector    secret.SecretInjector
 	secretsPath       string
+	StdioFraming      string // stdio transport framing: "" or "newline" (default) or "content_length"
 }
 
 func NewPool(backendID string, size int, command string) *Pool {
@@ -425,8 +426,13 @@ func (pool *Pool) performMCPHandshake(proc *ManagedProcess) bool {
 
 	respCh := pool.RegisterRequest(initID)
 
-	buf.WriteByte('\n')
-	proc.Stdin.Write(buf.Bytes())
+	if pool.StdioFraming == "content_length" {
+		packet := formatMCPPacket(buf.String())
+		proc.Stdin.Write([]byte(packet))
+	} else {
+		buf.WriteByte('\n')
+		proc.Stdin.Write(buf.Bytes())
+	}
 
 	select {
 	case resp := <-respCh:
@@ -467,8 +473,13 @@ func (pool *Pool) performMCPHandshake(proc *ManagedProcess) bool {
 	if err := json.Compact(buf, notifBody); err != nil {
 		buf.Write(notifBody)
 	}
-	buf.WriteByte('\n')
-	proc.Stdin.Write(buf.Bytes())
+	if pool.StdioFraming == "content_length" {
+		packet := formatMCPPacket(buf.String())
+		proc.Stdin.Write([]byte(packet))
+	} else {
+		buf.WriteByte('\n')
+		proc.Stdin.Write(buf.Bytes())
+	}
 
 	return true
 }
