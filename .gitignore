@@ -25,6 +25,9 @@ config.yaml
 # Build artifacts
 docker_build
 docker_logs
+/mcp-bridge-extract
+/extract
+/migrate
 
 # Dependencies
 /node_modules/
