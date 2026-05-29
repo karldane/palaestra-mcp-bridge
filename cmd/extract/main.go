@@ -13,6 +13,7 @@ import (
 
 	"github.com/mcp-bridge/mcp-bridge/internal/crypto"
 	"github.com/mcp-bridge/mcp-bridge/store"
+	"golang.org/x/term"
 
 	_ "github.com/mattn/go-sqlite3"
 )
@@ -94,9 +95,20 @@ func main() {
 		os.Exit(1)
 	}
 	if *password == "" {
-		fmt.Fprintln(os.Stderr, "Error: --password is required")
-		flag.Usage()
-		os.Exit(1)
+		fmt.Fprint(os.Stderr, "Password: ")
+		p, err := term.ReadPassword(int(os.Stdin.Fd()))
+		fmt.Fprintln(os.Stderr)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error: failed to read password: %v\n", err)
+			os.Exit(1)
+		}
+		if len(p) == 0 {
+			fmt.Fprintln(os.Stderr, "Error: --password is required (or provide it interactively)")
+			flag.Usage()
+			os.Exit(1)
+		}
+		s := string(p)
+		password = &s
 	}
 
 	key := *encryptionKey
