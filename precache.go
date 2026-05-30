@@ -12,6 +12,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/mcp-bridge/mcp-bridge/enforcer"
+	"github.com/mcp-bridge/mcp-bridge/muxer"
 	"github.com/mcp-bridge/mcp-bridge/shared"
 	"github.com/mcp-bridge/mcp-bridge/store"
 )
@@ -41,8 +42,9 @@ func RunPrecacheForBackend(ctx context.Context, cfg PrecacheConfig, backendID st
 		return 0, nil
 	}
 
-	// Resolve tokens based on config
+	// Resolve tokens and user based on config
 	var tokens []store.UserToken
+	var user *store.User
 	useStartupFallback := false
 
 	switch {
@@ -51,8 +53,12 @@ func RunPrecacheForBackend(ctx context.Context, cfg PrecacheConfig, backendID st
 		if err != nil {
 			return 0, fmt.Errorf("get tokens for user %s: %w", cfg.UserID, err)
 		}
+		user, err = cfg.Store.GetUser(cfg.UserID)
+		if err != nil {
+			shared.Warnf("Failed to get user %s: %v", cfg.UserID, err)
+		}
 	case cfg.UserEmail != "":
-		user, err := cfg.Store.GetUserByEmail(cfg.UserEmail)
+		user, err = cfg.Store.GetUserByEmail(cfg.UserEmail)
 		if err != nil {
 			return 0, fmt.Errorf("get user by email: %w", err)
 		}
@@ -65,7 +71,7 @@ func RunPrecacheForBackend(ctx context.Context, cfg PrecacheConfig, backendID st
 		useStartupFallback = true
 	}
 
-	env, err := buildEnvForPrecache(backend, tokens)
+	env, err := buildEnvForPrecache(backend, tokens, user)
 	if err != nil {
 		return 0, fmt.Errorf("build env: %w", err)
 	}
@@ -83,7 +89,7 @@ func RunPrecacheForBackend(ctx context.Context, cfg PrecacheConfig, backendID st
 		if admin != nil {
 			adminTokens, tokenErr := cfg.Store.GetUserTokensDecrypted(admin.ID, backendID)
 			if tokenErr == nil {
-				adminEnv, envErr := buildEnvForPrecache(backend, adminTokens)
+				adminEnv, envErr := buildEnvForPrecache(backend, adminTokens, admin)
 				if envErr == nil {
 					adminTools, spawnErr := fetchToolsForPrecacheFn(ctx, backend.Command, adminEnv)
 					if spawnErr == nil {
@@ -216,8 +222,10 @@ func cacheEnforcerProfiles(es enforcer.EnforcerStore, backendID string, tools []
 	}
 }
 
-// buildEnvForPrecache builds environment variables for a backend
-func buildEnvForPrecache(backend *store.Backend, tokens []store.UserToken) (map[string]string, error) {
+// buildEnvForPrecache builds environment variables for a backend during precache.
+// If a user is provided, template expressions ({{...}}) in the backend's env are
+// resolved against that user's record so the backend receives real credentials.
+func buildEnvForPrecache(backend *store.Backend, tokens []store.UserToken, user *store.User) (map[string]string, error) {
 	// Start with current process environment
 	env := make(map[string]string)
 	for _, e := range os.Environ() {
@@ -283,7 +291,8 @@ func buildEnvForPrecache(backend *store.Backend, tokens []store.UserToken) (map[
 					result[k] = v
 				}
 			}
-			return result, nil
+			env = result
+			return resolveTemplatesInPrecacheEnv(env, user), nil
 		}
 	}
 
@@ -292,7 +301,32 @@ func buildEnvForPrecache(backend *store.Backend, tokens []store.UserToken) (map[
 		env[token.EnvKey] = token.Value
 	}
 
-	return env, nil
+	return resolveTemplatesInPrecacheEnv(env, user), nil
+}
+
+// resolveTemplatesInPrecacheEnv resolves template expressions in the precache
+// env map against the given user. If user is nil, template values are left
+// in place (they will be stripped by the caller if needed).
+func resolveTemplatesInPrecacheEnv(env map[string]string, user *store.User) map[string]string {
+	if user == nil {
+		return env
+	}
+	hasTmpl := false
+	for _, v := range env {
+		if strings.Contains(v, "{{") {
+			hasTmpl = true
+			break
+		}
+	}
+	if !hasTmpl {
+		return env
+	}
+	resolved, err := muxer.ResolveEnvTemplates(env, user)
+	if err != nil {
+		shared.Warnf("resolveTemplatesInPrecacheEnv: template resolution failed: %v", err)
+		return env
+	}
+	return resolved
 }
 
 // fetchToolsForPrecacheImpl spawns a backend process and requests its tools

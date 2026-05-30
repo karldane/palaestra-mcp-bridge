@@ -1,0 +1,34 @@
+# Stage 1: Backend builder — builds all Go MCP backends
+FROM golang:1.25 AS backend-builder
+
+WORKDIR /build
+
+RUN apt-get update && apt-get install -y gcc libc-dev && rm -rf /var/lib/apt/lists/*
+
+ENV GONOSUMDB=github.com/karldane/*
+ENV GONOSUMCHECK=github.com/karldane/*
+
+RUN GOPROXY=direct GONOSUMDB=github.com/karldane/* GOBIN=/usr/local/bin go install github.com/karldane/qdrant-mcp@latest
+RUN GOPROXY=direct GONOSUMDB=github.com/karldane/* GOBIN=/usr/local/bin go install github.com/karldane/newrelic-mcp@latest
+RUN GOPROXY=direct GONOSUMDB=github.com/karldane/* GOBIN=/usr/local/bin go install github.com/karldane/oracle-mcp@latest
+RUN GOPROXY=direct GONOSUMDB=github.com/karldane/* GOBIN=/usr/local/bin go install github.com/karldane/slack-mcp@latest
+RUN GOPROXY=direct GONOSUMDB=github.com/karldane/* GOBIN=/usr/local/bin go install github.com/karldane/appscan-asoc-mcp@latest
+RUN GOPROXY=direct GONOSUMDB=github.com/karldane/* GOBIN=/usr/local/bin go install github.com/karldane/git-lsp-mcp@latest
+RUN GOPROXY=direct GOBIN=/usr/local/bin go install github.com/github/github-mcp-server/cmd/github-mcp-server@v1.0.5
+
+# Stage 2: Runtime base — OS dependencies and language runtimes
+FROM ubuntu:24.04 AS runtime-base
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+RUN apt-get update && apt-get install -y ca-certificates curl && \
+    curl -fsSL https://deb.nodesource.com/setup_20.x | bash - && \
+    apt-get install -y nodejs python3 python3-pip sqlite3 \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN pip3 install --no-cache-dir uv --break-system-packages
+
+# Stage 3: Base — runtimes + backends (pushable image)
+FROM runtime-base AS base
+
+COPY --from=backend-builder /usr/local/bin/ /usr/local/bin/

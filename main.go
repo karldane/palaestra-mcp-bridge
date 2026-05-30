@@ -361,7 +361,7 @@ func main() {
 
 	// Wire probe: when admin clicks "Test" on a backend, spawn a temporary
 	// process and attempt the MCP handshake, returning JSON result bytes.
-	webHandler.OnProbeBackend = func(backendID string) ([]byte, error) {
+	webHandler.OnProbeBackend = func(backendID string, userID string) ([]byte, error) {
 		b, err := st.GetBackend(backendID)
 		if err != nil {
 			return nil, fmt.Errorf("backend %s found: %w", backendID, err)
@@ -383,10 +383,18 @@ func main() {
 			}
 		}
 
-		// Apply static Env template (higher priority than mappings)
+		// Parse backend env and resolve templates against the requesting user
 		if b.Env != "" && b.Env != "{}" {
+			var envStr = b.Env
+			if strings.HasPrefix(envStr, "\"") && strings.HasSuffix(envStr, "\"") {
+				var unquoted string
+				if err := json.Unmarshal([]byte(envStr), &unquoted); err == nil {
+					envStr = unquoted
+				}
+			}
 			var envMap map[string]string
-			if err := json.Unmarshal([]byte(b.Env), &envMap); err == nil {
+			if err := json.Unmarshal([]byte(envStr), &envMap); err == nil && len(envMap) > 0 {
+				envMap = resolveTemplatesForUser(envMap, userID, st)
 				for k, v := range envMap {
 					env = append(env, k+"="+v)
 				}
@@ -398,6 +406,28 @@ func main() {
 
 		result := poolmgr.ProbeBackend(b.Command, env, 30*time.Second, b.StdioFraming)
 		return json.Marshal(result)
+	}
+
+	// Wire resolve-env: resolve template expressions in an env JSON string
+	// against the requesting user (used by the preview button in the admin UI).
+	webHandler.OnResolveEnv = func(envJSON string, userID string) (string, error) {
+		var envStr = envJSON
+		if strings.HasPrefix(envStr, "\"") && strings.HasSuffix(envStr, "\"") {
+			var unquoted string
+			if err := json.Unmarshal([]byte(envStr), &unquoted); err == nil {
+				envStr = unquoted
+			}
+		}
+		var envMap map[string]string
+		if err := json.Unmarshal([]byte(envStr), &envMap); err != nil {
+			return "", fmt.Errorf("invalid env JSON: %w", err)
+		}
+		resolved := resolveTemplatesForUser(envMap, userID, st)
+		out, err := json.Marshal(resolved)
+		if err != nil {
+			return "", err
+		}
+		return string(out), nil
 	}
 	webHandler.Register(mux)
 
@@ -530,4 +560,31 @@ func StartBackendRetryLoop(ctx context.Context, st *store.Store) {
 			}
 		}
 	}
+}
+
+// resolveTemplatesForUser resolves {{...}} template expressions in an env map
+// against the given user. Returns the resolved map (or the original if the user
+// cannot be looked up or no templates are present).
+func resolveTemplatesForUser(envMap map[string]string, userID string, st *store.Store) map[string]string {
+	hasTmpl := false
+	for _, v := range envMap {
+		if strings.Contains(v, "{{") {
+			hasTmpl = true
+			break
+		}
+	}
+	if !hasTmpl {
+		return envMap
+	}
+	user, err := st.GetUser(userID)
+	if err != nil {
+		shared.Warnf("resolveTemplatesForUser: failed to get user %s: %v", userID, err)
+		return envMap
+	}
+	resolved, err := muxer.ResolveEnvTemplates(envMap, user)
+	if err != nil {
+		shared.Warnf("resolveTemplatesForUser: template resolution failed for user %s: %v", userID, err)
+		return envMap
+	}
+	return resolved
 }

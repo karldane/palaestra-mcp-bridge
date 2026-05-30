@@ -113,16 +113,36 @@ ensure-docker-config:
 		exit 1; \
 	fi
 
-# Build Docker image
+# Build base image (runtimes + backends — rarely needed)
+.PHONY: docker-build-base
+docker-build-base: ensure-docker-config
+	docker build -f Dockerfile.base -t $(DOCKER_IMAGE):base-latest .
+
+# Build and push base image
+.PHONY: docker-push-base
+docker-push-base: docker-build-base
+	aws ecr get-login-password --region $(ECR_REGION) | docker login --username AWS --password-stdin $(ECR_REGISTRY)
+	docker push $(DOCKER_IMAGE):base-latest
+
+# Build Docker image (fast: layers mcp-bridge on existing base)
+# Set REBUILD_BACKENDS=1 to rebuild base image first (backends + runtimes)
 .PHONY: docker-build
 docker-build: ensure-docker-config
-	docker build -t $(DOCKER_IMAGE):$(DOCKER_TAG) .
+	@if [ -n "$(REBUILD_BACKENDS)" ]; then \
+		$(MAKE) docker-build-base; \
+	fi
+	docker build \
+		--build-arg BASE_IMAGE=$(DOCKER_IMAGE):base-latest \
+		-t $(DOCKER_IMAGE):$(DOCKER_TAG) .
 
 # Build and push Docker image (authenticates to ECR, then pushes)
 .PHONY: docker-push
 docker-push: docker-build
 	aws ecr get-login-password --region $(ECR_REGION) | docker login --username AWS --password-stdin $(ECR_REGISTRY)
 	docker push $(DOCKER_IMAGE):$(DOCKER_TAG)
+	@if [ -n "$(REBUILD_BACKENDS)" ]; then \
+		docker push $(DOCKER_IMAGE):base-latest; \
+	fi
 
 # Validate that K8S_DEPLOYMENT and K8S_NAMESPACE are configured
 .PHONY: ensure-k8s-config
@@ -162,8 +182,11 @@ help:
 	@echo "  make test         - Run tests"
 	@echo "  make clean        - Remove build artifacts"
 	@echo "  make install      - Install binary to GOPATH/bin"
-	@echo "  make docker-build - Build Docker image ($(DOCKER_IMAGE):$(DOCKER_TAG))"
-	@echo "  make docker-push  - Authenticate to ECR, build and push"
-	@echo "  make k8s-reload   - Trigger rolling restart of deployment"
-	@echo "  make deploy       - Build, push, and reload in one step"
+	@echo "  make docker-build-base - Build base image (runtimes + backends, rarely needed)"
+	@echo "  make docker-push-base  - Build and push base image to ECR"
+	@echo "  make docker-build      - Build Docker image (fast: mcp-bridge on base)"
+	@echo "  make docker-build      REBUILD_BACKENDS=1  # rebuild base first"
+	@echo "  make docker-push       - Authenticate to ECR, build and push"
+	@echo "  make k8s-reload        - Trigger rolling restart of deployment"
+	@echo "  make deploy            - Build, push, and reload in one step"
 	@echo "  make help         - Show this help message"

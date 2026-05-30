@@ -2221,7 +2221,7 @@ func TestBuildEnvForPrecache_Basic(t *testing.T) {
 		{EnvKey: "USER_TOKEN", Value: "secret123"},
 	}
 
-	env, err := buildEnvForPrecache(b, tokens)
+	env, err := buildEnvForPrecache(b, tokens, nil)
 	if err != nil {
 		t.Fatalf("buildEnvForPrecache: %v", err)
 	}
@@ -2247,7 +2247,7 @@ func TestBuildEnvForPrecache_WithMappings(t *testing.T) {
 		{EnvKey: "USER_KEY", Value: "user_val"},
 	}
 
-	env, err := buildEnvForPrecache(b, tokens)
+	env, err := buildEnvForPrecache(b, tokens, nil)
 	if err != nil {
 		t.Fatalf("buildEnvForPrecache: %v", err)
 	}
@@ -2256,6 +2256,51 @@ func TestBuildEnvForPrecache_WithMappings(t *testing.T) {
 	if env["BACKEND_KEY"] != "user_val" && env["BACKEND_KEY"] != "backend_val" {
 		t.Errorf("BACKEND_KEY = %q, want either 'user_val' or 'backend_val'", env["BACKEND_KEY"])
 	}
+	if env["MCP_PRECACHE"] != "true" {
+		t.Errorf("MCP_PRECACHE = %q, want true", env["MCP_PRECACHE"])
+	}
+}
+
+func TestBuildEnvForPrecache_TemplateVars(t *testing.T) {
+	user := &store.User{Email: "karl.dane@tuskerdirect.com", ID: "user-1", Role: "admin"}
+	b := &store.Backend{
+		ID:          "tmpl-test",
+		Command:     "echo",
+		Env:         `{"QDRANT_ADMIN_URL":"http://qdrant:6333","QDRANT_USERNAME":"{{users.email|sanitised}}","QDRANT_COLLECTION":"{{users.email|sanitised}}","QDRANT_VECTOR_SIZE":"768"}`,
+		EnvMappings: `{}`,
+	}
+	tokens := []store.UserToken{
+		{EnvKey: "API_TOKEN", Value: "real-token"},
+	}
+
+	env, err := buildEnvForPrecache(b, tokens, user)
+	if err != nil {
+		t.Fatalf("buildEnvForPrecache: %v", err)
+	}
+
+	// Static vars should pass through
+	if env["QDRANT_ADMIN_URL"] != "http://qdrant:6333" {
+		t.Errorf("QDRANT_ADMIN_URL = %q, want %q", env["QDRANT_ADMIN_URL"], "http://qdrant:6333")
+	}
+	if env["QDRANT_VECTOR_SIZE"] != "768" {
+		t.Errorf("QDRANT_VECTOR_SIZE = %q, want %q", env["QDRANT_VECTOR_SIZE"], "768")
+	}
+
+	// Template vars should be resolved against the user
+	want := "karl_dane_at_tuskerdirect_com"
+	if env["QDRANT_USERNAME"] != want {
+		t.Errorf("QDRANT_USERNAME = %q, want %q", env["QDRANT_USERNAME"], want)
+	}
+	if env["QDRANT_COLLECTION"] != want {
+		t.Errorf("QDRANT_COLLECTION = %q, want %q", env["QDRANT_COLLECTION"], want)
+	}
+
+	// Non-template user tokens should still pass through
+	if env["API_TOKEN"] != "real-token" {
+		t.Errorf("API_TOKEN = %q, want %q", env["API_TOKEN"], "real-token")
+	}
+
+	// MCP_PRECACHE should still be set
 	if env["MCP_PRECACHE"] != "true" {
 		t.Errorf("MCP_PRECACHE = %q, want true", env["MCP_PRECACHE"])
 	}
@@ -2300,4 +2345,182 @@ func TestRunPrecache_AllBackends(t *testing.T) {
 			t.Errorf("backends[%s] ToolCount = %d, want 1", id, caps.ToolCount)
 		}
 	}
+}
+
+// ---------- BuildEnvForUser with template env vars through encrypt/decrypt ----------
+
+func TestBuildEnvForUser_StaticEnvPassesThrough(t *testing.T) {
+	t.Setenv("ENCRYPTION_KEY", "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789")
+
+	a, _, cleanup := testApp(t, "cat", 1)
+	defer cleanup()
+
+	b := &store.Backend{
+		ID:                "env-static",
+		Command:           "cat",
+		PoolSize:          1,
+		MinPoolSize:       1,
+		MaxPoolSize:       1,
+		Env:               `{"QDRANT_ADMIN_URL":"http://localhost:6333","QDRANT_ADMIN_KEY":"admin-key-123","QDRANT_VECTOR_SIZE":"768"}`,
+		Enabled:           true,
+		SelfReporting:     true,
+		NoKeysRequired:    true,
+		SkipJustification: true,
+	}
+	if err := a.store.CreateBackend(b); err != nil {
+		t.Fatalf("CreateBackend: %v", err)
+	}
+
+	stored, err := a.store.GetBackend("env-static")
+	if err != nil {
+		t.Fatalf("GetBackend: %v", err)
+	}
+	if stored.EncryptedEnv == "" {
+		t.Error("EncryptedEnv is empty — env was NOT encrypted")
+	}
+
+	env, err := a.toolMuxer.BuildEnvForUser("test-user-1", "env-static")
+	if err != nil {
+		t.Fatalf("BuildEnvForUser: %v", err)
+	}
+
+	envMap := sliceToEnvMap(env)
+	if envMap["QDRANT_ADMIN_URL"] != "http://localhost:6333" {
+		t.Errorf("QDRANT_ADMIN_URL = %q, want %q", envMap["QDRANT_ADMIN_URL"], "http://localhost:6333")
+	}
+	if envMap["QDRANT_ADMIN_KEY"] != "admin-key-123" {
+		t.Errorf("QDRANT_ADMIN_KEY = %q, want %q", envMap["QDRANT_ADMIN_KEY"], "admin-key-123")
+	}
+	if envMap["QDRANT_VECTOR_SIZE"] != "768" {
+		t.Errorf("QDRANT_VECTOR_SIZE = %q, want %q", envMap["QDRANT_VECTOR_SIZE"], "768")
+	}
+}
+
+func TestBuildEnvForUser_TemplateEmail(t *testing.T) {
+	t.Setenv("ENCRYPTION_KEY", "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789")
+
+	a, _, cleanup := testApp(t, "cat", 1)
+	defer cleanup()
+
+	b := &store.Backend{
+		ID:                "env-tmpl-email",
+		Command:           "cat",
+		PoolSize:          1,
+		MinPoolSize:       1,
+		MaxPoolSize:       1,
+		Env:               `{"QDRANT_USERNAME":"{{users.email}}"}`,
+		Enabled:           true,
+		SelfReporting:     true,
+		NoKeysRequired:    true,
+		SkipJustification: true,
+	}
+	if err := a.store.CreateBackend(b); err != nil {
+		t.Fatalf("CreateBackend: %v", err)
+	}
+
+	stored, err := a.store.GetBackend("env-tmpl-email")
+	if err != nil {
+		t.Fatalf("GetBackend: %v", err)
+	}
+	if stored.EncryptedEnv == "" {
+		t.Error("EncryptedEnv is empty — env was NOT encrypted")
+	}
+
+	env, err := a.toolMuxer.BuildEnvForUser("test-user-1", "env-tmpl-email")
+	if err != nil {
+		t.Fatalf("BuildEnvForUser: %v", err)
+	}
+
+	envMap := sliceToEnvMap(env)
+	want := "test@example.com"
+	if envMap["QDRANT_USERNAME"] != want {
+		t.Errorf("QDRANT_USERNAME = %q, want %q", envMap["QDRANT_USERNAME"], want)
+	}
+}
+
+func TestBuildEnvForUser_TemplateSanitisedEmail(t *testing.T) {
+	t.Setenv("ENCRYPTION_KEY", "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789")
+
+	a, _, cleanup := testApp(t, "cat", 1)
+	defer cleanup()
+
+	b := &store.Backend{
+		ID:                "env-tmpl-san",
+		Command:           "cat",
+		PoolSize:          1,
+		MinPoolSize:       1,
+		MaxPoolSize:       1,
+		Env:               `{"QDRANT_COLLECTION":"{{users.email|sanitised}}"}`,
+		Enabled:           true,
+		SelfReporting:     true,
+		NoKeysRequired:    true,
+		SkipJustification: true,
+	}
+	if err := a.store.CreateBackend(b); err != nil {
+		t.Fatalf("CreateBackend: %v", err)
+	}
+
+	env, err := a.toolMuxer.BuildEnvForUser("test-user-1", "env-tmpl-san")
+	if err != nil {
+		t.Fatalf("BuildEnvForUser: %v", err)
+	}
+
+	envMap := sliceToEnvMap(env)
+	want := "test_at_example_com"
+	if envMap["QDRANT_COLLECTION"] != want {
+		t.Errorf("QDRANT_COLLECTION = %q, want %q", envMap["QDRANT_COLLECTION"], want)
+	}
+}
+
+func TestBuildEnvForUser_MixedStaticAndTemplate(t *testing.T) {
+	t.Setenv("ENCRYPTION_KEY", "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789")
+
+	a, _, cleanup := testApp(t, "cat", 1)
+	defer cleanup()
+
+	b := &store.Backend{
+		ID:                "env-mixed",
+		Command:           "cat",
+		PoolSize:          1,
+		MinPoolSize:       1,
+		MaxPoolSize:       1,
+		Env:               `{"QDRANT_ADMIN_URL":"http://localhost:6333","QDRANT_USERNAME":"{{users.email}}","QDRANT_COLLECTION":"{{users.email|sanitised}}","QDRANT_VECTOR_SIZE":"768"}`,
+		Enabled:           true,
+		SelfReporting:     true,
+		NoKeysRequired:    true,
+		SkipJustification: true,
+	}
+	if err := a.store.CreateBackend(b); err != nil {
+		t.Fatalf("CreateBackend: %v", err)
+	}
+
+	env, err := a.toolMuxer.BuildEnvForUser("test-user-1", "env-mixed")
+	if err != nil {
+		t.Fatalf("BuildEnvForUser: %v", err)
+	}
+
+	envMap := sliceToEnvMap(env)
+	if envMap["QDRANT_ADMIN_URL"] != "http://localhost:6333" {
+		t.Errorf("QDRANT_ADMIN_URL = %q, want %q", envMap["QDRANT_ADMIN_URL"], "http://localhost:6333")
+	}
+	if envMap["QDRANT_USERNAME"] != "test@example.com" {
+		t.Errorf("QDRANT_USERNAME = %q, want %q", envMap["QDRANT_USERNAME"], "test@example.com")
+	}
+	if envMap["QDRANT_COLLECTION"] != "test_at_example_com" {
+		t.Errorf("QDRANT_COLLECTION = %q, want %q", envMap["QDRANT_COLLECTION"], "test_at_example_com")
+	}
+	if envMap["QDRANT_VECTOR_SIZE"] != "768" {
+		t.Errorf("QDRANT_VECTOR_SIZE = %q, want %q", envMap["QDRANT_VECTOR_SIZE"], "768")
+	}
+}
+
+// sliceToEnvMap converts a []string of "KEY=VALUE" pairs to a map for easier assertion.
+func sliceToEnvMap(env []string) map[string]string {
+	m := make(map[string]string)
+	for _, e := range env {
+		if idx := strings.IndexByte(e, '='); idx >= 0 {
+			m[e[:idx]] = e[idx+1:]
+		}
+	}
+	return m
 }

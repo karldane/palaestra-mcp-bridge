@@ -435,7 +435,8 @@ func (h *Handler) AdminBackendsProbeHandler(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
-	result, err := h.OnProbeBackend(backendID)
+	user := userFromContext(r)
+	result, err := h.OnProbeBackend(backendID, user.ID)
 	if err != nil {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusInternalServerError)
@@ -448,6 +449,41 @@ func (h *Handler) AdminBackendsProbeHandler(w http.ResponseWriter, r *http.Reque
 
 	w.Header().Set("Content-Type", "application/json")
 	w.Write(result)
+}
+
+func (h *Handler) AdminBackendsPreviewEnvHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if h.OnResolveEnv == nil {
+		http.Error(w, "Not configured", http.StatusNotImplemented)
+		return
+	}
+
+	envJSON := r.FormValue("env")
+	if envJSON == "" {
+		http.Error(w, "Missing env", http.StatusBadRequest)
+		return
+	}
+
+	user := userFromContext(r)
+	resolved, err := h.OnResolveEnv(envJSON, user.ID)
+	if err != nil {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusInternalServerError)
+		json.NewEncoder(w).Encode(map[string]string{
+			"status":  "error",
+			"message": err.Error(),
+		})
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]string{
+		"status": "ok",
+		"env":    resolved,
+	})
 }
 
 func (h *Handler) AdminBackendsRefreshToolsHandler(w http.ResponseWriter, r *http.Request) {

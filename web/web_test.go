@@ -1693,7 +1693,7 @@ func TestAdminBackends_Probe_MissingID(t *testing.T) {
 	h.Register(mux)
 	cookie := loginCookie(t, h, mux, "admin@test.com", "secret")
 
-	h.OnProbeBackend = func(backendID string) ([]byte, error) {
+	h.OnProbeBackend = func(backendID string, userID string) ([]byte, error) {
 		return nil, nil
 	}
 
@@ -1722,7 +1722,7 @@ func TestAdminBackends_Probe_BackendNotFound(t *testing.T) {
 	h.Register(mux)
 	cookie := loginCookie(t, h, mux, "admin@test.com", "secret")
 
-	h.OnProbeBackend = func(backendID string) ([]byte, error) {
+	h.OnProbeBackend = func(backendID string, userID string) ([]byte, error) {
 		return nil, nil
 	}
 
@@ -1769,7 +1769,7 @@ func TestAdminBackends_Probe_Success(t *testing.T) {
 	cookie := loginCookie(t, h, mux, "admin@test.com", "secret")
 
 	// Mock the probe callback
-	h.OnProbeBackend = func(backendID string) ([]byte, error) {
+	h.OnProbeBackend = func(backendID string, userID string) ([]byte, error) {
 		result := map[string]interface{}{
 			"status":      "ok",
 			"message":     "MCP handshake succeeded",
@@ -1811,7 +1811,7 @@ func TestAdminBackends_Probe_CallbackError(t *testing.T) {
 	h.Register(mux)
 	cookie := loginCookie(t, h, mux, "admin@test.com", "secret")
 
-	h.OnProbeBackend = func(backendID string) ([]byte, error) {
+	h.OnProbeBackend = func(backendID string, userID string) ([]byte, error) {
 		return nil, fmt.Errorf("probe failed internally")
 	}
 

@@ -39,10 +39,16 @@ type Handler struct {
 	OnBackendChange func(backendID string, triggerUserID string)
 
 	// OnProbeBackend is called to probe/test a backend. The callback
-	// receives the backend ID, looks up the command, spawns a temporary
+	// receives the backend ID and the requesting user's ID, looks up the
+	// command, resolves templates against the user, spawns a temporary
 	// process, attempts the MCP handshake, and returns JSON-encoded result
 	// bytes. It may be nil (probe endpoint returns 501).
-	OnProbeBackend func(backendID string) ([]byte, error)
+	OnProbeBackend func(backendID string, userID string) ([]byte, error)
+
+	// OnResolveEnv is called to resolve template expressions in an env JSON
+	// string against a given user. Returns the resolved env JSON (values
+	// with {{...}} templates replaced). May be nil.
+	OnResolveEnv func(envJSON string, userID string) (string, error)
 
 	// OnRefreshTools is called to refresh cached tools for a backend.
 	// The callback receives the backend ID and the triggering user's ID.
@@ -145,6 +151,7 @@ func (h *Handler) Register(mux *http.ServeMux) {
 	mux.Handle("/web/admin/backends/edit", h.requireAdmin(http.HandlerFunc(h.AdminBackendsEditHandler)))
 	mux.Handle("/web/admin/backends/delete", h.requireAdmin(http.HandlerFunc(h.AdminBackendsDeleteHandler)))
 	mux.Handle("/web/admin/backends/probe", h.requireAdmin(http.HandlerFunc(h.AdminBackendsProbeHandler)))
+	mux.Handle("/web/admin/backends/preview-env", h.requireAdmin(http.HandlerFunc(h.AdminBackendsPreviewEnvHandler)))
 	mux.Handle("/web/admin/backends/refresh-tools", h.requireAdmin(http.HandlerFunc(h.AdminBackendsRefreshToolsHandler)))
 	mux.Handle("/web/admin/settings/global_hints", h.requireAdmin(http.HandlerFunc(h.AdminSettingsGlobalHintsHandler)))
 	mux.Handle("/web/admin/oauth-clients", h.requireAdmin(http.HandlerFunc(h.AdminOAuthClientsHandler)))
