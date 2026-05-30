@@ -89,7 +89,7 @@
     <h2>Backends</h2>
     {{if .Data}}
     {{range .Data}}
-    <div class="backend-card" data-env='{{.Env | rawjson}}' data-env-mappings='{{.EnvMappings | rawjson}}' data-tool-hints='{{.ToolHints | js}}' data-is-system="{{.IsSystem}}" data-min-pool="{{.MinPoolSize}}" data-max-pool="{{.MaxPoolSize}}" data-self-reporting="{{.SelfReporting}}" data-no-keys-required="{{.NoKeysRequired}}" data-skip-justification="{{.SkipJustification}}" data-id="{{.ID}}" data-command="{{.Command | js}}" data-precache-error='{{.PrecacheError | js}}'>
+    <div class="backend-card" data-env='{{.Env | rawjson}}' data-env-mappings='{{.EnvMappings | rawjson}}' data-tool-hints='{{.ToolHints | js}}' data-backend-instructions='{{.BackendInstructions | js}}' data-is-system="{{.IsSystem}}" data-min-pool="{{.MinPoolSize}}" data-max-pool="{{.MaxPoolSize}}" data-self-reporting="{{.SelfReporting}}" data-no-keys-required="{{.NoKeysRequired}}" data-skip-justification="{{.SkipJustification}}" data-id="{{.ID}}" data-command="{{.Command | js}}" data-precache-error='{{.PrecacheError | js}}'>
       <div class="backend-info">
         <div class="backend-title">
           {{.ID}}
@@ -278,6 +278,11 @@
         <small class="text-muted">These hints are appended to each tool's annotations and help AI assistants understand typical usage patterns.</small>
       </div>
       <div class="form-row">
+        <label for="backend_instructions">Instructions to User</label>
+        <textarea id="backend_instructions" name="backend_instructions" placeholder="Enter freeform text to display to users on their tokens page for this backend. Useful for explaining complex environment variables or where to find API keys."></textarea>
+        <small class="text-muted">These instructions appear on the /web/tokens page when this backend is selected.</small>
+      </div>
+      <div class="form-row">
         <button type="button" class="btn btn-secondary" onclick="previewEnv()">Preview Environment</button>
         <div id="env-preview" class="mono" style="margin-top:0.5rem;padding:0.5rem;background:#f3f4f6;border-radius:4px;display:none;"></div>
       </div>
@@ -335,13 +340,15 @@ function editBackend(id) {
   var skipJustification = card.getAttribute('data-skip-justification') === 'true';
   document.getElementById('skip_justification').checked = skipJustification;
 
-  // Get env, env_mappings, and tool_hints from data attributes
+  // Get env, env_mappings, tool_hints, and backend_instructions from data attributes
   var env = card.getAttribute('data-env');
   var envMappings = card.getAttribute('data-env-mappings');
   var toolHints = card.getAttribute('data-tool-hints');
+  var backendInstructions = card.getAttribute('data-backend-instructions');
   document.getElementById('env').value = env ? env : '{}';
   document.getElementById('env_mappings').value = envMappings ? envMappings : '{}';
   document.getElementById('tool_hints').value = toolHints ? toolHints : '';
+  document.getElementById('backend_instructions').value = backendInstructions ? backendInstructions : '';
 
   // Disable fields for system backends
   document.getElementById('command').readOnly = isSystem;
@@ -385,6 +392,7 @@ function cancelEdit() {
   document.getElementById('env').value = '{}';
   document.getElementById('env_mappings').value = '{}';
   document.getElementById('tool_hints').value = '';
+  document.getElementById('backend_instructions').value = '';
   document.getElementById('env-preview').style.display = 'none';
 
   document.getElementById('form-submit-btn').textContent = 'Create Backend';

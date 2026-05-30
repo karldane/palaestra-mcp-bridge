@@ -220,6 +220,7 @@ func (h *Handler) AdminBackendsCreateHandler(w http.ResponseWriter, r *http.Requ
 	env := strings.TrimSpace(r.FormValue("env"))
 	envMappings := strings.TrimSpace(r.FormValue("env_mappings"))
 	toolHints := strings.TrimSpace(r.FormValue("tool_hints"))
+	backendInstructions := strings.TrimSpace(r.FormValue("backend_instructions"))
 	shared.Debugf("web create: env from form: %q", env)
 	shared.Debugf("web create: env_mappings from form: %q", envMappings)
 	enabled := r.FormValue("enabled") == "on"
@@ -253,19 +254,20 @@ func (h *Handler) AdminBackendsCreateHandler(w http.ResponseWriter, r *http.Requ
 	}
 
 	b := &store.Backend{
-		ID:                id,
-		Command:           command,
-		PoolSize:          minPoolSize,
-		MinPoolSize:       minPoolSize,
-		MaxPoolSize:       maxPoolSize,
-		ToolPrefix:        toolPrefix,
-		Env:               env,
-		EnvMappings:       envMappings,
-		ToolHints:         toolHints,
-		Enabled:           enabled,
-		SelfReporting:     selfReporting,
-		NoKeysRequired:    noKeysRequired,
-		SkipJustification: skipJustification,
+		ID:                  id,
+		Command:             command,
+		PoolSize:            minPoolSize,
+		MinPoolSize:         minPoolSize,
+		MaxPoolSize:         maxPoolSize,
+		ToolPrefix:          toolPrefix,
+		Env:                 env,
+		EnvMappings:         envMappings,
+		ToolHints:           toolHints,
+		BackendInstructions: backendInstructions,
+		Enabled:             enabled,
+		SelfReporting:       selfReporting,
+		NoKeysRequired:      noKeysRequired,
+		SkipJustification:   skipJustification,
 	}
 	if err := h.Store.CreateBackend(b); err != nil {
 		log.Printf("web: create backend: %v", err)
@@ -290,6 +292,7 @@ func (h *Handler) AdminBackendsEditHandler(w http.ResponseWriter, r *http.Reques
 	env := strings.TrimSpace(r.FormValue("env"))
 	envMappings := strings.TrimSpace(r.FormValue("env_mappings"))
 	toolHints := strings.TrimSpace(r.FormValue("tool_hints"))
+	backendInstructions := strings.TrimSpace(r.FormValue("backend_instructions"))
 	shared.Debugf("web: env from form: %q", env)
 	shared.Debugf("web: env_mappings from form: %q", envMappings)
 	enabled := r.FormValue("enabled") == "on"
@@ -354,20 +357,21 @@ func (h *Handler) AdminBackendsEditHandler(w http.ResponseWriter, r *http.Reques
 	}
 
 	b := &store.Backend{
-		ID:                id,
-		Command:           command,
-		PoolSize:          minPoolSize,
-		MinPoolSize:       minPoolSize,
-		MaxPoolSize:       maxPoolSize,
-		ToolPrefix:        toolPrefix,
-		Env:               env,
-		EnvMappings:       envMappings,
-		ToolHints:         toolHints,
-		Enabled:           enabled,
-		IsSystem:          isSystem,
-		SelfReporting:     selfReporting,
-		NoKeysRequired:    noKeysRequired,
-		SkipJustification: skipJustification,
+		ID:                  id,
+		Command:             command,
+		PoolSize:            minPoolSize,
+		MinPoolSize:         minPoolSize,
+		MaxPoolSize:         maxPoolSize,
+		ToolPrefix:          toolPrefix,
+		Env:                 env,
+		EnvMappings:         envMappings,
+		ToolHints:           toolHints,
+		BackendInstructions: backendInstructions,
+		Enabled:             enabled,
+		IsSystem:            isSystem,
+		SelfReporting:       selfReporting,
+		NoKeysRequired:      noKeysRequired,
+		SkipJustification:   skipJustification,
 	}
 	if err := h.Store.UpdateBackend(b); err != nil {
 		log.Printf("web: update backend: %v", err)

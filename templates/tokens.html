@@ -27,6 +27,13 @@
     <h2>Tokens for <span class="mono">{{.SelectedBackend.ID}}</span></h2>
     <p class="text-muted">Command: <span class="mono">{{.SelectedBackend.Command}}</span></p>
 
+    {{if .SelectedBackend.BackendInstructions}}
+    <div class="alert alert-info" style="background:#1e1e2e;border:1px solid #313244;color:#cdd6f4;padding:0.75rem;border-radius:4px;margin-bottom:1rem;white-space:pre-wrap;">
+      <strong style="color:#cdd6f4;">Instructions:</strong><br>
+      {{.SelectedBackend.BackendInstructions}}
+    </div>
+    {{end}}
+
     {{if .SelectedBackend.NoKeysRequired}}
     <div class="alert alert-info" style="background:#1e1e2e;border:1px solid #313244;color:#cdd6f4;padding:0.75rem;border-radius:4px;margin-bottom:1rem;">
       <strong>No mandatory keys required</strong> — This backend is dynamically configured. You can still add optional configuration tokens if needed.
