@@ -285,19 +285,29 @@ func main() {
 	}
 
 	// Auto-precache backends that have no cached tools at startup
-	if uncached, err := st.GetUncachedBackends(); err == nil && len(uncached) > 0 {
-		shared.Infof("Auto-precaching %d backend(s) with missing tool cache: %s", len(uncached), strings.Join(uncached, ", "))
-		go func() {
-			pcCtx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
-			defer cancel()
-			pcCfg := PrecacheConfig{Store: st, EnforcerStore: store.NewEnforcerStore(st.DB())}
-			for _, backendID := range uncached {
-				if _, err := RunPrecacheForBackend(pcCtx, pcCfg, backendID); err != nil {
-					shared.Warnf("Startup precache failed for %s: %v", backendID, err)
-					st.SetBackendPrecacheError(backendID, err.Error())
-				}
+	if allUncached, err := st.GetUncachedBackends(); err == nil && len(allUncached) > 0 {
+		var uncached []string
+		for _, id := range allUncached {
+			if id == "mcpbridge" {
+				continue
 			}
-		}()
+			uncached = append(uncached, id)
+		}
+
+		if len(uncached) > 0 {
+			shared.Infof("Auto-precaching %d backend(s) with missing tool cache: %s", len(uncached), strings.Join(uncached, ", "))
+			go func() {
+				pcCtx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+				defer cancel()
+				pcCfg := PrecacheConfig{Store: st, EnforcerStore: store.NewEnforcerStore(st.DB())}
+				for _, backendID := range uncached {
+					if _, err := RunPrecacheForBackend(pcCtx, pcCfg, backendID); err != nil {
+						shared.Warnf("Startup precache failed for %s: %v", backendID, err)
+						st.SetBackendPrecacheError(backendID, err.Error())
+					}
+				}
+			}()
+		}
 	}
 
 	// Start background retry loop for unavailable backends

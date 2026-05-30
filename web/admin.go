@@ -157,11 +157,20 @@ func formatMemory(bytes uint64) string {
 
 func (h *Handler) AdminBackendsHandler(w http.ResponseWriter, r *http.Request) {
 	user := userFromContext(r)
-	backends, err := h.Store.ListBackends()
+	allBackends, err := h.Store.ListBackends()
 	if err != nil {
 		log.Printf("web: list backends: %v", err)
 		http.Error(w, "Internal Server Error", http.StatusInternalServerError)
 		return
+	}
+
+	// Filter out system mcpbridge backend from the UI list
+	var backends []*store.Backend
+	for _, b := range allBackends {
+		if b.ID == "mcpbridge" {
+			continue
+		}
+		backends = append(backends, b)
 	}
 
 	// Get pool status if pool manager is available
@@ -169,6 +178,10 @@ func (h *Handler) AdminBackendsHandler(w http.ResponseWriter, r *http.Request) {
 	if h.PoolManager != nil {
 		pools := h.PoolManager.GetAllPools()
 		for _, p := range pools {
+			// Skip mcpbridge in pool status if it appears there
+			if p.BackendID == "mcpbridge" {
+				continue
+			}
 			display := PoolStatusDisplay{
 				BackendID:   p.BackendID,
 				UserID:      p.UserID,
@@ -187,7 +200,14 @@ func (h *Handler) AdminBackendsHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Get uncached backends (backends without cached tools)
-	uncachedBackends, _ := h.Store.GetUncachedBackends()
+	allUncached, _ := h.Store.GetUncachedBackends()
+	var uncachedBackends []string
+	for _, id := range allUncached {
+		if id == "mcpbridge" {
+			continue
+		}
+		uncachedBackends = append(uncachedBackends, id)
+	}
 
 	// Get global hints
 	globalHints, _ := h.Store.GetSetting("global_hints")
