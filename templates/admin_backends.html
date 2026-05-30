@@ -89,7 +89,7 @@
     <h2>Backends</h2>
     {{if .Data}}
     {{range .Data}}
-    <div class="backend-card" data-env='{{.Env | rawjson}}' data-env-mappings='{{.EnvMappings | rawjson}}' data-tool-hints='{{.ToolHints | js}}' data-backend-instructions='{{.BackendInstructions | js}}' data-is-system="{{.IsSystem}}" data-min-pool="{{.MinPoolSize}}" data-max-pool="{{.MaxPoolSize}}" data-self-reporting="{{.SelfReporting}}" data-no-keys-required="{{.NoKeysRequired}}" data-skip-justification="{{.SkipJustification}}" data-id="{{.ID}}" data-command="{{.Command | js}}" data-precache-error='{{.PrecacheError | js}}'>
+    <div class="backend-card" data-env='{{.Env | json}}' data-env-mappings='{{.EnvMappings | json}}' data-tool-hints='{{.ToolHints | json}}' data-backend-instructions='{{.BackendInstructions | json}}' data-is-system="{{.IsSystem}}" data-min-pool="{{.MinPoolSize}}" data-max-pool="{{.MaxPoolSize}}" data-self-reporting="{{.SelfReporting}}" data-no-keys-required="{{.NoKeysRequired}}" data-skip-justification="{{.SkipJustification}}" data-id="{{.ID}}" data-command="{{.Command | json}}" data-precache-error='{{.PrecacheError | json}}'>
       <div class="backend-info">
         <div class="backend-title">
           {{.ID}}
@@ -300,6 +300,16 @@ function editBackend(id) {
   var card = document.querySelector('.backend-card[data-id="' + id + '"]');
   if (!card) return;
 
+  var getAttr = function(name) {
+    var val = card.getAttribute(name);
+    if (!val) return '';
+    try {
+      return JSON.parse(val);
+    } catch (e) {
+      return val;
+    }
+  };
+
   var isSystem = card.getAttribute('data-is-system') === 'true';
   document.getElementById('form-title').textContent = 'Edit Backend: ' + id + (isSystem ? ' (system)' : '');
   document.getElementById('backend-form-el').action = '/web/admin/backends/edit';
@@ -311,11 +321,7 @@ function editBackend(id) {
   idField.style.background = '#f3f4f6';
 
   // Get command from data attribute
-  var command = card.getAttribute('data-command');
-  if (command) {
-    try { command = JSON.parse(command); } catch(e) {}
-  }
-  document.getElementById('command').value = command || '';
+  document.getElementById('command').value = getAttr('data-command');
 
   var minPool = card.getAttribute('data-min-pool');
   var maxPool = card.getAttribute('data-max-pool');
@@ -341,14 +347,10 @@ function editBackend(id) {
   document.getElementById('skip_justification').checked = skipJustification;
 
   // Get env, env_mappings, tool_hints, and backend_instructions from data attributes
-  var env = card.getAttribute('data-env');
-  var envMappings = card.getAttribute('data-env-mappings');
-  var toolHints = card.getAttribute('data-tool-hints');
-  var backendInstructions = card.getAttribute('data-backend-instructions');
-  document.getElementById('env').value = env ? env : '{}';
-  document.getElementById('env_mappings').value = envMappings ? envMappings : '{}';
-  document.getElementById('tool_hints').value = toolHints ? toolHints : '';
-  document.getElementById('backend_instructions').value = backendInstructions ? backendInstructions : '';
+  document.getElementById('env').value = getAttr('data-env') || '{}';
+  document.getElementById('env_mappings').value = getAttr('data-env-mappings') || '{}';
+  document.getElementById('tool_hints').value = getAttr('data-tool-hints');
+  document.getElementById('backend_instructions').value = getAttr('data-backend-instructions');
 
   // Disable fields for system backends
   document.getElementById('command').readOnly = isSystem;
