@@ -165,9 +165,10 @@ ensure-k8s-config:
 k8s-reload: ensure-k8s-config
 	kubectl rollout restart deployment/$(K8S_DEPLOYMENT) -n $(K8S_NAMESPACE)
 
-# Full pipeline: build, push, and reload
+# Full pipeline: build, push, and deploy by deleting old pod (new pod pulls fresh image)
 .PHONY: deploy
-deploy: docker-push k8s-reload
+deploy: docker-push
+	kubectl delete pod -n $(K8S_NAMESPACE) -l app=$(K8S_DEPLOYMENT) --wait=false
 
 # Show help
 .PHONY: help
@@ -188,5 +189,5 @@ help:
 	@echo "  make docker-build      REBUILD_BACKENDS=1  # rebuild base first"
 	@echo "  make docker-push       - Authenticate to ECR, build and push"
 	@echo "  make k8s-reload        - Trigger rolling restart of deployment"
-	@echo "  make deploy            - Build, push, and reload in one step"
+	@echo "  make deploy            - Build, push, and redeploy (deletes old pod, new pod pulls fresh image)"
 	@echo "  make help         - Show this help message"
