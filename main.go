@@ -408,9 +408,10 @@ func main() {
 		return json.Marshal(result)
 	}
 
-	// Wire resolve-env: resolve template expressions in an env JSON string
-	// against the requesting user (used by the preview button in the admin UI).
-	webHandler.OnResolveEnv = func(envJSON string, userID string) (string, error) {
+	// Wire resolve-env: compute the full runtime environment for a backend
+	// preview, including user tokens mapped through env_mappings and template
+	// expressions resolved against the requesting user.
+	webHandler.OnResolveEnv = func(envJSON string, mappingsJSON string, backendID string, userID string) (map[string]string, error) {
 		var envStr = envJSON
 		if strings.HasPrefix(envStr, "\"") && strings.HasSuffix(envStr, "\"") {
 			var unquoted string
@@ -418,16 +419,68 @@ func main() {
 				envStr = unquoted
 			}
 		}
-		var envMap map[string]string
-		if err := json.Unmarshal([]byte(envStr), &envMap); err != nil {
-			return "", fmt.Errorf("invalid env JSON: %w", err)
+		var formEnv map[string]string
+		if err := json.Unmarshal([]byte(envStr), &formEnv); err != nil {
+			return nil, fmt.Errorf("invalid env JSON: %w", err)
 		}
-		resolved := resolveTemplatesForUser(envMap, userID, st)
-		out, err := json.Marshal(resolved)
-		if err != nil {
-			return "", err
+
+		var mappings map[string]string
+		if mappingsJSON != "" && mappingsJSON != "{}" {
+			var ms string = mappingsJSON
+			if strings.HasPrefix(ms, "\"") && strings.HasSuffix(ms, "\"") {
+				var unquoted string
+				if err := json.Unmarshal([]byte(ms), &unquoted); err == nil {
+					ms = unquoted
+				}
+			}
+			if err := json.Unmarshal([]byte(ms), &mappings); err != nil {
+				return nil, fmt.Errorf("invalid env_mappings JSON: %w", err)
+			}
 		}
-		return string(out), nil
+
+		// Build the full env: start with essential system vars
+		result := make(map[string]string)
+		if path := os.Getenv("PATH"); path != "" {
+			result["PATH"] = path
+		}
+		if home := os.Getenv("HOME"); home != "" {
+			result["HOME"] = home
+		}
+		if user := os.Getenv("USER"); user != "" {
+			result["USER"] = user
+		}
+
+		// Step 1: Add user tokens (if we have a backend to look them up for)
+		if backendID != "" {
+			tokens, err := st.GetUserTokensDecrypted(userID, backendID)
+			if err == nil {
+				for _, tok := range tokens {
+					result[tok.EnvKey] = tok.Value
+				}
+			}
+		}
+
+		// Step 2: Apply env mappings (convert user token keys to backend keys)
+		if len(mappings) > 0 {
+			mapped := make(map[string]string)
+			for userKey, value := range result {
+				if backendKey, hasMapping := mappings[userKey]; hasMapping {
+					mapped[backendKey] = value
+				} else {
+					mapped[userKey] = value
+				}
+			}
+			result = mapped
+		}
+
+		// Step 3: Apply form env as systemwide (highest priority)
+		for k, v := range formEnv {
+			result[k] = v
+		}
+
+		// Step 4: Resolve templates
+		result = resolveTemplatesForUser(result, userID, st)
+		return result, nil
 	}
 	webHandler.Register(mux)
 

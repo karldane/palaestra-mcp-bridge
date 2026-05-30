@@ -2514,6 +2514,166 @@ func TestBuildEnvForUser_MixedStaticAndTemplate(t *testing.T) {
 	}
 }
 
+// ---------- resolveTemplatesForUser unit tests ----------
+
+func TestResolveTemplatesForUser_NoTemplates(t *testing.T) {
+	t.Setenv("ENCRYPTION_KEY", "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789")
+
+	a, _, cleanup := testApp(t, "cat", 1)
+	defer cleanup()
+
+	envMap := map[string]string{
+		"STATIC_KEY": "static_value",
+		"ANOTHER":    "plain_text",
+	}
+	result := resolveTemplatesForUser(envMap, "test-user-1", a.store)
+	if result["STATIC_KEY"] != "static_value" {
+		t.Errorf("STATIC_KEY = %q, want %q", result["STATIC_KEY"], "static_value")
+	}
+	if result["ANOTHER"] != "plain_text" {
+		t.Errorf("ANOTHER = %q, want %q", result["ANOTHER"], "plain_text")
+	}
+}
+
+func TestResolveTemplatesForUser_UserNotFound(t *testing.T) {
+	t.Setenv("ENCRYPTION_KEY", "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789")
+
+	a, _, cleanup := testApp(t, "cat", 1)
+	defer cleanup()
+
+	envMap := map[string]string{
+		"MY_KEY": "{{users.email}}",
+	}
+	result := resolveTemplatesForUser(envMap, "nonexistent-user", a.store)
+	// Should return the original env unchanged when user is not found
+	if result["MY_KEY"] != "{{users.email}}" {
+		t.Errorf("MY_KEY = %q, want %q (unchanged when user not found)", result["MY_KEY"], "{{users.email}}")
+	}
+}
+
+func TestResolveTemplatesForUser_AllFields(t *testing.T) {
+	t.Setenv("ENCRYPTION_KEY", "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789")
+
+	a, _, cleanup := testApp(t, "cat", 1)
+	defer cleanup()
+
+	envMap := map[string]string{
+		"EMAIL_VAR":    "{{users.email}}",
+		"USERNAME_VAR": "{{users.username}}",
+		"ID_VAR":       "{{users.id}}",
+		"ROLE_VAR":     "{{users.role}}",
+	}
+	result := resolveTemplatesForUser(envMap, "test-user-1", a.store)
+	if result["EMAIL_VAR"] != "test@example.com" {
+		t.Errorf("EMAIL_VAR = %q, want %q", result["EMAIL_VAR"], "test@example.com")
+	}
+	if result["USERNAME_VAR"] != "test@example.com" {
+		t.Errorf("USERNAME_VAR = %q, want %q", result["USERNAME_VAR"], "test@example.com")
+	}
+	if result["ID_VAR"] != "test-user-1" {
+		t.Errorf("ID_VAR = %q, want %q", result["ID_VAR"], "test-user-1")
+	}
+	if result["ROLE_VAR"] != "user" {
+		t.Errorf("ROLE_VAR = %q, want %q", result["ROLE_VAR"], "user")
+	}
+}
+
+func TestResolveTemplatesForUser_AllPipes(t *testing.T) {
+	t.Setenv("ENCRYPTION_KEY", "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789")
+
+	a, _, cleanup := testApp(t, "cat", 1)
+	defer cleanup()
+
+	envMap := map[string]string{
+		"SANITISED":  "{{users.email|sanitised}}",
+		"HASHED":     "{{users.email|hashed}}",
+		"LOWER":      "{{users.email|lower}}",
+		"UPPER":      "{{users.email|upper}}",
+		"URLENCODED": "{{users.email|urlencoded}}",
+	}
+	result := resolveTemplatesForUser(envMap, "test-user-1", a.store)
+	if result["SANITISED"] != "test_at_example_com" {
+		t.Errorf("SANITISED = %q, want %q", result["SANITISED"], "test_at_example_com")
+	}
+	if result["HASHED"] == "" || result["HASHED"] == "{{users.email|hashed}}" {
+		t.Errorf("HASHED = %q, want a hash value", result["HASHED"])
+	}
+	if result["LOWER"] != "test@example.com" {
+		t.Errorf("LOWER = %q, want %q", result["LOWER"], "test@example.com")
+	}
+	if result["UPPER"] != "TEST@EXAMPLE.COM" {
+		t.Errorf("UPPER = %q, want %q", result["UPPER"], "TEST@EXAMPLE.COM")
+	}
+	if result["URLENCODED"] != "test%40example.com" {
+		t.Errorf("URLENCODED = %q, want %q", result["URLENCODED"], "test%40example.com")
+	}
+}
+
+// ---------- BuildEnvForUser combined: templates + mappings + tokens ----------
+
+func TestBuildEnvForUser_TemplateWithMappingsAndTokens(t *testing.T) {
+	t.Setenv("ENCRYPTION_KEY", "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789")
+
+	a, _, cleanup := testApp(t, "cat", 1)
+	defer cleanup()
+
+	// Create a backend with template env vars and env_mappings
+	b := &store.Backend{
+		ID:                "env-combined",
+		Command:           "cat",
+		PoolSize:          1,
+		MinPoolSize:       1,
+		MaxPoolSize:       1,
+		Env:               `{"MY_STATIC_KEY":"static-value","MY_TEMPLATE_KEY":"{{users.email}}"}`,
+		EnvMappings:       `{"API_TOKEN":"MY_BACKEND_TOKEN"}`,
+		Enabled:           true,
+		SelfReporting:     true,
+		NoKeysRequired:    false,
+		SkipJustification: true,
+	}
+	if err := a.store.CreateBackend(b); err != nil {
+		t.Fatalf("CreateBackend: %v", err)
+	}
+
+	// Create a user token for the test user on this backend
+	token := &store.UserToken{
+		UserID:    "test-user-1",
+		BackendID: "env-combined",
+		EnvKey:    "API_TOKEN",
+		Value:     "secret-api-token-123",
+	}
+	if err := a.store.SetUserToken(token); err != nil {
+		t.Fatalf("SetUserToken: %v", err)
+	}
+
+	env, err := a.toolMuxer.BuildEnvForUser("test-user-1", "env-combined")
+	if err != nil {
+		t.Fatalf("BuildEnvForUser: %v", err)
+	}
+
+	envMap := sliceToEnvMap(env)
+
+	// Static env vars pass through
+	if envMap["MY_STATIC_KEY"] != "static-value" {
+		t.Errorf("MY_STATIC_KEY = %q, want %q", envMap["MY_STATIC_KEY"], "static-value")
+	}
+
+	// Template vars resolved against user
+	if envMap["MY_TEMPLATE_KEY"] != "test@example.com" {
+		t.Errorf("MY_TEMPLATE_KEY = %q, want %q", envMap["MY_TEMPLATE_KEY"], "test@example.com")
+	}
+
+	// User token mapped through env_mappings: API_TOKEN -> MY_BACKEND_TOKEN
+	if envMap["MY_BACKEND_TOKEN"] != "secret-api-token-123" {
+		t.Errorf("MY_BACKEND_TOKEN = %q, want %q", envMap["MY_BACKEND_TOKEN"], "secret-api-token-123")
+	}
+
+	// Essential system vars present
+	if envMap["PATH"] == "" {
+		t.Error("PATH is empty, expected a value from process env")
+	}
+}
+
 // sliceToEnvMap converts a []string of "KEY=VALUE" pairs to a map for easier assertion.
 func sliceToEnvMap(env []string) map[string]string {
 	m := make(map[string]string)

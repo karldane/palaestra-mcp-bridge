@@ -422,7 +422,9 @@ function previewEnv() {
     return;
   }
 
-  // POST env to server to resolve templates against the current user
+  // Send form data to server to compute the full runtime environment
+  // including user tokens (mapped via env_mappings) and resolved templates.
+  var backendId = document.getElementById('backend-id').value;
   var xhr = new XMLHttpRequest();
   xhr.open('POST', '/web/admin/backends/preview-env', true);
   xhr.setRequestHeader('Content-Type', 'application/x-www-form-urlencoded');
@@ -430,7 +432,7 @@ function previewEnv() {
     if (xhr.status !== 200) {
       preview.style.display = 'block';
       preview.style.color = '#c00';
-      preview.textContent = 'Failed to resolve environment: ' + xhr.status;
+      preview.textContent = 'Failed to compute environment: ' + xhr.status;
       return;
     }
     var resp = JSON.parse(xhr.responseText);
@@ -441,21 +443,19 @@ function previewEnv() {
       return;
     }
 
-    var resolved;
-    try {
-      resolved = JSON.parse(resp.env);
-    } catch (e) {
+    var fullEnv = resp.env;
+    if (!fullEnv || typeof fullEnv !== 'object') {
       preview.style.display = 'block';
       preview.style.color = '#c00';
-      preview.textContent = 'Invalid resolved env JSON: ' + e.message;
+      preview.textContent = 'Invalid response: expected env object';
       return;
     }
 
-    // Build preview output from resolved values
+    // Build preview output from the full computed env
     var lines = [];
-    lines.push('=== Resolved Environment (for the current user) ===');
-    for (var key in resolved) {
-      lines.push(key + '=' + resolved[key]);
+    lines.push('=== Computed Environment (for the current user) ===');
+    for (var key in fullEnv) {
+      lines.push(key + '=' + fullEnv[key]);
     }
 
     lines.push('');
@@ -466,9 +466,9 @@ function previewEnv() {
 
     lines.push('');
     lines.push('=== Precedence ===');
-    lines.push('1. Bridge process env (base)');
+    lines.push('1. Bridge process env (PATH, HOME, USER)');
     lines.push('2. User tokens (mapped via above mappings)');
-    lines.push('3. Systemwide env (above - highest priority, can override user values)');
+    lines.push('3. Backend env template (above - highest priority)');
 
     preview.style.display = 'block';
     preview.style.color = '#333';
@@ -477,9 +477,9 @@ function previewEnv() {
   xhr.onerror = function() {
     preview.style.display = 'block';
     preview.style.color = '#c00';
-    preview.textContent = 'Network error resolving environment';
+    preview.textContent = 'Network error computing environment';
   };
-  xhr.send('env=' + encodeURIComponent(envStr));
+  xhr.send('env=' + encodeURIComponent(envStr) + '&env_mappings=' + encodeURIComponent(mappingsStr) + '&id=' + encodeURIComponent(backendId));
 }
 
 // Validate on form submit

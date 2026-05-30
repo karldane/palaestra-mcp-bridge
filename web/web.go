@@ -45,10 +45,12 @@ type Handler struct {
 	// bytes. It may be nil (probe endpoint returns 501).
 	OnProbeBackend func(backendID string, userID string) ([]byte, error)
 
-	// OnResolveEnv is called to resolve template expressions in an env JSON
-	// string against a given user. Returns the resolved env JSON (values
-	// with {{...}} templates replaced). May be nil.
-	OnResolveEnv func(envJSON string, userID string) (string, error)
+	// OnResolveEnv is called to compute the full environment for a backend
+	// preview. It receives the env JSON, env_mappings JSON, optional backend ID
+	// (for token lookup), and the requesting user's ID. Returns the complete
+	// env map with templates resolved and user tokens applied through mappings.
+	// May be nil (preview-env endpoint returns 501).
+	OnResolveEnv func(envJSON string, mappingsJSON string, backendID string, userID string) (map[string]string, error)
 
 	// OnRefreshTools is called to refresh cached tools for a backend.
 	// The callback receives the backend ID and the triggering user's ID.
