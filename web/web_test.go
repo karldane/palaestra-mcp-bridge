@@ -18,36 +18,9 @@ import (
 	"github.com/mcp-bridge/mcp-bridge/store"
 )
 
-// testHandler creates a Handler backed by a temp SQLite DB and the real
-// templates directory. The caller must close the store when done.
+// testHandler creates a Handler backed by a temp SQLite DB with
+// encryption enabled. The caller must close the store when done.
 func testHandler(t *testing.T) (*Handler, *store.Store) {
-	t.Helper()
-
-	dir := t.TempDir()
-	dbPath := filepath.Join(dir, "test.db")
-	st, err := store.New(dbPath)
-	if err != nil {
-		t.Fatalf("store.New: %v", err)
-	}
-
-	// Resolve templates directory relative to this test file.
-	// web/web_test.go -> templates/ (one level up)
-	templateDir := filepath.Join("..", "templates")
-	if _, err := os.Stat(filepath.Join(templateDir, "_base.html")); err != nil {
-		t.Fatalf("cannot find templates dir at %s: %v", templateDir, err)
-	}
-
-	h, err := NewHandler(st, templateDir)
-	if err != nil {
-		st.Close()
-		t.Fatalf("NewHandler: %v", err)
-	}
-	return h, st
-}
-
-// testHandlerWithCrypto creates a Handler backed by a temp SQLite DB with
-// encryption enabled. Returns the handler, store, and cleanup function.
-func testHandlerWithCrypto(t *testing.T) (*Handler, *store.Store) {
 	t.Helper()
 
 	dir := t.TempDir()
@@ -62,9 +35,10 @@ func testHandlerWithCrypto(t *testing.T) (*Handler, *store.Store) {
 		t.Fatalf("store.NewWithProvider: %v", err)
 	}
 
+	// Resolve templates directory relative to this test file.
+	// web/web_test.go -> templates/ (one level up)
 	templateDir := filepath.Join("..", "templates")
 	if _, err := os.Stat(filepath.Join(templateDir, "_base.html")); err != nil {
-		st.Close()
 		t.Fatalf("cannot find templates dir at %s: %v", templateDir, err)
 	}
 
@@ -128,13 +102,6 @@ func loginCookie(t *testing.T, h *Handler, mux *http.ServeMux, email, password s
 	}
 	if sessionCookie == nil {
 		t.Fatal("login: no session cookie set")
-	}
-
-	// For tests that expect master key encryption, clear any session DEK
-	// that login might have set. This ensures the handler falls back to
-	// master key encryption (original behavior).
-	if strings.Contains(t.Name(), "Encryption") {
-		ClearSessionDEKForTest(sessionCookie.Value)
 	}
 
 	return sessionCookie
@@ -509,7 +476,7 @@ func TestTokensSave_MethodNotAllowed(t *testing.T) {
 // ---------- Tokens Encryption ----------
 
 func TestTokensSave_WithEncryption(t *testing.T) {
-	h, st := testHandlerWithCrypto(t)
+	h, st := testHandler(t)
 	defer st.Close()
 
 	user := seedAdmin(t, st)
@@ -562,7 +529,7 @@ func TestTokensSave_WithEncryption(t *testing.T) {
 }
 
 func TestTokensSave_MasterKeyFallback_Encrypts(t *testing.T) {
-	h, st := testHandlerWithCrypto(t)
+	h, st := testHandler(t)
 	defer st.Close()
 
 	user := seedAdmin(t, st)
@@ -613,7 +580,7 @@ func TestTokensSave_MasterKeyFallback_Encrypts(t *testing.T) {
 }
 
 func TestTokensSave_Encryption_MultipleTokens(t *testing.T) {
-	h, st := testHandlerWithCrypto(t)
+	h, st := testHandler(t)
 	defer st.Close()
 
 	user := seedAdmin(t, st)
@@ -659,7 +626,7 @@ func TestTokensSave_Encryption_MultipleTokens(t *testing.T) {
 }
 
 func TestTokensSave_Encryption_UpdateOverwrites(t *testing.T) {
-	h, st := testHandlerWithCrypto(t)
+	h, st := testHandler(t)
 	defer st.Close()
 
 	user := seedAdmin(t, st)
@@ -708,7 +675,7 @@ func TestTokensSave_Encryption_UpdateOverwrites(t *testing.T) {
 }
 
 func TestTokensSave_Encryption_SpecialCharacters(t *testing.T) {
-	h, st := testHandlerWithCrypto(t)
+	h, st := testHandler(t)
 	defer st.Close()
 
 	user := seedAdmin(t, st)
@@ -752,7 +719,7 @@ func TestTokensSave_Encryption_SpecialCharacters(t *testing.T) {
 }
 
 func TestTokensSave_Encryption_DeleteRestoredCorrectly(t *testing.T) {
-	h, st := testHandlerWithCrypto(t)
+	h, st := testHandler(t)
 	defer st.Close()
 
 	user := seedAdmin(t, st)
@@ -793,7 +760,7 @@ func TestTokensSave_Encryption_DeleteRestoredCorrectly(t *testing.T) {
 func TestTokensSave_Encryption_MigrateExistingPlaintext(t *testing.T) {
 	// Simulate: user saved token before encryption fix (plaintext only).
 	// After the fix, saving should encrypt immediately.
-	h, st := testHandlerWithCrypto(t)
+	h, st := testHandler(t)
 	defer st.Close()
 
 	user := seedAdmin(t, st)
@@ -1181,7 +1148,7 @@ func TestAdminBackends_ListsBackends(t *testing.T) {
 }
 
 func TestAdminBackends_EncryptionBadge(t *testing.T) {
-	h, st := testHandlerWithCrypto(t)
+	h, st := testHandler(t)
 	defer st.Close()
 
 	seedAdmin(t, st)
@@ -1227,7 +1194,7 @@ func TestAdminBackends_RequiresAdmin(t *testing.T) {
 }
 
 func TestAdminBackends_Create(t *testing.T) {
-	h, st := testHandlerWithCrypto(t)
+	h, st := testHandler(t)
 	defer st.Close()
 
 	seedAdmin(t, st)
@@ -1314,7 +1281,7 @@ func TestAdminBackends_Create_DefaultValues(t *testing.T) {
 }
 
 func TestAdminBackends_Edit_DEBUG(t *testing.T) {
-	h, st := testHandlerWithCrypto(t)
+	h, st := testHandler(t)
 	defer st.Close()
 
 	seedAdmin(t, st)
@@ -1361,7 +1328,7 @@ func TestAdminBackends_Edit_DEBUG(t *testing.T) {
 }
 
 func TestAdminBackends_Create_WithJSONEnv(t *testing.T) {
-	h, st := testHandlerWithCrypto(t)
+	h, st := testHandler(t)
 	defer st.Close()
 
 	seedAdmin(t, st)
@@ -1441,7 +1408,7 @@ func TestAdminBackends_Create_WithEmptyEnv(t *testing.T) {
 }
 
 func TestAdminBackends_ListBackends_RoundTripsJSON(t *testing.T) {
-	h, st := testHandlerWithCrypto(t)
+	h, st := testHandler(t)
 	defer st.Close()
 
 	seedAdmin(t, st)

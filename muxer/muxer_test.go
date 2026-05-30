@@ -515,8 +515,8 @@ func TestBuildEnvForUser_EncryptedTokens(t *testing.T) {
 		if err != nil {
 			t.Fatalf("failed to encrypt %s: %v", key, err)
 		}
-		if err := s.SetUserTokenEncrypted("user1", "circleci", key, string(encrypted)); err != nil {
-			t.Fatalf("SetUserTokenEncrypted failed for %s: %v", key, err)
+		if _, err := s.DB().Exec(`INSERT OR REPLACE INTO user_tokens (user_id, backend_id, env_key, value, encrypted_value) VALUES (?, ?, ?, '', ?)`, "user1", "circleci", key, string(encrypted)); err != nil {
+			t.Fatalf("insert token failed for %s: %v", key, err)
 		}
 	}
 
@@ -572,8 +572,8 @@ func TestBuildEnvForUser_EncryptedTokens_WithEnvMappings(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to encrypt: %v", err)
 	}
-	if err := s.SetUserTokenEncrypted("user1", "github", "USER_TOKEN", string(encrypted)); err != nil {
-		t.Fatalf("SetUserTokenEncrypted failed: %v", err)
+	if _, err := s.DB().Exec(`INSERT OR REPLACE INTO user_tokens (user_id, backend_id, env_key, value, encrypted_value) VALUES (?, ?, ?, '', ?)`, "user1", "github", "USER_TOKEN", string(encrypted)); err != nil {
+		t.Fatalf("insert token failed: %v", err)
 	}
 
 	pm := poolmgr.NewPoolManager("cat", 1)

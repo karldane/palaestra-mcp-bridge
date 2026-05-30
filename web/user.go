@@ -144,21 +144,16 @@ func (h *Handler) TokensHandler(w http.ResponseWriter, r *http.Request) {
 		tokens, _ = h.Store.GetUserTokens(user.ID, backendID)
 	}
 
-	// Try to decrypt tokens using user DEK from session
+	// Decrypt tokens using user DEK from session.
+	// No fallback to master key — the user path requires both keys.
 	userDEK := getSessionDEK(r)
 	if userDEK != nil {
 		var decryptedTokens []*store.UserToken
 		for _, t := range tokens {
 			decrypted := *t
-			if t.Encrypted != "" && (t.EncryptionType == "user" || t.EncryptedDEK != "") {
-				// Try user-derived decryption first
+			if t.EncryptedDEK != "" {
 				if val, err := h.Store.GetUserTokenDecryptedWithUserDEK(user.ID, t.BackendID, t.EnvKey, userDEK); err == nil {
 					decrypted.Value = val
-				} else if ks := h.Store.KeyStore(); ks != nil {
-					// Fall back to master key decryption
-					if val, err := h.Store.GetUserTokenDecrypted(user.ID, t.BackendID, t.EnvKey); err == nil {
-						decrypted.Value = val
-					}
 				}
 			}
 			decryptedTokens = append(decryptedTokens, &decrypted)
@@ -209,9 +204,9 @@ func (h *Handler) TokensSaveHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Try to use user-derived encryption if session has DEK.
-	// Note: always ALSO save a master-key copy so that pool spawning (which has
-	// no user session) can decrypt tokens via GetUserTokensDecrypted.
+	// Save with user-derived encryption (dual-key layered scheme).
+	// encrypted_value stores the master-key ciphertext (spawn-time path),
+	// encrypted_dek wraps it with the user DEK (user path requires both keys).
 	userDEK := getSessionDEK(r)
 	if userDEK != nil {
 		if err := h.Store.SetUserTokenWithUserDEK(user.ID, backendID, envKey, value, userDEK); err != nil {
@@ -220,33 +215,12 @@ func (h *Handler) TokensSaveHandler(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		defer crypto.Zeroize(userDEK)
-		// Fall through to also save master-key copy for spawn-time decryption.
-		// Use UpdateMasterKeyEncrypted to preserve the user-DEK columns.
-		if ks := h.Store.KeyStore(); ks != nil {
-			if encrypted, encErr := ks.EncryptSecret([]byte(value)); encErr == nil {
-				if err := h.Store.UpdateMasterKeyEncrypted(user.ID, backendID, envKey, string(encrypted)); err != nil {
-					log.Printf("web: set master-key copy of token: %v", err)
-					// Non-fatal: user-DEK copy was saved, display will work; spawn will fail until re-saved
-				}
-			}
-		}
 		http.Redirect(w, r, "/web/tokens?backend="+backendID+"&success=Token+saved", http.StatusSeeOther)
 		return
 	}
 
-	// No session DEK available — fall back to master-key encryption if available.
-	if ks := h.Store.KeyStore(); ks != nil {
-		if encrypted, encErr := ks.EncryptSecret([]byte(value)); encErr == nil {
-			if err := h.Store.SetUserTokenEncrypted(user.ID, backendID, envKey, string(encrypted)); err == nil {
-				log.Printf("web: saved token %s/%s with master-key encryption", backendID, envKey)
-				http.Redirect(w, r, "/web/tokens?backend="+backendID+"&success=Token+saved", http.StatusSeeOther)
-				return
-			}
-		}
-	}
-	// No encryption available at all.
-	http.Redirect(w, r, "/web/tokens?backend="+backendID+"&warning=Session+expired+re-login+to+save+with+user+encryption", http.StatusSeeOther)
-	return
+	// No session DEK available. The user must re-authenticate to save tokens.
+	http.Error(w, "Session expired — re-login to save tokens", http.StatusUnauthorized)
 }
 
 func (h *Handler) TokensDeleteHandler(w http.ResponseWriter, r *http.Request) {

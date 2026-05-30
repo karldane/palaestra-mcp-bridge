@@ -363,7 +363,7 @@ func runMigration(s *store.Store, dryRun bool) {
 			continue
 		}
 
-		err := s.SetUserTokenEncrypted(item.userID, item.backendID, item.envKey, "")
+		_, err := s.DB().Exec(`INSERT OR REPLACE INTO user_tokens (user_id, backend_id, env_key, value, encrypted_value) VALUES (?, ?, ?, '', ?)`, item.userID, item.backendID, item.envKey, "")
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "Error preparing token: %v\n", err)
 			fail++

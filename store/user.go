@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"fmt"
 	"time"
 
 	"github.com/mcp-bridge/mcp-bridge/internal/crypto"
@@ -215,38 +216,7 @@ func (s *Store) DeleteUserToken(userID, backendID, envKey string) error {
 	return err
 }
 
-// SetUserTokenEncrypted stores an already-encrypted secret.
-func (s *Store) SetUserTokenEncrypted(userID, backendID, envKey, encryptedValue string) error {
-	_, err := s.db.Exec(
-		`INSERT OR REPLACE INTO user_tokens (user_id, backend_id, env_key, value, encrypted_value)
-		 VALUES (?, ?, ?, '', ?)`,
-		userID, backendID, envKey, encryptedValue,
-	)
-	return err
-}
 
-// UpdateMasterKeyEncrypted updates only the encrypted_value column with master-key ciphertext,
-// leaving other columns (encrypted_dek, encryption_type) intact.
-// Use this when you want to ensure spawn-time decryption works without destroying user-DEK columns.
-func (s *Store) UpdateMasterKeyEncrypted(userID, backendID, envKey, encryptedValue string) error {
-	result, err := s.db.Exec(
-		`UPDATE user_tokens SET encrypted_value = ? WHERE user_id = ? AND backend_id = ? AND env_key = ?`,
-		encryptedValue, userID, backendID, envKey,
-	)
-	if err != nil {
-		return err
-	}
-	rows, _ := result.RowsAffected()
-	if rows == 0 {
-		// Row doesn't exist yet — insert it.
-		_, err = s.db.Exec(
-			`INSERT OR REPLACE INTO user_tokens (user_id, backend_id, env_key, value, encrypted_value)
-			 VALUES (?, ?, ?, '', ?)`,
-			userID, backendID, envKey, encryptedValue,
-		)
-	}
-	return err
-}
 
 // GetUserTokenDecrypted retrieves and decrypts a user token.
 func (s *Store) GetUserTokenDecrypted(userID, backendID, envKey string) (string, error) {
@@ -429,26 +399,25 @@ func IsBcrypt(s string) bool {
 	return len(s) > 4 && (s[:4] == "$2a$" || s[:4] == "$2b$" || s[:4] == "$2y$")
 }
 
-// SetUserTokenWithUserDEK encrypts a token using a user-derived key.
-// It generates a random DEK for the token, encrypts the token value with the DEK,
-// then encrypts the DEK with the user's derived key.
+// SetUserTokenWithUserDEK encrypts a token using the layered dual-key scheme.
+// First the plaintext is encrypted with the master key (spawn-time path), then
+// the master-key ciphertext is wrapped with the user-derived DEK (user path).
+// Both keys are required to decrypt via the user path; the master key alone
+// suffices for the spawn-time path.
 func (s *Store) SetUserTokenWithUserDEK(userID, backendID, envKey, tokenValue string, userDEK []byte) error {
 	if userDEK == nil {
 		return errors.New("user DEK is required")
 	}
+	if s.keyStore == nil {
+		return errors.New("keystore not initialized")
+	}
 
-	tokenDEK, err := crypto.GenerateRandomKey()
+	masterCiphertext, err := s.keyStore.EncryptSecret([]byte(tokenValue))
 	if err != nil {
 		return err
 	}
-	defer crypto.Zeroize(tokenDEK)
 
-	ciphertext, err := crypto.AES256GCMEncrypt(tokenDEK, []byte(tokenValue))
-	if err != nil {
-		return err
-	}
-
-	encryptedDEK, err := crypto.AES256GCMEncrypt(userDEK, tokenDEK)
+	encryptedDEK, err := crypto.AES256GCMEncrypt(userDEK, masterCiphertext)
 	if err != nil {
 		return err
 	}
@@ -456,23 +425,35 @@ func (s *Store) SetUserTokenWithUserDEK(userID, backendID, envKey, tokenValue st
 	_, err = s.db.Exec(
 		`INSERT OR REPLACE INTO user_tokens (user_id, backend_id, env_key, value, encrypted_value, encrypted_dek, encryption_type)
 		 VALUES (?, ?, ?, '', ?, ?, 'user')`,
-		userID, backendID, envKey, string(ciphertext), string(encryptedDEK),
+		userID, backendID, envKey, string(masterCiphertext), string(encryptedDEK),
 	)
 	return err
 }
 
-// GetUserTokenDecryptedWithUserDEK retrieves and decrypts a user token using the user's derived key.
+// GetUserTokenDecryptedWithUserDEK retrieves and decrypts a user token using
+// the user's derived key. This is the user-facing path that requires both the
+// user DEK (from password) and the master key (from keystore).
+//
+// Decryption sequence:
+//  1. Unwrap master-key ciphertext from encrypted_dek using userDEK
+//  2. Decrypt master-key ciphertext using the master KEK
+//
+// There is no fallback to master-key-only decryption. If the user DEK is wrong,
+// this returns a hard error.
 func (s *Store) GetUserTokenDecryptedWithUserDEK(userID, backendID, envKey string, userDEK []byte) (string, error) {
 	if userDEK == nil {
 		return "", errors.New("user DEK is required")
 	}
+	if s.keyStore == nil {
+		return "", errors.New("keystore not initialized")
+	}
 
-	var value, encrypted, encryptedDEK, encryptionType string
+	var value, encrypted, encryptedDEK string
 	err := s.db.QueryRow(
-		`SELECT value, COALESCE(encrypted_value, ''), COALESCE(encrypted_dek, ''), COALESCE(encryption_type, 'legacy')
+		`SELECT value, COALESCE(encrypted_value, ''), COALESCE(encrypted_dek, '')
 		 FROM user_tokens WHERE user_id = ? AND backend_id = ? AND env_key = ?`,
 		userID, backendID, envKey,
-	).Scan(&value, &encrypted, &encryptedDEK, &encryptionType)
+	).Scan(&value, &encrypted, &encryptedDEK)
 
 	if err == sql.ErrNoRows {
 		return "", err
@@ -481,29 +462,22 @@ func (s *Store) GetUserTokenDecryptedWithUserDEK(userID, backendID, envKey strin
 		return "", err
 	}
 
-	if encryptionType == "user" && encryptedDEK != "" && userDEK != nil {
-		dekCiphertext, err := crypto.AES256GCMDecrypt(userDEK, []byte(encryptedDEK))
-		if err != nil {
-			return "", err
-		}
-		defer crypto.Zeroize(dekCiphertext)
-
-		plaintext, err := crypto.AES256GCMDecrypt(dekCiphertext, []byte(encrypted))
-		if err != nil {
-			return "", err
-		}
-		return string(plaintext), nil
+	if encryptedDEK == "" {
+		return "", errors.New("token has no user-DEK layer")
 	}
 
-	if encrypted != "" && s.keyStore != nil {
-		decrypted, err := s.keyStore.DecryptSecret([]byte(encrypted))
-		if err != nil {
-			return "", err
-		}
-		return string(decrypted), nil
+	masterCiphertext, err := crypto.AES256GCMDecrypt(userDEK, []byte(encryptedDEK))
+	if err != nil {
+		return "", fmt.Errorf("user-DEK unwrap failed: %w", err)
+	}
+	defer crypto.Zeroize(masterCiphertext)
+
+	plaintext, err := s.keyStore.DecryptSecret(masterCiphertext)
+	if err != nil {
+		return "", fmt.Errorf("master-key decrypt failed: %w", err)
 	}
 
-	return value, nil
+	return string(plaintext), nil
 }
 
 // UpdateUserPasswordSalt updates a user's password salt.

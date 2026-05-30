@@ -77,6 +77,14 @@ build-windows:
 test:
 	go test ./... -v
 
+# Check for legacy encryption code in non-test files
+.PHONY: check-no-legacy
+check-no-legacy:
+	@grep -rn "UpdateMasterKeyEncrypted\|SetUserTokenEncrypted\|encryption_type.*=.*'legacy'" \
+	    --include='*.go' --exclude='*_test.go' \
+	    store/ web/ cmd/ internal/ \
+	    && (echo "ERROR: legacy encryption code detected" && exit 1) || true
+
 # Clean build artifacts
 .PHONY: clean
 clean:

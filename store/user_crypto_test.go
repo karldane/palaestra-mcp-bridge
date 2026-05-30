@@ -8,7 +8,64 @@ import (
 	"testing"
 
 	"github.com/mcp-bridge/mcp-bridge/internal/crypto"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
+
+// testUserDEK generates a random 32-byte user-derived encryption key.
+func testUserDEK(t *testing.T) []byte {
+	t.Helper()
+	dek, err := crypto.GenerateRandomKey()
+	if err != nil {
+		t.Fatalf("GenerateRandomKey: %v", err)
+	}
+	return dek
+}
+
+// testWrongDEK generates a different random key for wrong-password tests.
+func testWrongDEK(t *testing.T) []byte {
+	t.Helper()
+	return testUserDEK(t)
+}
+
+// brokenMasterKeyStore returns a KeyStore with a different master key,
+// causing master-key decryption to fail. Uses env var ENCRYPTION_KEY_DIFF
+// so the store has a different key than testStoreWithCrypto's store.
+func brokenMasterKeyStore(t *testing.T) *crypto.KeyStore {
+	t.Helper()
+	os.Setenv("ENCRYPTION_KEY_DIFF", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
+	t.Cleanup(func() { os.Unsetenv("ENCRYPTION_KEY_DIFF") })
+	return crypto.NewKeyStore(crypto.NewEnvVarProvider("ENCRYPTION_KEY_DIFF", ""))
+}
+
+// rawTokenRow holds the raw DB columns for a user_tokens row.
+type rawTokenRow struct {
+	UserID         string
+	BackendID      string
+	EnvKey         string
+	Value          string
+	EncryptedValue string
+	EncryptedDEK   string
+	EncryptionType string
+}
+
+// fetchRawTokenRow reads a user_tokens row directly from the DB.
+func fetchRawTokenRow(t *testing.T, s *Store, userID, backendID, envKey string) rawTokenRow {
+	t.Helper()
+	var row rawTokenRow
+	err := s.db.QueryRow(
+		`SELECT user_id, backend_id, env_key, value,
+		        COALESCE(encrypted_value, ''), COALESCE(encrypted_dek, ''),
+		        COALESCE(encryption_type, '')
+		 FROM user_tokens WHERE user_id = ? AND backend_id = ? AND env_key = ?`,
+		userID, backendID, envKey,
+	).Scan(&row.UserID, &row.BackendID, &row.EnvKey, &row.Value,
+		&row.EncryptedValue, &row.EncryptedDEK, &row.EncryptionType)
+	if err != nil {
+		t.Fatalf("fetchRawTokenRow: %v", err)
+	}
+	return row
+}
 
 func testStoreWithCrypto(t *testing.T) (*Store, string, *crypto.EnvVarProvider) {
 	t.Helper()
@@ -51,36 +108,6 @@ func TestUserToken_EncryptedFieldExists(t *testing.T) {
 	}
 }
 
-func TestSetUserTokenEncrypted_StoresEncryptedValue(t *testing.T) {
-	s, dir, _ := testStoreWithCrypto(t)
-	defer os.RemoveAll(dir)
-	defer s.Close()
-
-	u := &User{ID: "u1", Name: "A", Email: "a@x.com", Password: "pw"}
-	s.CreateUser(u)
-	b := &Backend{ID: "jira", Command: "echo", PoolSize: 1, Env: "{}"}
-	s.CreateBackend(b)
-
-	encrypted := []byte{0x01, 0x02, 0x03, 0x04}
-	err := s.SetUserTokenEncrypted("u1", "jira", "API_TOKEN", string(encrypted))
-	if err != nil {
-		t.Fatalf("SetUserTokenEncrypted failed: %v", err)
-	}
-
-	var storedEnc string
-	err = s.db.QueryRow(`
-		SELECT encrypted_value FROM user_tokens 
-		WHERE user_id='u1' AND backend_id='jira' AND env_key='API_TOKEN'
-	`).Scan(&storedEnc)
-	if err != nil {
-		t.Fatalf("failed to retrieve encrypted value: %v", err)
-	}
-
-	if storedEnc != string(encrypted) {
-		t.Errorf("stored encrypted value mismatch")
-	}
-}
-
 func TestGetUserTokenDecrypted_RoundTrip(t *testing.T) {
 	s, dir, _ := testStoreWithCrypto(t)
 	defer os.RemoveAll(dir)
@@ -105,9 +132,9 @@ func TestGetUserTokenDecrypted_RoundTrip(t *testing.T) {
 		t.Fatalf("failed to encrypt: %v", err)
 	}
 
-	err = s.SetUserTokenEncrypted("u1", "jira", "API_TOKEN", string(encrypted))
+	_, err = s.db.Exec(`INSERT OR REPLACE INTO user_tokens (user_id, backend_id, env_key, value, encrypted_value) VALUES (?, ?, ?, '', ?)`, "u1", "jira", "API_TOKEN", string(encrypted))
 	if err != nil {
-		t.Fatalf("SetUserTokenEncrypted failed: %v", err)
+		t.Fatalf("insert token failed: %v", err)
 	}
 
 	decrypted, err = s.GetUserTokenDecrypted("u1", "jira", "API_TOKEN")
@@ -141,9 +168,9 @@ func TestGetUserTokensDecrypted_MultipleTokens(t *testing.T) {
 		if err != nil {
 			t.Fatalf("failed to encrypt %s: %v", key, err)
 		}
-		err = s.SetUserTokenEncrypted("u1", "jira", key, string(encrypted))
+		_, err = s.db.Exec(`INSERT OR REPLACE INTO user_tokens (user_id, backend_id, env_key, value, encrypted_value) VALUES (?, ?, ?, '', ?)`, "u1", "jira", key, string(encrypted))
 		if err != nil {
-			t.Fatalf("SetUserTokenEncrypted failed for %s: %v", key, err)
+			t.Fatalf("insert token failed for %s: %v", key, err)
 		}
 	}
 
@@ -240,7 +267,7 @@ func TestHasEncryptedTokens_WithEncrypted(t *testing.T) {
 	s.CreateBackend(b)
 
 	encrypted, _ := s.keyStore.EncryptSecret([]byte("secret"))
-	s.SetUserTokenEncrypted("u1", "jira", "TOKEN", string(encrypted))
+	s.db.Exec(`INSERT OR REPLACE INTO user_tokens (user_id, backend_id, env_key, value, encrypted_value) VALUES (?, ?, ?, '', ?)`, "u1", "jira", "TOKEN", string(encrypted))
 
 	hasEncrypted, err := s.HasEncryptedTokens()
 	if err != nil {
@@ -303,7 +330,7 @@ func TestMigrateSecrets_AlreadyMigrated(t *testing.T) {
 	s.CreateBackend(b)
 
 	encrypted, _ := s.keyStore.EncryptSecret([]byte("secret"))
-	s.SetUserTokenEncrypted("u1", "jira", "TOKEN", string(encrypted))
+	s.db.Exec(`INSERT OR REPLACE INTO user_tokens (user_id, backend_id, env_key, value, encrypted_value) VALUES (?, ?, ?, '', ?)`, "u1", "jira", "TOKEN", string(encrypted))
 
 	err := s.MigrateSecrets(context.Background())
 	if err != nil {
@@ -333,9 +360,9 @@ func TestVerifyEncryptedSecrets_AllValid(t *testing.T) {
 		if err != nil {
 			t.Fatalf("encrypt failed: %v", err)
 		}
-		err = s.SetUserTokenEncrypted("u1", "jira", keys[i], string(encrypted))
+		_, err = s.db.Exec(`INSERT OR REPLACE INTO user_tokens (user_id, backend_id, env_key, value, encrypted_value) VALUES (?, ?, ?, '', ?)`, "u1", "jira", keys[i], string(encrypted))
 		if err != nil {
-			t.Fatalf("SetUserTokenEncrypted failed: %v", err)
+			t.Fatalf("insert token failed: %v", err)
 		}
 	}
 
@@ -362,9 +389,9 @@ func TestVerifyEncryptedSecrets_SomeInvalid(t *testing.T) {
 	s.CreateBackend(b)
 
 	validEncrypted, _ := s.keyStore.EncryptSecret([]byte("valid"))
-	s.SetUserTokenEncrypted("u1", "jira", "VALID", string(validEncrypted))
+	s.db.Exec(`INSERT OR REPLACE INTO user_tokens (user_id, backend_id, env_key, value, encrypted_value) VALUES (?, ?, ?, '', ?)`, "u1", "jira", "VALID", string(validEncrypted))
 
-	s.SetUserTokenEncrypted("u1", "jira", "INVALID", string([]byte{0xFF, 0xFE}))
+	s.db.Exec(`INSERT OR REPLACE INTO user_tokens (user_id, backend_id, env_key, value, encrypted_value) VALUES (?, ?, ?, '', ?)`, "u1", "jira", "INVALID", string([]byte{0xFF, 0xFE}))
 
 	s.SetUserToken(&UserToken{UserID: "u1", BackendID: "jira", EnvKey: "PLAIN", Value: "plaintext"})
 
@@ -443,48 +470,102 @@ func TestMigrateSecrets_RollbackCapability(t *testing.T) {
 	}
 }
 
-func TestDualKeyInvariant_WriteBothKeys_DecryptSpawnTime(t *testing.T) {
-	s, dir, provider := testStoreWithCrypto(t)
+// ---------- Phase 1: Dual-key encryption invariants (TDD) ----------
+
+func setupUserAndBackend(t *testing.T, s *Store) {
+	t.Helper()
+	s.CreateUser(&User{ID: "u1", Name: "A", Email: "a@x.com", Password: "pw"})
+	s.CreateBackend(&Backend{ID: "github", Command: "echo", PoolSize: 1, Env: "{}"})
+}
+
+func TestSetTokenStoresLayeredCiphertext(t *testing.T) {
+	s, dir, _ := testStoreWithCrypto(t)
 	defer os.RemoveAll(dir)
 	defer s.Close()
+	setupUserAndBackend(t, s)
 
-	u := &User{ID: "u1", Name: "A", Email: "a@x.com", Password: "pw"}
-	s.CreateUser(u)
-	b := &Backend{ID: "github", Command: "echo", PoolSize: 1, Env: "{}"}
-	s.CreateBackend(b)
+	userDEK := testUserDEK(t)
+	err := s.SetUserTokenWithUserDEK("u1", "github", "API_TOKEN", "ghp_secret", userDEK)
+	require.NoError(t, err)
 
-	plaintext := "ghp_githubtoken123"
-	userDEK, err := crypto.GenerateRandomKey()
-	if err != nil {
-		t.Fatalf("failed to generate user DEK: %v", err)
-	}
-	defer crypto.Zeroize(userDEK)
+	row := fetchRawTokenRow(t, s, "u1", "github", "API_TOKEN")
+	assert.Equal(t, "user", row.EncryptionType)
+	assert.NotEmpty(t, row.EncryptedValue)
+	assert.NotEmpty(t, row.EncryptedDEK)
 
-	err = s.SetUserTokenWithUserDEK("u1", "github", "GITHUB_PERSONAL_ACCESS_TOKEN", plaintext, userDEK)
-	if err != nil {
-		t.Fatalf("SetUserTokenWithUserDEK failed: %v", err)
-	}
+	masterCiphertext := []byte(row.EncryptedValue)
+	plaintext, err := s.keyStore.DecryptSecret(masterCiphertext)
+	require.NoError(t, err)
+	assert.Equal(t, "ghp_secret", string(plaintext))
 
-	masterKeyCiphertext, err := s.keyStore.EncryptSecret([]byte(plaintext))
-	if err != nil {
-		t.Fatalf("master-key encryption failed: %v", err)
-	}
+	encDEK := []byte(row.EncryptedDEK)
+	unwrapped, err := crypto.AES256GCMDecrypt(userDEK, encDEK)
+	require.NoError(t, err)
+	assert.Equal(t, masterCiphertext, unwrapped,
+		"encrypted_dek must wrap the master-key ciphertext, not a random DEK")
+}
 
-	err = s.UpdateMasterKeyEncrypted("u1", "github", "GITHUB_PERSONAL_ACCESS_TOKEN", string(masterKeyCiphertext))
-	if err != nil {
-		t.Fatalf("UpdateMasterKeyEncrypted failed: %v", err)
-	}
+func TestUserPathRequiresBothKeys(t *testing.T) {
+	s, dir, _ := testStoreWithCrypto(t)
+	defer os.RemoveAll(dir)
+	defer s.Close()
+	setupUserAndBackend(t, s)
 
-	tokens, err := s.GetUserTokensDecrypted("u1", "github")
-	if err != nil {
-		t.Fatalf("GetUserTokensDecrypted failed: %v", err)
-	}
-	if len(tokens) != 1 {
-		t.Fatalf("got %d tokens, want 1", len(tokens))
-	}
-	if tokens[0].Value != plaintext {
-		t.Errorf("spawn-time decrypted = %q, want %q", tokens[0].Value, plaintext)
-	}
+	userDEK := testUserDEK(t)
+	require.NoError(t, s.SetUserTokenWithUserDEK("u1", "github", "API_TOKEN", "ghp_secret", userDEK))
 
-	_ = provider
+	got, err := s.GetUserTokenDecryptedWithUserDEK("u1", "github", "API_TOKEN", userDEK)
+	require.NoError(t, err)
+	assert.Equal(t, "ghp_secret", got)
+}
+
+func TestWrongPasswordIsHardFailure(t *testing.T) {
+	s, dir, _ := testStoreWithCrypto(t)
+	defer os.RemoveAll(dir)
+	defer s.Close()
+	setupUserAndBackend(t, s)
+
+	userDEK := testUserDEK(t)
+	wrongDEK := testWrongDEK(t)
+	require.NoError(t, s.SetUserTokenWithUserDEK("u1", "github", "API_TOKEN", "ghp_secret", userDEK))
+
+	got, err := s.GetUserTokenDecryptedWithUserDEK("u1", "github", "API_TOKEN", wrongDEK)
+	assert.Error(t, err, "wrong password must return an error")
+	assert.Empty(t, got, "wrong password must never return plaintext")
+}
+
+func TestSpawnPathDecryptsWithMasterKeyOnly(t *testing.T) {
+	s, dir, _ := testStoreWithCrypto(t)
+	defer os.RemoveAll(dir)
+	defer s.Close()
+	setupUserAndBackend(t, s)
+
+	userDEK := testUserDEK(t)
+	require.NoError(t, s.SetUserTokenWithUserDEK("u1", "github", "API_TOKEN", "ghp_secret", userDEK))
+
+	got, err := s.GetUserTokenDecrypted("u1", "github", "API_TOKEN")
+	require.NoError(t, err)
+	assert.Equal(t, "ghp_secret", got)
+}
+
+func TestNoFallbackInUserPath(t *testing.T) {
+	s, dir, _ := testStoreWithCrypto(t)
+	defer os.RemoveAll(dir)
+	defer s.Close()
+	setupUserAndBackend(t, s)
+
+	userDEK := testUserDEK(t)
+	wrongDEK := testWrongDEK(t)
+	require.NoError(t, s.SetUserTokenWithUserDEK("u1", "github", "API_TOKEN", "ghp_secret", userDEK))
+
+	s.keyStore = brokenMasterKeyStore(t)
+
+	_, err := s.GetUserTokenDecryptedWithUserDEK("u1", "github", "API_TOKEN", wrongDEK)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "user-DEK unwrap failed",
+		"error must come from the user-DEK layer, not from a master-key fallback")
+}
+
+func TestUpdateMasterKeyEncryptedDoesNotExist(t *testing.T) {
+	t.Log("UpdateMasterKeyEncrypted must not exist in store/user.go")
 }

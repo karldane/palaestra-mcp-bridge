@@ -229,47 +229,34 @@ func queryTokens(s *store.Store, userID string) ([]tokenRow, error) {
 	return tokens, rows.Err()
 }
 
+// ExtractToken decrypts a single token using the dual-key scheme.
+// Returns an error if the user DEK is wrong (GCM auth failure), the token
+// has no user-DEK layer, or the master key in the store cannot decrypt.
+// No fallback paths — for user-type tokens, both keys are required.
+func ExtractToken(s *store.Store, userID, backendID, envKey string, userDEK []byte) (string, error) {
+	return s.GetUserTokenDecryptedWithUserDEK(userID, backendID, envKey, userDEK)
+}
+
 func extractToken(s *store.Store, t tokenRow, userDEK []byte) extractedSecret {
 	sec := extractedSecret{
 		Backend: t.BackendID,
 		EnvKey:  t.EnvKey,
 	}
 
-	// Try user-derived decryption first
-	if t.EncryptionType == "user" && t.EncryptedDEK != "" && userDEK != nil {
-		plaintext, err := crypto.AES256GCMDecrypt(userDEK, []byte(t.EncryptedDEK))
-		if err == nil {
-			plaintext2, err := crypto.AES256GCMDecrypt(plaintext, []byte(t.Encrypted))
-			if err == nil {
-				sec.Value = string(plaintext2)
-				sec.Method = "user-derived"
-				return sec
-			}
-		}
-	}
-
-	// Try master-key envelope decryption
-	if t.Encrypted != "" && s.KeyStore() != nil {
-		plaintext, err := s.KeyStore().DecryptSecret([]byte(t.Encrypted))
-		if err == nil {
-			sec.Value = string(plaintext)
-			if t.EncryptedDEK != "" {
-				sec.Method = "master-key (user-derived failed)"
-			} else {
-				sec.Method = "master-key"
-			}
-			return sec
-		}
-	}
-
-	// Fallback to plaintext value
-	if t.Value != "" {
-		sec.Value = t.Value
-		sec.Method = "plaintext"
+	if userDEK == nil || t.EncryptedDEK == "" {
+		sec.Value = fmt.Sprintf("<no user-DEK layer for %s/%s>", t.BackendID, t.EnvKey)
+		sec.Method = "failed"
 		return sec
 	}
 
-	sec.Value = fmt.Sprintf("<decryption failed: no decryptable data for %s/%s>", t.BackendID, t.EnvKey)
-	sec.Method = "failed"
+	plaintext, err := ExtractToken(s, t.UserID, t.BackendID, t.EnvKey, userDEK)
+	if err != nil {
+		sec.Value = fmt.Sprintf("<decryption failed: %v>", err)
+		sec.Method = "failed"
+		return sec
+	}
+
+	sec.Value = plaintext
+	sec.Method = "user-derived"
 	return sec
 }
