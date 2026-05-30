@@ -349,27 +349,30 @@ func (s *MCPBridgeServer) handleToolsCall(w http.ResponseWriter, r *http.Request
 					})
 					return
 				}
-				// Return 403 Forbidden with approval details in body
-				// MCP client shows HTTP error messages to LLM, so use error response
+				// Return 200 OK with approval details in an error body (standard JSON-RPC pattern)
+				// Returning 200 avoids transport-level timeouts/blocks in some clients (e.g. Claude Desktop)
 				respID := id
 				if respID == nil {
 					respID = 1
 				}
 				w.Header().Set("Content-Type", "application/json")
 				w.Header().Set("X-Enforcer-Status", "pending_approval")
-				w.WriteHeader(http.StatusForbidden)
+				w.WriteHeader(http.StatusOK)
 				json.NewEncoder(w).Encode(map[string]interface{}{
 					"jsonrpc": "2.0",
 					"id":      respID,
 					"error": map[string]interface{}{
 						"code":           -32003,
-						"message":        decision.Message,
-						"approval_id":    approvalID,
-						"policy_id":      decision.PolicyID,
-						"tool":           toolName,
-						"requires_human": true,
-						"status_url":     "/web/admin/enforcer/api/approval-status?id=" + approvalID,
-						"instructions":   "Use mcpbridge_check_approval_status tool with approval_id: " + approvalID + " to check if this request was approved.",
+						"message":        fmt.Sprintf("%s (Approval ID: %s)", decision.Message, approvalID),
+						"data": map[string]interface{}{
+							"status":         "pending_approval",
+							"approval_id":    approvalID,
+							"policy_id":      decision.PolicyID,
+							"tool":           toolName,
+							"requires_human": true,
+							"status_url":     "/web/admin/enforcer/api/approval-status?id=" + approvalID,
+							"instructions":   "Use mcpbridge_check_approval_status tool with approval_id: " + approvalID + " to check if this request was approved.",
+						},
 					},
 				})
 				return
@@ -398,21 +401,24 @@ func (s *MCPBridgeServer) handleToolsCall(w http.ResponseWriter, r *http.Request
 					})
 					return
 				}
-				// Return 202 Accepted with user approval details
+				// Return 200 OK with user approval details in error body
 				respID := id
 				if respID == nil {
 					respID = 1
 				}
 				w.Header().Set("Content-Type", "application/json")
 				w.Header().Set("X-Enforcer-Status", "pending_user_approval")
-				w.WriteHeader(http.StatusAccepted)
+				w.WriteHeader(http.StatusOK)
 				json.NewEncoder(w).Encode(map[string]interface{}{
 					"jsonrpc": "2.0",
 					"id":      respID,
-					"result": map[string]interface{}{
-						"status":      "pending_user_approval",
-						"approval_id": approvalID,
-						"message":     decision.Message,
+					"error": map[string]interface{}{
+						"code":    -32003,
+						"message": fmt.Sprintf("%s (Approval ID: %s)", decision.Message, approvalID),
+						"data": map[string]interface{}{
+							"status":      "pending_user_approval",
+							"approval_id": approvalID,
+						},
 					},
 				})
 				return

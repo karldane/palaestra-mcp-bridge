@@ -755,13 +755,13 @@ func v2toolCall(a *app, w http.ResponseWriter, r *http.Request, userID string, p
 				w.Header().Set("Content-Type", "application/json")
 				w.Header().Set("X-Enforcer-Status", "pending_approval")
 				w.Header().Set("Connection", "close")
-				w.WriteHeader(http.StatusAccepted)
+				w.WriteHeader(http.StatusOK)
 				json.NewEncoder(w).Encode(map[string]interface{}{
 					"jsonrpc": "2.0",
 					"id":      id,
 					"error": map[string]interface{}{
 						"code":        -32001,
-						"message":     decision.Message,
+						"message":     fmt.Sprintf("%s (Approval ID: %s)", decision.Message, approvalID),
 						"approval_id": approvalID,
 					},
 				})
@@ -781,13 +781,13 @@ func v2toolCall(a *app, w http.ResponseWriter, r *http.Request, userID string, p
 				w.Header().Set("Content-Type", "application/json")
 				w.Header().Set("X-Enforcer-Status", "pending_user_approval")
 				w.Header().Set("Connection", "close")
-				w.WriteHeader(http.StatusAccepted)
+				w.WriteHeader(http.StatusOK)
 				json.NewEncoder(w).Encode(map[string]interface{}{
 					"jsonrpc": "2.0",
 					"id":      id,
 					"error": map[string]interface{}{
 						"code":        -32001,
-						"message":     decision.Message,
+						"message":     fmt.Sprintf("%s (Approval ID: %s)", decision.Message, approvalID),
 						"approval_id": approvalID,
 					},
 				})

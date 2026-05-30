@@ -388,16 +388,17 @@ func handleToolsCall(a *app, w http.ResponseWriter, r *http.Request, userID stri
 					return
 				}
 
-				// Return 202 Accepted with approval ID
+				// Return 200 OK with approval ID in error body
 				w.Header().Set("Content-Type", "application/json")
-				w.WriteHeader(http.StatusAccepted)
+				w.WriteHeader(http.StatusOK)
 				json.NewEncoder(w).Encode(map[string]interface{}{
 					"jsonrpc": "2.0",
 					"id":      id,
-					"result": map[string]interface{}{
+					"error": map[string]interface{}{
+						"code":        -32003,
 						"status":      "pending_admin_approval",
 						"approval_id": approvalID,
-						"message":     decision.Message,
+						"message":     fmt.Sprintf("%s (Approval ID: %s)", decision.Message, approvalID),
 					},
 				})
 				return
@@ -427,16 +428,17 @@ func handleToolsCall(a *app, w http.ResponseWriter, r *http.Request, userID stri
 					return
 				}
 
-				// Return 202 Accepted with approval ID
+				// Return 200 OK with approval ID in error body
 				w.Header().Set("Content-Type", "application/json")
-				w.WriteHeader(http.StatusAccepted)
+				w.WriteHeader(http.StatusOK)
 				json.NewEncoder(w).Encode(map[string]interface{}{
 					"jsonrpc": "2.0",
 					"id":      id,
-					"result": map[string]interface{}{
+					"error": map[string]interface{}{
+						"code":        -32003,
 						"status":      "pending_user_approval",
 						"approval_id": approvalID,
-						"message":     decision.Message,
+						"message":     fmt.Sprintf("%s (Approval ID: %s)", decision.Message, approvalID),
 					},
 				})
 				return
