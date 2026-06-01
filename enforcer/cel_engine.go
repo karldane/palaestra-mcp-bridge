@@ -10,11 +10,18 @@ import (
 	"github.com/google/cel-go/interpreter"
 )
 
+type prioritisedDisposition struct {
+	priority int
+	action   Action
+	message  string
+}
+
 // CELEngine implements policy evaluation using Google's CEL
 type CELEngine struct {
-	env      *cel.Env
-	programs map[string]cel.Program
-	policies map[string]CELPolicy
+	env          *cel.Env
+	programs     map[string]cel.Program
+	policies     map[string]CELPolicy
+	dispositions map[MatchContext][]prioritisedDisposition
 }
 
 // NewCELEngine creates a new CEL policy engine with predefined declarations
@@ -107,7 +114,24 @@ func (e *CELEngine) AddPolicy(policy CELPolicy) error {
 
 	e.programs[policy.ID] = program
 	e.policies[policy.ID] = policy
+	e.loadDispositions()
 	return nil
+}
+
+func (e *CELEngine) loadDispositions() {
+	e.dispositions = make(map[MatchContext][]prioritisedDisposition)
+	for _, p := range e.policies {
+		if p.Dispositions == nil {
+			continue
+		}
+		for ctx, action := range p.Dispositions {
+			e.dispositions[ctx] = append(e.dispositions[ctx], prioritisedDisposition{
+				priority: p.Priority,
+				action:   action,
+				message:  p.Message,
+			})
+		}
+	}
 }
 
 // RemovePolicy removes a policy from the engine
@@ -335,6 +359,20 @@ func (celEnforcerLib) ProgramOptions() []cel.ProgramOption {
 	// CEL provides contains(), matches(), and in operators natively
 	// No custom functions needed
 	return []cel.ProgramOption{}
+}
+
+func (e *CELEngine) LookupDisposition(ctx MatchContext) (Action, string, bool) {
+	entries, ok := e.dispositions[ctx]
+	if !ok || len(entries) == 0 {
+		return "", "", false
+	}
+	best := entries[0]
+	for i := 1; i < len(entries); i++ {
+		if entries[i].priority < best.priority {
+			best = entries[i]
+		}
+	}
+	return best.action, best.message, true
 }
 
 // Ensure CELEngine implements PolicyEngine

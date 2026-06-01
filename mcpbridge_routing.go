@@ -334,7 +334,7 @@ func (s *MCPBridgeServer) handleToolsCall(w http.ResponseWriter, r *http.Request
 					BackendID:     backendID,
 					Justification: justification,
 					RequestBody:   string(body),
-				}, decision.PolicyID, decision.Message, "admin")
+				}, decision.PolicyID, decision.Message, "admin", enforcer.MatchContextPolicyHit)
 				if err != nil {
 					shared.Errorf("Failed to create approval request: %v", err)
 					w.Header().Set("Content-Type", "application/json")
@@ -386,7 +386,7 @@ func (s *MCPBridgeServer) handleToolsCall(w http.ResponseWriter, r *http.Request
 					BackendID:     backendID,
 					Justification: justification,
 					RequestBody:   string(body),
-				}, decision.PolicyID, decision.Message, "user")
+				}, decision.PolicyID, decision.Message, "user", enforcer.MatchContextPolicyHit)
 				if err != nil {
 					shared.Errorf("Failed to create user approval request: %v", err)
 					w.Header().Set("Content-Type", "application/json")

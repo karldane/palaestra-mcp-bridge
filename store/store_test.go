@@ -7,6 +7,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/mcp-bridge/mcp-bridge/enforcer"
 )
 
 // testStore creates a fresh SQLite Store in a temp dir. The caller should
@@ -1616,6 +1618,141 @@ func TestAPIKey_NotFound(t *testing.T) {
 	_, err = s.GetAPIKeyByHash("nonexistent")
 	if err != sql.ErrNoRows {
 		t.Errorf("GetAPIKeyByHash(nonexistent) err = %v, want ErrNoRows", err)
+	}
+}
+
+// ---------- User Rate Limit Overrides ----------
+
+func TestUserRateLimitOverride_CRUD(t *testing.T) {
+	s, dir := testStore(t)
+	defer os.RemoveAll(dir)
+	defer s.Close()
+
+	es := NewEnforcerStore(s.DB())
+
+	override := enforcer.UserRateLimitOverrideRow{
+		UserID:           "user1",
+		BackendID:        "slack",
+		SetBy:            "user",
+		RiskCapacity:     50,
+		ResourceCapacity: 100,
+		CostMultiplier:   2,
+		CreatedAt:        time.Now(),
+		UpdatedAt:        time.Now(),
+	}
+
+	// Upsert
+	if err := es.UpsertUserRateLimitOverride(override); err != nil {
+		t.Fatalf("UpsertUserRateLimitOverride: %v", err)
+	}
+
+	// Get
+	got, err := es.GetUserRateLimitOverride("user1", "slack")
+	if err != nil {
+		t.Fatalf("GetUserRateLimitOverride: %v", err)
+	}
+	if got.RiskCapacity != 50 {
+		t.Errorf("RiskCapacity = %d, want 50", got.RiskCapacity)
+	}
+	if got.ResourceCapacity != 100 {
+		t.Errorf("ResourceCapacity = %d, want 100", got.ResourceCapacity)
+	}
+	if got.CostMultiplier != 2 {
+		t.Errorf("CostMultiplier = %d, want 2", got.CostMultiplier)
+	}
+	if got.SetBy != "user" {
+		t.Errorf("SetBy = %q, want user", got.SetBy)
+	}
+
+	// Update
+	override.RiskCapacity = 30
+	override.CostMultiplier = 1
+	if err := es.UpsertUserRateLimitOverride(override); err != nil {
+		t.Fatalf("UpsertUserRateLimitOverride (update): %v", err)
+	}
+	got, err = es.GetUserRateLimitOverride("user1", "slack")
+	if err != nil {
+		t.Fatalf("GetUserRateLimitOverride after update: %v", err)
+	}
+	if got.RiskCapacity != 30 {
+		t.Errorf("after update RiskCapacity = %d, want 30", got.RiskCapacity)
+	}
+	if got.CostMultiplier != 1 {
+		t.Errorf("after update CostMultiplier = %d, want 1", got.CostMultiplier)
+	}
+
+	// Delete
+	if err := es.DeleteUserRateLimitOverride("user1", "slack"); err != nil {
+		t.Fatalf("DeleteUserRateLimitOverride: %v", err)
+	}
+	_, err = es.GetUserRateLimitOverride("user1", "slack")
+	if err == nil {
+		t.Error("expected error after delete, got nil")
+	}
+}
+
+func TestListUserRateLimitOverrides_Scoped(t *testing.T) {
+	s, dir := testStore(t)
+	defer os.RemoveAll(dir)
+	defer s.Close()
+
+	es := NewEnforcerStore(s.DB())
+
+	ov1 := enforcer.UserRateLimitOverrideRow{
+		UserID:           "user1",
+		BackendID:        "slack",
+		SetBy:            "user",
+		RiskCapacity:     50,
+		ResourceCapacity: 100,
+		CostMultiplier:   1,
+		CreatedAt:        time.Now(),
+		UpdatedAt:        time.Now(),
+	}
+	ov2 := enforcer.UserRateLimitOverrideRow{
+		UserID:           "user2",
+		BackendID:        "slack",
+		SetBy:            "admin",
+		RiskCapacity:     80,
+		ResourceCapacity: 200,
+		CostMultiplier:   3,
+		CreatedAt:        time.Now(),
+		UpdatedAt:        time.Now(),
+	}
+
+	if err := es.UpsertUserRateLimitOverride(ov1); err != nil {
+		t.Fatalf("Upsert user1: %v", err)
+	}
+	if err := es.UpsertUserRateLimitOverride(ov2); err != nil {
+		t.Fatalf("Upsert user2: %v", err)
+	}
+
+	// ListAll
+	all, err := es.ListAllRateLimitOverrides()
+	if err != nil {
+		t.Fatalf("ListAllRateLimitOverrides: %v", err)
+	}
+	if len(all) != 2 {
+		t.Errorf("ListAll: got %d, want 2", len(all))
+	}
+
+	// ListUser
+	user1Overrides, err := es.ListUserRateLimitOverrides("user1")
+	if err != nil {
+		t.Fatalf("ListUserRateLimitOverrides user1: %v", err)
+	}
+	if len(user1Overrides) != 1 {
+		t.Fatalf("ListUser user1: got %d, want 1", len(user1Overrides))
+	}
+	if user1Overrides[0].RiskCapacity != 50 {
+		t.Errorf("user1 RiskCapacity = %d, want 50", user1Overrides[0].RiskCapacity)
+	}
+
+	user2Overrides, err := es.ListUserRateLimitOverrides("user2")
+	if err != nil {
+		t.Fatalf("ListUserRateLimitOverrides user2: %v", err)
+	}
+	if len(user2Overrides) != 1 {
+		t.Fatalf("ListUser user2: got %d, want 1", len(user2Overrides))
 	}
 }
 

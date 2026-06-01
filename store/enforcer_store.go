@@ -34,10 +34,10 @@ func (s *EnforcerStore) CreatePolicy(policy enforcer.PolicyRow) error {
 	if policy.Locked {
 		lockedInt = 1
 	}
-	_, err := s.db.Exec(`INSERT INTO enforcer_policies (id, name, description, scope, expression, action, severity, message, enabled, priority, locked, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+	_, err := s.db.Exec(`INSERT INTO enforcer_policies (id, name, description, scope, expression, action, severity, message, enabled, priority, locked, dispositions, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		policy.ID, policy.Name, policy.Description, policy.Scope, policy.Expression,
 		policy.Action, policy.Severity, policy.Message, enabledInt, policy.Priority, lockedInt,
-		policy.CreatedAt, policy.UpdatedAt)
+		policy.DispositionsJSON, policy.CreatedAt, policy.UpdatedAt)
 	return err
 }
 
@@ -45,9 +45,9 @@ func (s *EnforcerStore) CreatePolicy(policy enforcer.PolicyRow) error {
 func (s *EnforcerStore) GetPolicy(id string) (enforcer.PolicyRow, error) {
 	var p enforcer.PolicyRow
 	var enabledInt, lockedInt int
-	err := s.db.QueryRow(`SELECT id, name, description, scope, expression, action, severity, message, enabled, priority, locked, created_at, updated_at FROM enforcer_policies WHERE id = ?`, id).Scan(
+	err := s.db.QueryRow(`SELECT id, name, description, scope, expression, action, severity, message, enabled, priority, locked, dispositions, created_at, updated_at FROM enforcer_policies WHERE id = ?`, id).Scan(
 		&p.ID, &p.Name, &p.Description, &p.Scope, &p.Expression, &p.Action,
-		&p.Severity, &p.Message, &enabledInt, &p.Priority, &lockedInt, &p.CreatedAt, &p.UpdatedAt)
+		&p.Severity, &p.Message, &enabledInt, &p.Priority, &lockedInt, &p.DispositionsJSON, &p.CreatedAt, &p.UpdatedAt)
 	if err != nil {
 		return p, err
 	}
@@ -58,7 +58,7 @@ func (s *EnforcerStore) GetPolicy(id string) (enforcer.PolicyRow, error) {
 
 // ListPolicies retrieves all enabled policies
 func (s *EnforcerStore) ListPolicies() ([]enforcer.PolicyRow, error) {
-	rows, err := s.db.Query(`SELECT id, name, description, scope, expression, action, severity, message, enabled, priority, locked, created_at, updated_at FROM enforcer_policies WHERE enabled = 1 ORDER BY priority ASC, created_at ASC`)
+	rows, err := s.db.Query(`SELECT id, name, description, scope, expression, action, severity, message, enabled, priority, locked, dispositions, created_at, updated_at FROM enforcer_policies WHERE enabled = 1 ORDER BY priority ASC, created_at ASC`)
 	if err != nil {
 		return nil, err
 	}
@@ -69,7 +69,7 @@ func (s *EnforcerStore) ListPolicies() ([]enforcer.PolicyRow, error) {
 		var p enforcer.PolicyRow
 		var enabledInt, lockedInt int
 		err := rows.Scan(&p.ID, &p.Name, &p.Description, &p.Scope, &p.Expression, &p.Action,
-			&p.Severity, &p.Message, &enabledInt, &p.Priority, &lockedInt, &p.CreatedAt, &p.UpdatedAt)
+			&p.Severity, &p.Message, &enabledInt, &p.Priority, &lockedInt, &p.DispositionsJSON, &p.CreatedAt, &p.UpdatedAt)
 		if err != nil {
 			return nil, err
 		}
@@ -96,9 +96,9 @@ func (s *EnforcerStore) UpdatePolicy(policy enforcer.PolicyRow) error {
 	if policy.Locked {
 		lockedInt = 1
 	}
-	_, err := s.db.Exec(`UPDATE enforcer_policies SET name = ?, description = ?, scope = ?, expression = ?, action = ?, severity = ?, message = ?, enabled = ?, priority = ?, locked = ?, updated_at = ? WHERE id = ?`,
+	_, err := s.db.Exec(`UPDATE enforcer_policies SET name = ?, description = ?, scope = ?, expression = ?, action = ?, severity = ?, message = ?, enabled = ?, priority = ?, locked = ?, dispositions = ?, updated_at = ? WHERE id = ?`,
 		policy.Name, policy.Description, policy.Scope, policy.Expression, policy.Action,
-		policy.Severity, policy.Message, enabledInt, policy.Priority, lockedInt, policy.UpdatedAt, policy.ID)
+		policy.Severity, policy.Message, enabledInt, policy.Priority, lockedInt, policy.DispositionsJSON, policy.UpdatedAt, policy.ID)
 	return err
 }
 
@@ -477,6 +477,102 @@ func (s *EnforcerStore) ListAllToolProfiles() ([]ToolProfileRow, error) {
 		profiles = append(profiles, p)
 	}
 	return profiles, rows.Err()
+}
+
+// UpsertUserRateLimitOverride inserts or updates a user rate limit override.
+func (s *EnforcerStore) UpsertUserRateLimitOverride(override enforcer.UserRateLimitOverrideRow) error {
+	if override.ID == "" {
+		override.ID = generateID()
+	}
+	if override.CreatedAt.IsZero() {
+		override.CreatedAt = time.Now()
+	}
+	if override.UpdatedAt.IsZero() {
+		override.UpdatedAt = time.Now()
+	}
+	if override.SetBy == "" {
+		override.SetBy = "user"
+	}
+	_, err := s.db.Exec(`
+		INSERT INTO enforcer_user_rate_limit_overrides (id, user_id, backend_id, set_by, risk_capacity, resource_capacity, cost_multiplier, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+		ON CONFLICT(user_id, backend_id, set_by) DO UPDATE SET
+			risk_capacity=excluded.risk_capacity,
+			resource_capacity=excluded.resource_capacity,
+			cost_multiplier=excluded.cost_multiplier,
+			updated_at=excluded.updated_at`,
+		override.ID, override.UserID, override.BackendID, override.SetBy,
+		override.RiskCapacity, override.ResourceCapacity, override.CostMultiplier,
+		override.CreatedAt, override.UpdatedAt)
+	return err
+}
+
+// GetUserRateLimitOverride retrieves a user rate limit override.
+func (s *EnforcerStore) GetUserRateLimitOverride(userID, backendID string) (enforcer.UserRateLimitOverrideRow, error) {
+	var row enforcer.UserRateLimitOverrideRow
+	err := s.db.QueryRow(`
+		SELECT id, user_id, backend_id, set_by, risk_capacity, resource_capacity, cost_multiplier, created_at, updated_at
+		FROM enforcer_user_rate_limit_overrides
+		WHERE user_id = ? AND backend_id = ?`,
+		userID, backendID).Scan(
+		&row.ID, &row.UserID, &row.BackendID, &row.SetBy,
+		&row.RiskCapacity, &row.ResourceCapacity, &row.CostMultiplier,
+		&row.CreatedAt, &row.UpdatedAt)
+	if err != nil {
+		return enforcer.UserRateLimitOverrideRow{}, err
+	}
+	return row, nil
+}
+
+// ListUserRateLimitOverrides returns overrides for a specific user.
+func (s *EnforcerStore) ListUserRateLimitOverrides(userID string) ([]enforcer.UserRateLimitOverrideRow, error) {
+	rows, err := s.db.Query(`
+		SELECT id, user_id, backend_id, set_by, risk_capacity, resource_capacity, cost_multiplier, created_at, updated_at
+		FROM enforcer_user_rate_limit_overrides
+		WHERE user_id = ? ORDER BY backend_id`, userID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var overrides []enforcer.UserRateLimitOverrideRow
+	for rows.Next() {
+		var o enforcer.UserRateLimitOverrideRow
+		if err := rows.Scan(&o.ID, &o.UserID, &o.BackendID, &o.SetBy,
+			&o.RiskCapacity, &o.ResourceCapacity, &o.CostMultiplier,
+			&o.CreatedAt, &o.UpdatedAt); err != nil {
+			return nil, err
+		}
+		overrides = append(overrides, o)
+	}
+	return overrides, rows.Err()
+}
+
+// ListAllRateLimitOverrides returns all rate limit overrides.
+func (s *EnforcerStore) ListAllRateLimitOverrides() ([]enforcer.UserRateLimitOverrideRow, error) {
+	rows, err := s.db.Query(`
+		SELECT id, user_id, backend_id, set_by, risk_capacity, resource_capacity, cost_multiplier, created_at, updated_at
+		FROM enforcer_user_rate_limit_overrides ORDER BY user_id, backend_id`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var overrides []enforcer.UserRateLimitOverrideRow
+	for rows.Next() {
+		var o enforcer.UserRateLimitOverrideRow
+		if err := rows.Scan(&o.ID, &o.UserID, &o.BackendID, &o.SetBy,
+			&o.RiskCapacity, &o.ResourceCapacity, &o.CostMultiplier,
+			&o.CreatedAt, &o.UpdatedAt); err != nil {
+			return nil, err
+		}
+		overrides = append(overrides, o)
+	}
+	return overrides, rows.Err()
+}
+
+// DeleteUserRateLimitOverride removes a user rate limit override.
+func (s *EnforcerStore) DeleteUserRateLimitOverride(userID, backendID string) error {
+	_, err := s.db.Exec(`DELETE FROM enforcer_user_rate_limit_overrides WHERE user_id = ? AND backend_id = ?`, userID, backendID)
+	return err
 }
 
 // UpsertToolProfile inserts or updates a tool's self-reported profile.

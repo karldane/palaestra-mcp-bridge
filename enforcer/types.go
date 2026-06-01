@@ -9,6 +9,15 @@ import (
 	"time"
 )
 
+// MatchContext describes the trigger condition for a routing decision.
+type MatchContext string
+
+const (
+	MatchContextPolicyHit     MatchContext = "policy_hit"
+	MatchContextRiskLimit     MatchContext = "risk_limit"
+	MatchContextResourceLimit MatchContext = "resource_limit"
+)
+
 // Action represents the enforcement decision from CEL policy evaluation
 type Action string
 
@@ -99,6 +108,9 @@ type EnforcerDecision struct {
 	// ApprovalID is no longer set by HandleToolCall — the caller creates the
 	// approval record so it can include the full request body for replay.
 	ApprovalID string
+	// MatchContext records what triggered this decision. Used by the UI
+	// to show "rate limit exceeded" vs "policy matched" context.
+	MatchContext MatchContext
 }
 
 // DecisionContext provides all context for CEL evaluation
@@ -172,6 +184,9 @@ type CELPolicy struct {
 	// Priority mirrors the DB priority column. Lower number = more specific rule.
 	// Used as a tiebreaker when action and severity are equal: lower priority wins.
 	Priority int
+	// Dispositions maps match contexts to actions for non-CEL trigger paths.
+	// If nil, this policy does not participate in disposition routing.
+	Dispositions map[MatchContext]Action
 }
 
 // PolicySet represents a collection of policies for a specific scope
@@ -376,27 +391,46 @@ type CallOptions struct {
 	SkipJustification bool // if true, justification gate is bypassed for this call
 }
 
-// IsDenyAction checks if the action represents a hard block
-func IsDenyAction(action Action) bool {
-	return action == ActionDeny
+var (
+	adminApprovalActions = map[Action]bool{}
+	userApprovalActions  = map[Action]bool{}
+	approvalActions      = map[Action]bool{}
+	warningActions       = map[Action]bool{}
+	denyActions          = map[Action]bool{}
+)
+
+func init() {
+	RegisterAdminApprovalAction(ActionPendingApproval)
+	RegisterAdminApprovalAction(ActionPendingAdminApproval)
+	RegisterUserApprovalAction(ActionPendingUserApproval)
+	RegisterDenyAction(ActionDeny)
+	RegisterWarningAction(ActionWarn)
 }
+
+func RegisterAdminApprovalAction(a Action) {
+	adminApprovalActions[a] = true
+	approvalActions[a] = true
+}
+
+func RegisterUserApprovalAction(a Action) {
+	userApprovalActions[a] = true
+	approvalActions[a] = true
+}
+
+func RegisterDenyAction(a Action)    { denyActions[a] = true }
+func RegisterWarningAction(a Action) { warningActions[a] = true }
+
+// IsDenyAction checks if the action represents a hard block
+func IsDenyAction(action Action) bool { return denyActions[action] }
 
 // RequiresApproval checks if the action requires human intervention
-func RequiresApproval(action Action) bool {
-	return action == ActionPendingApproval || action == ActionPendingUserApproval || action == ActionPendingAdminApproval
-}
+func RequiresApproval(action Action) bool { return approvalActions[action] }
 
 // RequiresUserApproval checks if the action requires user-level approval
-func RequiresUserApproval(action Action) bool {
-	return action == ActionPendingUserApproval
-}
+func RequiresUserApproval(action Action) bool { return userApprovalActions[action] }
 
 // RequiresAdminApproval checks if the action requires admin-level approval
-func RequiresAdminApproval(action Action) bool {
-	return action == ActionPendingApproval || action == ActionPendingAdminApproval
-}
+func RequiresAdminApproval(action Action) bool { return adminApprovalActions[action] }
 
 // RequiresWarning checks if the action requires user confirmation
-func RequiresWarning(action Action) bool {
-	return action == ActionWarn
-}
+func RequiresWarning(action Action) bool { return warningActions[action] }

@@ -147,6 +147,7 @@ func (s *Store) migrate() error {
 	s.db.Exec(`ALTER TABLE enforcer_overrides ADD COLUMN user_id TEXT`)
 	s.db.Exec(`ALTER TABLE enforcer_overrides ADD COLUMN locked INTEGER NOT NULL DEFAULT 0`)
 	s.db.Exec(`ALTER TABLE enforcer_policies ADD COLUMN locked INTEGER NOT NULL DEFAULT 0`)
+	s.db.Exec(`ALTER TABLE enforcer_policies ADD COLUMN dispositions TEXT NOT NULL DEFAULT ''`)
 
 	// Enforcer tables (policy enforcement system)
 	s.db.Exec(`CREATE TABLE IF NOT EXISTS enforcer_policies (
@@ -161,6 +162,7 @@ func (s *Store) migrate() error {
 		enabled     INTEGER NOT NULL DEFAULT 1,
 		priority    INTEGER NOT NULL DEFAULT 100,
 		locked      INTEGER NOT NULL DEFAULT 0, -- 1 = user overrides blocked for tools resolved by this policy
+		dispositions TEXT NOT NULL DEFAULT '',  -- JSON map[MatchContext]Action for disposition routing
 		created_at  DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
 		updated_at  DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
 	)`)
@@ -255,6 +257,20 @@ func (s *Store) migrate() error {
 		window_start DATETIME NOT NULL,
 		count        INTEGER NOT NULL DEFAULT 0,
 		UNIQUE(user_id, tool_name, window_start)
+	)`)
+
+	// User rate limit overrides table for RATELIMIT_HITL
+	s.db.Exec(`CREATE TABLE IF NOT EXISTS enforcer_user_rate_limit_overrides (
+		id                TEXT PRIMARY KEY,
+		user_id           TEXT NOT NULL,
+		backend_id        TEXT NOT NULL,
+		set_by            TEXT NOT NULL DEFAULT 'user',
+		risk_capacity     INTEGER NOT NULL DEFAULT 0,
+		resource_capacity INTEGER NOT NULL DEFAULT 0,
+		cost_multiplier   INTEGER NOT NULL DEFAULT 0,
+		created_at        DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+		updated_at        DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+		UNIQUE(user_id, backend_id, set_by)
 	)`)
 
 	// Backend availability status table

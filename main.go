@@ -65,9 +65,8 @@ func main() {
 		defer cancel()
 
 		err = RunPrecache(ctx, PrecacheConfig{
-			UserEmail:     *precacheEmail,
-			Store:         st,
-			EnforcerStore: store.NewEnforcerStore(st.DB()),
+			UserEmail: *precacheEmail,
+			Store:     st,
 		})
 		if err != nil {
 			log.Fatalf("Precache failed: %v", err)
@@ -299,7 +298,7 @@ func main() {
 			go func() {
 				pcCtx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 				defer cancel()
-				pcCfg := PrecacheConfig{Store: st, EnforcerStore: store.NewEnforcerStore(st.DB())}
+				pcCfg := PrecacheConfig{Store: st}
 				for _, backendID := range uncached {
 					if _, err := RunPrecacheForBackend(pcCtx, pcCfg, backendID); err != nil {
 						shared.Warnf("Startup precache failed for %s: %v", backendID, err)
@@ -343,9 +342,8 @@ func main() {
 				pcCtx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 				defer cancel()
 				pcCfg := PrecacheConfig{
-					UserID:        triggerUserID,
-					Store:         st,
-					EnforcerStore: store.NewEnforcerStore(st.DB()),
+					UserID: triggerUserID,
+					Store:  st,
 				}
 				n, err := RunPrecacheForBackend(pcCtx, pcCfg, backendID)
 				if err != nil {
@@ -362,9 +360,8 @@ func main() {
 		pcCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
 		pcCfg := PrecacheConfig{
-			UserID:        triggerUserID,
-			Store:         st,
-			EnforcerStore: store.NewEnforcerStore(st.DB()),
+			UserID: triggerUserID,
+			Store:  st,
 		}
 		return RunPrecacheForBackend(pcCtx, pcCfg, backendID)
 	}

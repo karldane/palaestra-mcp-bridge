@@ -613,6 +613,192 @@ func seedToolProfileSQL(t *testing.T, s *store.Store, row enforcer.ToolProfileRo
 
 // TestGate_SourceEmpty_Deny verifies that a tool with Source="" (no profile at all)
 // is hard-denied after the spec §6.2 fix.
+// ---------- Rate Limit Override HITL Tests ----------
+
+// TestGetEffectiveBucketConfig_NoOverride verifies that without a configured
+// override, GetEffectiveBucketConfig returns zeros (use global defaults).
+func TestGetEffectiveBucketConfig_NoOverride(t *testing.T) {
+	s, cleanup := newTestStore(t)
+	defer cleanup()
+
+	enf := newTestEnforcer(t, s)
+
+	rc, rr, resc, resr, mult := enf.GetEffectiveBucketConfig("user1", "testbackend")
+	if rc != 0 || rr != 0 || resc != 0 || resr != 0 || mult != 0 {
+		t.Errorf("expected all zeros without override, got rc=%d rr=%d resc=%d resr=%d mult=%d",
+			rc, rr, resc, resr, mult)
+	}
+}
+
+// TestGetEffectiveBucketConfig_WithUserOverride verifies that after setting a
+// user override via SetUserRateLimitOverride, GetEffectiveBucketConfig returns
+// the configured values.
+func TestGetEffectiveBucketConfig_WithUserOverride(t *testing.T) {
+	s, cleanup := newTestStore(t)
+	defer cleanup()
+
+	enf := newTestEnforcer(t, s)
+
+	err := enf.SetUserRateLimitOverride(enforcer.UserRateLimitOverrideRow{
+		UserID:           "user1",
+		BackendID:        "slack",
+		SetBy:            "user",
+		RiskCapacity:     50,
+		ResourceCapacity: 100,
+		CostMultiplier:   2,
+	})
+	if err != nil {
+		t.Fatalf("SetUserRateLimitOverride: %v", err)
+	}
+
+	rc, rr, resc, resr, mult := enf.GetEffectiveBucketConfig("user1", "slack")
+	if rc != 50 {
+		t.Errorf("RiskCapacity = %d, want 50", rc)
+	}
+	if resc != 100 {
+		t.Errorf("ResourceCapacity = %d, want 100", resc)
+	}
+	if mult != 2 {
+		t.Errorf("CostMultiplier = %d, want 2", mult)
+	}
+	_ = rr
+	_ = resr
+}
+
+// TestGetEffectiveBucketConfig_WithAdminOverride verifies that admin-set
+// overrides (SetBy="admin") are also reflected by GetEffectiveBucketConfig.
+func TestGetEffectiveBucketConfig_WithAdminOverride(t *testing.T) {
+	s, cleanup := newTestStore(t)
+	defer cleanup()
+
+	enf := newTestEnforcer(t, s)
+
+	err := enf.SetUserRateLimitOverride(enforcer.UserRateLimitOverrideRow{
+		UserID:           "user1",
+		BackendID:        "k8s",
+		SetBy:            "admin",
+		RiskCapacity:     25,
+		ResourceCapacity: 50,
+		CostMultiplier:   4,
+	})
+	if err != nil {
+		t.Fatalf("SetUserRateLimitOverride: %v", err)
+	}
+
+	rc, _, resc, _, mult := enf.GetEffectiveBucketConfig("user1", "k8s")
+	if rc != 25 {
+		t.Errorf("RiskCapacity = %d, want 25", rc)
+	}
+	if resc != 50 {
+		t.Errorf("ResourceCapacity = %d, want 50", resc)
+	}
+	if mult != 4 {
+		t.Errorf("CostMultiplier = %d, want 4", mult)
+	}
+}
+
+// TestSetUserRateLimitOverride_ThenGetEffectiveBucketConfig verifies the
+// full round-trip: SetUserRateLimitOverride followed by GetEffectiveBucketConfig
+// returns the configured values for the correct user/backend pair.
+func TestSetUserRateLimitOverride_ThenGetEffectiveBucketConfig(t *testing.T) {
+	s, cleanup := newTestStore(t)
+	defer cleanup()
+
+	enf := newTestEnforcer(t, s)
+
+	// Set override for user1/slack
+	err := enf.SetUserRateLimitOverride(enforcer.UserRateLimitOverrideRow{
+		UserID:           "user1",
+		BackendID:        "slack",
+		SetBy:            "user",
+		RiskCapacity:     50,
+		ResourceCapacity: 100,
+		CostMultiplier:   2,
+	})
+	if err != nil {
+		t.Fatalf("SetUserRateLimitOverride user1/slack: %v", err)
+	}
+
+	// Verify user1/slack returns configured values
+	rc, _, resc, _, mult := enf.GetEffectiveBucketConfig("user1", "slack")
+	if rc != 50 {
+		t.Errorf("user1/slack RiskCapacity = %d, want 50", rc)
+	}
+	if resc != 100 {
+		t.Errorf("user1/slack ResourceCapacity = %d, want 100", resc)
+	}
+	if mult != 2 {
+		t.Errorf("user1/slack CostMultiplier = %d, want 2", mult)
+	}
+
+	// Verify user2/slack still returns zeros (no override)
+	rc2, _, resc2, _, mult2 := enf.GetEffectiveBucketConfig("user2", "slack")
+	if rc2 != 0 || resc2 != 0 || mult2 != 0 {
+		t.Errorf("user2/slack expected zeros, got rc=%d resc=%d mult=%d",
+			rc2, resc2, mult2)
+	}
+}
+
+// TestSetUserRateLimitOverride_MultipleBackends verifies that overrides for
+// different backends are independently stored and retrieved.
+func TestSetUserRateLimitOverride_MultipleBackends(t *testing.T) {
+	s, cleanup := newTestStore(t)
+	defer cleanup()
+
+	enf := newTestEnforcer(t, s)
+
+	// Set override for user1/slack
+	if err := enf.SetUserRateLimitOverride(enforcer.UserRateLimitOverrideRow{
+		UserID:           "user1",
+		BackendID:        "slack",
+		SetBy:            "user",
+		RiskCapacity:     50,
+		ResourceCapacity: 100,
+		CostMultiplier:   2,
+	}); err != nil {
+		t.Fatalf("SetUserRateLimitOverride user1/slack: %v", err)
+	}
+
+	// Set override for user1/k8s
+	if err := enf.SetUserRateLimitOverride(enforcer.UserRateLimitOverrideRow{
+		UserID:           "user1",
+		BackendID:        "k8s",
+		SetBy:            "admin",
+		RiskCapacity:     25,
+		ResourceCapacity: 50,
+		CostMultiplier:   4,
+	}); err != nil {
+		t.Fatalf("SetUserRateLimitOverride user1/k8s: %v", err)
+	}
+
+	// Verify slack
+	rc, _, _, _, mult := enf.GetEffectiveBucketConfig("user1", "slack")
+	if rc != 50 {
+		t.Errorf("slack RiskCapacity = %d, want 50", rc)
+	}
+	if mult != 2 {
+		t.Errorf("slack CostMultiplier = %d, want 2", mult)
+	}
+
+	// Verify k8s
+	rc2, _, _, _, mult2 := enf.GetEffectiveBucketConfig("user1", "k8s")
+	if rc2 != 25 {
+		t.Errorf("k8s RiskCapacity = %d, want 25", rc2)
+	}
+	if mult2 != 4 {
+		t.Errorf("k8s CostMultiplier = %d, want 4", mult2)
+	}
+}
+
+// ---------- ResolveDisposition Tests ----------
+
+// For resolveDisposition (unexported), test via internal package.
+// See enforcer_internal_test.go for:
+//   TestResolveDisposition_DefaultsToDeny
+//   TestResolveDisposition_WithConfiguredDisposition
+//   TestLookupDisposition_NoMatchReturnsFalse
+//   TestLookupDisposition_MatchReturnsAction
+
 func TestGate_SourceEmpty_Deny(t *testing.T) {
 	s, cleanup := newTestStore(t)
 	defer cleanup()

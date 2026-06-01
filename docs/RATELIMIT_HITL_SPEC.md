@@ -189,6 +189,7 @@ type UserRateLimitOverride struct {
     // Effective cap = Capacity / CostMultiplier must be ≥ 1.
     // Cannot produce an effective cap higher than global capacity.
     CostMultiplier       int
+    SetBy                string
     CreatedAt            time.Time
     UpdatedAt            time.Time
 }
@@ -204,13 +205,16 @@ The constraint is: `override.RiskCapacity * override.CostMultiplier <= globalRis
 
 ```go
 // resolveDisposition looks up a disposition action for the given match context
-// across all loaded policies, ordered by Priority ASC.
-// Returns ActionDeny and an explanatory message if no policy covers the context.
-func (e *Enforcer) resolveDisposition(ctx MatchContext, backendID string) (Action, string) {
-    // Walk policies in priority order; return first matching disposition.
-    // Implementation queries e.engine loaded policies.
-    // Falls back to ActionDeny with message:
-    //   "Rate limit exceeded: no disposition policy configured for context '<ctx>'"
+// by delegating to e.engine.LookupDisposition(matchCtx).
+// If the lookup returns false, falls back to ActionDeny with message:
+//   "Rate limit exceeded: no disposition policy configured for context '<ctx>'"
+func (e *Enforcer) resolveDisposition(ctx MatchContext) (Action, string) {
+    action, msg, ok := e.engine.LookupDisposition(ctx)
+    if ok {
+        return action, msg
+    }
+    return ActionDeny, fmt.Sprintf(
+        "Rate limit exceeded: no disposition policy configured for context '%s'", ctx)
 }
 ```
 
@@ -280,6 +284,23 @@ This is called by `GetBucketStatus` consumers (UI, CEL context) so they reflect 
 
 `CELEngine.loadDispositions()` — a new internal method called after `AddPolicy` that rebuilds an in-memory `map[MatchContext][]prioritisedDisposition` used by `resolveDisposition`. This avoids scanning all policies on every rate-limit event.
 
+#### New internal method: `loadDispositions()`
+
+```go
+// loadDispositions rebuilds an internal map[MatchContext][]prioritisedDisposition
+// (sorted by Priority ASC) as a cache. Called after AddPolicy and loadPolicies.
+func (e *CELEngine) loadDispositions()
+```
+
+#### New exported method: `LookupDisposition`
+
+```go
+// LookupDisposition returns the action and message for the first enabled policy
+// whose Dispositions map contains an entry for the given MatchContext.
+// Returns false if no policy has a disposition configured for the context.
+func (e *CELEngine) LookupDisposition(ctx MatchContext) (Action, string, bool)
+```
+
 ---
 
 ### 4.4 `enforcer/EnforcerStore` interface additions
@@ -324,12 +345,13 @@ CREATE TABLE IF NOT EXISTS enforcer_user_rate_overrides (
     id                TEXT PRIMARY KEY,
     user_id           TEXT NOT NULL,
     backend_id        TEXT NOT NULL,
+    set_by            TEXT NOT NULL DEFAULT 'user' CHECK(set_by IN ('user','admin')),
     risk_capacity     INTEGER NOT NULL DEFAULT 0,   -- 0 = use global
     resource_capacity INTEGER NOT NULL DEFAULT 0,   -- 0 = use global
     cost_multiplier   INTEGER NOT NULL DEFAULT 0,   -- 0 = use global
     created_at        DATETIME NOT NULL,
     updated_at        DATETIME NOT NULL,
-    UNIQUE(user_id, backend_id)
+    UNIQUE(user_id, backend_id, set_by)
 );
 
 CREATE INDEX IF NOT EXISTS idx_user_rate_overrides_user
@@ -381,10 +403,10 @@ userConfigs map[string]*UserBucketConfig // key: userID:backendID
 
 `GetOrCreate` checks `userConfigs[userID+":"+backendID]` before falling back to `config[backendID+":"+bucketType]`.
 
-`CalculateCost` gains an optional per-user multiplier parameter:
 ```go
 func CalculateCostWithMultiplier(resourceCost int, riskLevel, impactScope string, multiplier int) (riskCost, resourceCost int)
 ```
+The multiplier is the outermost factor on both axes: `finalRiskCost = riskCost × userMultiplier`, `finalResourceCost = resourceCost × userMultiplier`, where `riskCost` and `resourceCost` are the base values from `CalculateCost`.
 
 `HandleToolCall` calls `GetEffectiveBucketConfig` to retrieve the multiplier before computing costs.
 
@@ -425,6 +447,7 @@ Extend the existing rate limit status page (currently read-only) with:
 - "Add Override" button opens a form with user picker, backend picker, and the three numeric fields.
 - On save, the Go handler calls `enforcer.SetUserRateLimitOverride`, which validates the ceiling constraint and returns a user-visible error if violated (e.g. "Risk capacity × cost multiplier (300) exceeds global budget (200)").
 - Admin may delete any override, which resets the user to global defaults.
+- Each override row stores set_by='admin'. The admin may create, edit, or delete any override regardless of set_by value.
 
 **Global config display:** Show the effective `(capacity, refillRate)` for each backend × bucket type, same as today.
 
@@ -475,8 +498,10 @@ Add a new section to the user settings / profile page: **"My Rate Limits"**.
 **Restrictions:**
 - Users cannot increase capacity above global.
 - Users cannot set a cost multiplier below 1.
-- The form is read-only for backends where the admin has set an override that is at or below global — the user sees the admin-set values with a note: *"Set by administrator."*
-- A user's personal override is superseded by any admin override for the same `(userID, backendID)` pair that is more restrictive. The effective value is `min(adminOverride, userOverride, global)` for capacity, and `max(adminOverride, userOverride, global_multiplier)` for the multiplier.
+- Two independent override rows may coexist: one with `set_by='user'` and one with `set_by='admin'`. If only one is set, the other axis defaults to the global value. The effective value is:
+  - Capacity: `min(admin_risk_cap, user_risk_cap, global_risk_cap)`, with missing rows defaulting to global.
+  - Cost multiplier: `max(admin_mult, user_mult, global_mult)`, with missing rows defaulting to global.
+- The user's form is read-only for `set_by='admin'` rows — the user sees the admin-set values with a note: *"Set by administrator."*
 
 ---
 
@@ -488,7 +513,7 @@ Add a new section to the user settings / profile page: **"My Rate Limits"**.
  3. Resolve safety profile       → get profile.Source, profile.Cost etc.
  4. Apply cost multiplier        → riskCost, resourceCost
     (inferred multiplier × user cost multiplier)
- 5. Populate RateLimit in ctx    → read-only bucket snapshot for CEL
+ 5. Populate RateLimit in ctx    → read-only bucket snapshot for CEL, using GetEffectiveBucketConfig to reflect user overrides
  6. Increment call-rate bucket   → store.IncrementRateBucket
  7. CEL evaluate                 → decision (MatchContext = policy_hit)
  8. Deny-unless-permitted gate   → inferred profile → admin HITL; no profile → deny

@@ -57,6 +57,14 @@ type EnforcerStore interface {
 	IncrementRateBucket(userID, toolName string, windowDuration time.Duration) (int, error)
 	GetCallRate(userID, toolName string, windowDuration time.Duration) (int, error)
 	CleanupExpiredRateBuckets(windowDuration time.Duration) error
+
+	// User rate limit overrides
+	UpsertUserRateLimitOverride(override UserRateLimitOverrideRow) error
+	GetUserRateLimitOverride(userID, backendID string) (UserRateLimitOverrideRow, error)
+	ListUserRateLimitOverrides(userID string) ([]UserRateLimitOverrideRow, error)
+	ListAllRateLimitOverrides() ([]UserRateLimitOverrideRow, error)
+	DeleteUserRateLimitOverride(userID, backendID string) error
+
 }
 
 // EnforcerOverrideRow represents a manual override for a tool's safety profile.
@@ -72,6 +80,19 @@ type EnforcerOverrideRow struct {
 	UserID       string // empty = admin-scoped override; non-empty = personal user override
 	CreatedAt    time.Time
 	UpdatedAt    time.Time
+}
+
+// UserRateLimitOverrideRow represents a user's personal rate limit tightening.
+type UserRateLimitOverrideRow struct {
+	ID               string
+	UserID           string
+	BackendID        string
+	SetBy            string // "user" or "admin"
+	RiskCapacity     int    // 0 = use global
+	ResourceCapacity int    // 0 = use global
+	CostMultiplier   int    // 0 = use global
+	CreatedAt        time.Time
+	UpdatedAt        time.Time
 }
 
 // RateLimitBucketConfigRow represents a bucket configuration in the database
@@ -116,11 +137,14 @@ type PolicyRow struct {
 	Locked      bool // if true, user personal overrides are blocked for tools resolved by this policy
 	CreatedAt   time.Time
 	UpdatedAt   time.Time
+	// DispositionsJSON stores the JSON-serialised map[MatchContext]Action.
+	// Empty string means no dispositions configured.
+	DispositionsJSON string
 }
 
 // ToCELPolicy converts PolicyRow to CELPolicy
 func (row PolicyRow) ToCELPolicy() CELPolicy {
-	return CELPolicy{
+	p := CELPolicy{
 		ID:          row.ID,
 		Description: row.Description,
 		Expression:  row.Expression,
@@ -130,6 +154,13 @@ func (row PolicyRow) ToCELPolicy() CELPolicy {
 		Enabled:     row.Enabled,
 		Priority:    row.Priority,
 	}
+	if row.DispositionsJSON != "" {
+		var d map[MatchContext]Action
+		if err := json.Unmarshal([]byte(row.DispositionsJSON), &d); err == nil {
+			p.Dispositions = d
+		}
+	}
+	return p
 }
 
 // ApprovalRequestRow represents an approval request in the database
@@ -154,6 +185,7 @@ type ApprovalRequestRow struct {
 	Comments       string
 	PolicyID       string
 	ViolationMsg   string
+	MatchContext   string       // Match context from policy evaluation, used for disposition resolution
 	RequestBody    string       // Original JSON-RPC request body for replay after approval
 	ResponseStatus int          // HTTP status code from execution
 	ResponseBody   string       // Full response JSON from execution
@@ -584,8 +616,8 @@ func (e *Enforcer) HandleToolCall(ctx context.Context, userID string, toolName s
 	return decision, nil
 }
 
-// RequestApproval creates a new approval request for HITL
-func (e *Enforcer) RequestApproval(ctx context.Context, decisionCtx DecisionContext, policyID string, message string, queueType string) (string, error) {
+// RequestApproval creates a new approval request for HITL with the given match context.
+func (e *Enforcer) RequestApproval(ctx context.Context, decisionCtx DecisionContext, policyID string, message string, queueType string, matchCtx MatchContext) (string, error) {
 	id := generateID()
 
 	safetyJSON, _ := json.Marshal(decisionCtx.Safety)
@@ -622,6 +654,7 @@ func (e *Enforcer) RequestApproval(ctx context.Context, decisionCtx DecisionCont
 		ExpiresAt:     time.Now().Add(timeout),
 		PolicyID:      policyID,
 		ViolationMsg:  message,
+		MatchContext:  string(matchCtx),
 		RequestBody:   decisionCtx.RequestBody,
 	}
 
@@ -675,6 +708,45 @@ func (e *Enforcer) Config() EnforcerConfig {
 // GetResolver returns the metadata resolver
 func (e *Enforcer) GetResolver() *MetadataResolver {
 	return e.resolver
+}
+
+// resolveDisposition looks up a disposition action for the given match context.
+// If the CEL engine has a disposition configured, returns that action and message.
+// Falls back to ActionDeny when no disposition is configured.
+func (e *Enforcer) resolveDisposition(ctx MatchContext) (Action, string) {
+	action, msg, ok := e.engine.LookupDisposition(ctx)
+	if !ok {
+		return ActionDeny, fmt.Sprintf("Rate limit exceeded: no disposition policy configured for context '%s'", ctx)
+	}
+	return action, msg
+}
+
+// SetUserRateLimitOverride sets a personal rate limit override for a user.
+// Persists to the store and updates the in-memory rate limit manager.
+func (e *Enforcer) SetUserRateLimitOverride(override UserRateLimitOverrideRow) error {
+	if err := e.store.UpsertUserRateLimitOverride(override); err != nil {
+		return err
+	}
+	e.rateLimit.SetUserConfig(rl.UserBucketConfig{
+		UserID:          override.UserID,
+		BackendID:       override.BackendID,
+		RiskCapacity:    override.RiskCapacity,
+		ResCapacity:     override.ResourceCapacity,
+		CostMultiplier:  override.CostMultiplier,
+	})
+	return nil
+}
+
+// GetEffectiveBucketConfig returns effective bucket config for a user.
+// If a user-specific override exists (via SetUserRateLimitOverride or
+// RateLimitManager.SetUserConfig), returns those values. Returns zeros
+// (use global defaults) when no override is configured.
+func (e *Enforcer) GetEffectiveBucketConfig(userID, backendID string) (riskCap, riskRefill, resCap, resRefill, costMultiplier int) {
+	cfg, ok := e.rateLimit.GetUserConfig(userID, backendID)
+	if !ok {
+		return 0, 0, 0, 0, 0
+	}
+	return cfg.RiskCapacity, cfg.RiskRefill, cfg.ResCapacity, cfg.ResRefill, cfg.CostMultiplier
 }
 
 // CheckApproval checks if an approval request has been approved

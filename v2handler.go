@@ -747,7 +747,7 @@ func v2toolCall(a *app, w http.ResponseWriter, r *http.Request, userID string, p
 					Args:          toolParams,
 					BackendID:     namespace,
 					Justification: justification,
-				}, decision.PolicyID, decision.Message, "admin")
+				}, decision.PolicyID, decision.Message, "admin", enforcer.MatchContextPolicyHit)
 				if err != nil {
 					http.Error(w, "Failed to create approval request", http.StatusInternalServerError)
 					return
@@ -773,7 +773,7 @@ func v2toolCall(a *app, w http.ResponseWriter, r *http.Request, userID string, p
 					Args:          toolParams,
 					BackendID:     namespace,
 					Justification: justification,
-				}, decision.PolicyID, decision.Message, "user")
+				}, decision.PolicyID, decision.Message, "user", enforcer.MatchContextPolicyHit)
 				if err != nil {
 					http.Error(w, "Failed to create approval request", http.StatusInternalServerError)
 					return

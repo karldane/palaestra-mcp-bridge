@@ -8,10 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"strings"
-	"time"
 
-	"github.com/google/uuid"
-	"github.com/mcp-bridge/mcp-bridge/enforcer"
 	"github.com/mcp-bridge/mcp-bridge/muxer"
 	"github.com/mcp-bridge/mcp-bridge/shared"
 	"github.com/mcp-bridge/mcp-bridge/store"
@@ -19,10 +16,9 @@ import (
 
 // PrecacheConfig holds configuration for precaching
 type PrecacheConfig struct {
-	UserEmail     string                    // CLI mode only (--precache-tooling flag)
-	UserID        string                    // UI mode: logged-in user's ID; takes precedence over fallback chain
-	Store         *store.Store
-	EnforcerStore enforcer.EnforcerStore
+	UserEmail string       // CLI mode only (--precache-tooling flag)
+	UserID    string       // UI mode: logged-in user's ID; takes precedence over fallback chain
+	Store     *store.Store
 }
 
 // fetchToolsForPrecacheFn is a package-level variable so tests can replace it.
@@ -118,11 +114,6 @@ func RunPrecacheForBackend(ctx context.Context, cfg PrecacheConfig, backendID st
 		return 0, fmt.Errorf("cache capabilities: %w", err)
 	}
 
-	// Cache safety profiles from tool metadata
-	if cfg.EnforcerStore != nil {
-		cacheEnforcerProfiles(cfg.EnforcerStore, backendID, tools)
-	}
-
 	// Mark as available (also clears precache_error)
 	cfg.Store.SetBackendAvailable(backendID)
 	return len(tools), nil
@@ -159,67 +150,6 @@ func RunPrecache(ctx context.Context, cfg PrecacheConfig) error {
 		return fmt.Errorf("precache failed for backends: %s", strings.Join(failed, ", "))
 	}
 	return nil
-}
-
-// cacheEnforcerProfiles stores safety profiles from tool metadata into the enforcer store.
-func cacheEnforcerProfiles(es enforcer.EnforcerStore, backendID string, tools []map[string]interface{}) {
-	for _, tool := range tools {
-		meta, ok := tool["_meta"].(map[string]interface{})
-		if !ok {
-			continue
-		}
-		profile, ok := meta["enforcer_profile"].(map[string]interface{})
-		if !ok {
-			continue
-		}
-		getStr := func(k string) string {
-			if v, ok := profile[k]; ok {
-				if s, ok := v.(string); ok {
-					return s
-				}
-			}
-			return ""
-		}
-		getFloat := func(k string) float64 {
-			if v, ok := profile[k]; ok {
-				if f, ok := v.(float64); ok {
-					return f
-				}
-			}
-			return 0
-		}
-		getBool := func(k string) bool {
-			if v, ok := profile[k]; ok {
-				if b, ok := v.(bool); ok {
-					return b
-				}
-			}
-			return false
-		}
-		toolName := ""
-		if n, ok := tool["name"].(string); ok {
-			toolName = n
-		}
-		toolProfile := enforcer.ToolProfileRow{
-			ID:           uuid.NewString(),
-			BackendID:    backendID,
-			ToolName:     toolName,
-			RiskLevel:    getStr("risk_level"),
-			ImpactScope:  getStr("impact_scope"),
-			ResourceCost: int(getFloat("resource_cost")),
-			RequiresHITL: getBool("requires_hitl"),
-			PIIExposure:  getBool("pii_exposure"),
-			Idempotent:   getBool("idempotent"),
-			RawProfile:   "",
-			ScannedAt:    time.Now(),
-		}
-		if profileJSON, err := json.Marshal(profile); err == nil {
-			toolProfile.RawProfile = string(profileJSON)
-		}
-		if err := es.UpsertToolProfile(toolProfile); err != nil {
-			shared.Warnf("Failed to cache safety profile for %s/%s: %v", backendID, toolName, err)
-		}
-	}
 }
 
 // buildEnvForPrecache builds environment variables for a backend during precache.

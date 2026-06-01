@@ -2210,6 +2210,78 @@ func TestRunPrecacheForBackend_FetchError(t *testing.T) {
 	}
 }
 
+func TestRunPrecacheForBackend_DoesNotWriteEnforcerProfiles(t *testing.T) {
+	orig := fetchToolsForPrecacheFn
+	fetchToolsForPrecacheFn = func(ctx context.Context, command string, env map[string]string) ([]map[string]interface{}, error) {
+		return []map[string]interface{}{
+			{
+				"name":        "write-tool",
+				"description": "A write tool",
+				"_meta": map[string]interface{}{
+					"enforcer_profile": map[string]interface{}{
+						"risk_level":    "high",
+						"impact_scope":  "write",
+						"resource_cost": 8,
+						"approval_req":  true,
+						"pii_exposure":  false,
+						"idempotent":    false,
+					},
+				},
+			},
+		}, nil
+	}
+	defer func() { fetchToolsForPrecacheFn = orig }()
+
+	st, dir := testPrecacheStore(t)
+	defer os.RemoveAll(dir)
+	defer st.Close()
+
+	u := &store.User{Name: "Admin", Email: "admin@test.com", Password: "secret", Role: "admin"}
+	if err := st.CreateUser(u); err != nil {
+		t.Fatal(err)
+	}
+
+	b := &store.Backend{
+		ID:            "profile-be",
+		Command:       "echo",
+		PoolSize:      1,
+		Env:           "{}",
+		Enabled:       true,
+		SelfReporting: true,
+	}
+	if err := st.CreateBackend(b); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := PrecacheConfig{UserID: u.ID, Store: st}
+	n, err := RunPrecacheForBackend(context.Background(), cfg, "profile-be")
+	if err != nil {
+		t.Fatalf("RunPrecacheForBackend: %v", err)
+	}
+	if n != 1 {
+		t.Errorf("n = %d, want 1", n)
+	}
+
+	// Verify capabilities were cached (tool caching still works)
+	caps, err := st.GetBackendCapabilities("profile-be")
+	if err != nil {
+		t.Fatalf("GetBackendCapabilities: %v", err)
+	}
+	if caps.ToolCount != 1 {
+		t.Errorf("ToolCount = %d, want 1", caps.ToolCount)
+	}
+
+	// Verify NO enforcer tool profiles were written by precache
+	// scanSelfReportingBackends owns that responsibility
+	profiles, err := st.ListToolProfilesByBackend("profile-be")
+	if err != nil {
+		t.Fatalf("ListToolProfilesByBackend: %v", err)
+	}
+	if len(profiles) != 0 {
+		t.Errorf("enforcer_tool_profiles count = %d, want 0 (precache should not write profiles)", len(profiles))
+	}
+}
+
 func TestBuildEnvForPrecache_Basic(t *testing.T) {
 	b := &store.Backend{
 		ID:          "env-test",

@@ -654,6 +654,116 @@ func TestResetUserBuckets(t *testing.T) {
 	}
 }
 
+// ---------- Rate Limit HITL Tests ----------
+
+func TestCalculateCostWithMultiplier_AppliesMultiplier(t *testing.T) {
+	tests := []struct {
+		name            string
+		resourceCost    int
+		riskLevel       string
+		impactScope     string
+		multiplier      int
+		wantRiskCost    int
+		wantResourceCost int
+	}{
+		{
+			name:            "read operation with multiplier 1",
+			resourceCost:    5,
+			riskLevel:       "low",
+			impactScope:     "read",
+			multiplier:      1,
+			wantRiskCost:    0,
+			wantResourceCost: 5,
+		},
+		{
+			name:            "write low risk with multiplier 2",
+			resourceCost:    5,
+			riskLevel:       "low",
+			impactScope:     "write",
+			multiplier:      2,
+			wantRiskCost:    10, // 5 * 1 (low) * 2 (multiplier)
+			wantResourceCost: 10, // 5 * 2
+		},
+		{
+			name:            "delete high risk with multiplier 3",
+			resourceCost:    5,
+			riskLevel:       "high",
+			impactScope:     "delete",
+			multiplier:      3,
+			wantRiskCost:    60, // 5 * 4 (high) * 3 (multiplier)
+			wantResourceCost: 15, // 5 * 3
+		},
+		{
+			name:            "write medium risk with multiplier 1",
+			resourceCost:    10,
+			riskLevel:       "med",
+			impactScope:     "write",
+			multiplier:      1,
+			wantRiskCost:    20, // 10 * 2 (med) * 1
+			wantResourceCost: 10, // 10 * 1
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			riskCost, resourceCost := CalculateCostWithMultiplier(tt.resourceCost, tt.riskLevel, tt.impactScope, tt.multiplier)
+			if riskCost != tt.wantRiskCost {
+				t.Errorf("riskCost = %d, want %d", riskCost, tt.wantRiskCost)
+			}
+			if resourceCost != tt.wantResourceCost {
+				t.Errorf("resourceCost = %d, want %d", resourceCost, tt.wantResourceCost)
+			}
+		})
+	}
+}
+
+func TestUserBucketConfig_SetGetDelete(t *testing.T) {
+	mgr := NewBucketManager()
+
+	// No config initially
+	_, ok := mgr.GetUserConfig("user1", "slack")
+	if ok {
+		t.Error("expected no config initially")
+	}
+
+	// Set config
+	cfg := UserBucketConfig{
+		UserID:          "user1",
+		BackendID:       "slack",
+		RiskCapacity:    50,
+		RiskRefill:      10,
+		ResCapacity:     100,
+		ResRefill:       20,
+		CostMultiplier:  2,
+	}
+	mgr.SetUserConfig(cfg)
+
+	// Get config
+	got, ok := mgr.GetUserConfig("user1", "slack")
+	if !ok {
+		t.Fatal("expected config after SetUserConfig")
+	}
+	if got.RiskCapacity != 50 {
+		t.Errorf("RiskCapacity = %d, want 50", got.RiskCapacity)
+	}
+	if got.CostMultiplier != 2 {
+		t.Errorf("CostMultiplier = %d, want 2", got.CostMultiplier)
+	}
+
+	// Different user not affected
+	_, ok = mgr.GetUserConfig("user2", "slack")
+	if ok {
+		t.Error("user2 should not have a config")
+	}
+
+	// Delete config
+	mgr.DeleteUserConfig("user1", "slack")
+	_, ok = mgr.GetUserConfig("user1", "slack")
+	if ok {
+		t.Error("expected no config after DeleteUserConfig")
+	}
+}
+
 func TestResetAllUserBuckets(t *testing.T) {
 	mgr := NewBucketManager()
 	mgr.SetConfig("slack", "risk", 100, 20)

@@ -131,9 +131,12 @@ docker-build: ensure-docker-config
 	@if [ -n "$(REBUILD_BACKENDS)" ]; then \
 		$(MAKE) docker-build-base; \
 	fi
+	@mkdir -p .build_context/backends
+	@cp -r ../backends/oracle-mcp .build_context/backends/
 	docker build \
 		--build-arg BASE_IMAGE=$(DOCKER_IMAGE):base-latest \
 		-t $(DOCKER_IMAGE):$(DOCKER_TAG) .
+	@rm -rf .build_context
 
 # Build and push Docker image (authenticates to ECR, then pushes)
 .PHONY: docker-push

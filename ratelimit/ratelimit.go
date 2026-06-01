@@ -42,6 +42,15 @@ func CalculateCost(resourceCost int, riskLevel, impactScope string) (riskCost in
 	return
 }
 
+// CalculateCostWithMultiplier calculates risk and resource costs with a user multiplier.
+// The multiplier is the outermost factor: final = baseCost × multiplier.
+func CalculateCostWithMultiplier(resourceCost int, riskLevel, impactScope string, multiplier int) (riskCost, resourceCostResult int) {
+	riskCost, resourceCostResult = CalculateCost(resourceCost, riskLevel, impactScope)
+	riskCost *= multiplier
+	resourceCostResult *= multiplier
+	return
+}
+
 type Bucket struct {
 	mu         sync.Mutex
 	capacity   int
@@ -171,9 +180,10 @@ func (b *BucketState) Consume(cost int) bool {
 }
 
 type BucketManager struct {
-	mu      sync.RWMutex
-	buckets map[string]*BucketState
-	config  map[string]*BucketConfig
+	mu          sync.RWMutex
+	buckets     map[string]*BucketState
+	config      map[string]*BucketConfig
+	userConfigs map[string]*UserBucketConfig
 }
 
 type BucketConfig struct {
@@ -181,10 +191,21 @@ type BucketConfig struct {
 	RefillRate int
 }
 
+type UserBucketConfig struct {
+	UserID          string
+	BackendID       string
+	RiskCapacity    int
+	RiskRefill      int
+	ResCapacity     int
+	ResRefill       int
+	CostMultiplier  int
+}
+
 func NewBucketManager() *BucketManager {
 	return &BucketManager{
-		buckets: make(map[string]*BucketState),
-		config:  make(map[string]*BucketConfig),
+		buckets:     make(map[string]*BucketState),
+		config:      make(map[string]*BucketConfig),
+		userConfigs: make(map[string]*UserBucketConfig),
 	}
 }
 
@@ -342,6 +363,21 @@ func (m *RateLimitManager) GetAllConfigs() []ConfigDisplay {
 // ResetUserBuckets resets all buckets for a specific user and optional backend
 func (m *RateLimitManager) ResetUserBuckets(userID, backendID string) {
 	m.manager.ResetUserBuckets(userID, backendID)
+}
+
+// SetUserConfig sets a per-user bucket configuration override via RateLimitManager.
+func (m *RateLimitManager) SetUserConfig(cfg UserBucketConfig) {
+	m.manager.SetUserConfig(cfg)
+}
+
+// GetUserConfig returns the user-specific bucket configuration if one exists via RateLimitManager.
+func (m *RateLimitManager) GetUserConfig(userID, backendID string) (*UserBucketConfig, bool) {
+	return m.manager.GetUserConfig(userID, backendID)
+}
+
+// DeleteUserConfig removes a per-user bucket configuration override via RateLimitManager.
+func (m *RateLimitManager) DeleteUserConfig(userID, backendID string) {
+	m.manager.DeleteUserConfig(userID, backendID)
 }
 
 // SetDefaultConfig sets the default configuration for a backend
@@ -553,6 +589,34 @@ func (m *BucketManager) ResetUserBuckets(userID, backendID string) {
 
 func hasPrefix(s, prefix string) bool {
 	return len(s) >= len(prefix) && s[:len(prefix)] == prefix
+}
+
+// SetUserConfig sets a per-user bucket configuration override.
+func (m *BucketManager) SetUserConfig(cfg UserBucketConfig) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	key := cfg.UserID + ":" + cfg.BackendID
+	m.userConfigs[key] = &cfg
+}
+
+// GetUserConfig returns the user-specific bucket configuration if one exists.
+func (m *BucketManager) GetUserConfig(userID, backendID string) (*UserBucketConfig, bool) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	key := userID + ":" + backendID
+	cfg, ok := m.userConfigs[key]
+	if !ok {
+		return nil, false
+	}
+	return cfg, true
+}
+
+// DeleteUserConfig removes a per-user bucket configuration override.
+func (m *BucketManager) DeleteUserConfig(userID, backendID string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	key := userID + ":" + backendID
+	delete(m.userConfigs, key)
 }
 
 func min(a, b int) int {

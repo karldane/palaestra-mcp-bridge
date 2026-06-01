@@ -2,22 +2,29 @@ ARG BASE_IMAGE=ghcr.io/karldane/palaestra-mcp-bridge:base-latest
 
 # Stage 1: Builder — builds mcp-bridge only
 FROM golang:1.25 AS builder
-
 WORKDIR /build
-
 RUN apt-get update && apt-get install -y gcc libc-dev && rm -rf /var/lib/apt/lists/*
-
 COPY go.mod go.sum ./
 RUN go mod download
-
 COPY . .
 RUN CGO_ENABLED=1 GOOS=linux GOARCH=amd64 \
     go build -ldflags="-s -w" -trimpath -o /usr/local/bin/mcp-bridge .
 
-# Stage 2: Final — thin layer on top of base image
+# Stage 2: Oracle Builder — builds oracle-mcp from local source
+FROM golang:1.25 AS oracle-builder
+WORKDIR /build
+RUN apt-get update && apt-get install -y gcc libc-dev && rm -rf /var/lib/apt/lists/*
+# Note: we expect the Makefile to have copied this into the build context
+COPY .build_context/backends/oracle-mcp ./
+RUN go mod download
+RUN CGO_ENABLED=1 GOOS=linux GOARCH=amd64 \
+    go build -ldflags="-s -w" -trimpath -o /usr/local/bin/oracle-mcp .
+
+# Stage 3: Final — thin layer on top of base image
 FROM ${BASE_IMAGE} AS final
 
 COPY --from=builder /usr/local/bin/mcp-bridge /usr/local/bin/mcp-bridge
+COPY --from=oracle-builder /usr/local/bin/oracle-mcp /usr/local/bin/oracle-mcp
 
 RUN mkdir -p /etc/mcp-bridge
 COPY config.yaml.docker /etc/mcp-bridge/config.yaml
