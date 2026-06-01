@@ -385,6 +385,9 @@ var ErrKillSwitchActive = fmt.Errorf("emergency kill switch is active")
 // ErrRateLimitExceeded is returned when a rate limit bucket is exhausted
 var ErrRateLimitExceeded = fmt.Errorf("rate limit exceeded")
 
+// ErrOverrideTooPermissive is returned when a user rate limit override exceeds the global ceiling.
+var ErrOverrideTooPermissive = fmt.Errorf("rate limit override exceeds global ceiling")
+
 // CallOptions carries per-call flags into the enforcer.
 // Extend this struct for future per-call requirements without signature churn.
 type CallOptions struct {

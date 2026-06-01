@@ -1621,6 +1621,68 @@ func TestAPIKey_NotFound(t *testing.T) {
 	}
 }
 
+// ---------- Policy Dispositions Round-Trip ----------
+
+// TestPolicyDispositionsRoundTrip verifies that DispositionsJSON on a PolicyRow
+// is correctly deserialised into CELPolicy.Dispositions by ToCELPolicy().
+func TestPolicyDispositionsRoundTrip(t *testing.T) {
+	row := enforcer.PolicyRow{
+		ID:               "dispo-test",
+		Name:             "Disposition test policy",
+		Description:      "Policy with dispositions for rate limit routing",
+		Expression:       `true`,
+		Action:           "ALLOW",
+		Severity:         "LOW",
+		Enabled:          true,
+		Priority:         10,
+		DispositionsJSON: `{"risk_limit":"PENDING_USER_APPROVAL","resource_limit":"PENDING_ADMIN_APPROVAL"}`,
+	}
+
+	policy := row.ToCELPolicy()
+
+	if policy.Dispositions == nil {
+		t.Fatal("Dispositions map is nil after ToCELPolicy")
+	}
+	if len(policy.Dispositions) != 2 {
+		t.Fatalf("expected 2 dispositions, got %d", len(policy.Dispositions))
+	}
+
+	riskAction, ok := policy.Dispositions[enforcer.MatchContextRiskLimit]
+	if !ok {
+		t.Errorf("missing disposition for risk_limit")
+	} else if riskAction != enforcer.ActionPendingUserApproval {
+		t.Errorf("risk_limit action = %s, want %s", riskAction, enforcer.ActionPendingUserApproval)
+	}
+
+	resAction, ok := policy.Dispositions[enforcer.MatchContextResourceLimit]
+	if !ok {
+		t.Errorf("missing disposition for resource_limit")
+	} else if resAction != enforcer.ActionPendingAdminApproval {
+		t.Errorf("resource_limit action = %s, want %s", resAction, enforcer.ActionPendingAdminApproval)
+	}
+}
+
+// TestPolicyDispositionsRoundTrip_EmptyString verifies that an empty
+// DispositionsJSON produces a nil (or empty) Dispositions map.
+func TestPolicyDispositionsRoundTrip_EmptyString(t *testing.T) {
+	row := enforcer.PolicyRow{
+		ID:               "no-dispo",
+		Name:             "No dispositions",
+		Expression:       `true`,
+		Action:           "ALLOW",
+		Severity:         "LOW",
+		Enabled:          true,
+		Priority:         10,
+		DispositionsJSON: "",
+	}
+
+	policy := row.ToCELPolicy()
+
+	if policy.Dispositions != nil {
+		t.Errorf("expected nil Dispositions for empty DispositionsJSON, got %v", policy.Dispositions)
+	}
+}
+
 // ---------- User Rate Limit Overrides ----------
 
 func TestUserRateLimitOverride_CRUD(t *testing.T) {

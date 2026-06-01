@@ -790,6 +790,203 @@ func TestSetUserRateLimitOverride_MultipleBackends(t *testing.T) {
 	}
 }
 
+// ---------- Rate Limit HITL Tests ----------
+
+// TestHandleToolCall_RiskLimitHITL verifies that when the risk bucket is exhausted
+// and a disposition policy routes risk_limit to PENDING_USER_APPROVAL,
+// HandleToolCall returns that action instead of hard deny.
+func TestHandleToolCall_RiskLimitHITL(t *testing.T) {
+	s, cleanup := newTestStore(t)
+	defer cleanup()
+
+	cfg := enforcer.DefaultEnforcerConfig()
+	cfg.MinJustificationLength = 0
+	es := store.NewEnforcerStore(s.DB())
+	enf, err := enforcer.NewEnforcer(cfg, es, nil)
+	if err != nil {
+		t.Fatalf("NewEnforcer: %v", err)
+	}
+
+	// Seed a self-reported tool profile so it passes the deny-unless-permitted gate.
+	// Use a profile with high cost to guarantee bucket exhaustion regardless of
+	// how the resolver maps ResourceCost to SafetyProfile.Cost.
+	seedToolProfileSQL(t, s, enforcer.ToolProfileRow{
+		ID:           "self-hitl-risk-001",
+		BackendID:    "testbackend",
+		ToolName:     "safe_tool",
+		RiskLevel:    "high",
+		ImpactScope:  "write",
+		ResourceCost: 1000,
+		RawProfile:   `{"risk_level":"high","idempotent":true}`,
+		ScannedAt:    time.Now(),
+	})
+
+	// Add an ALLOW policy so the tool is permitted through CEL.
+	if err := enf.AddPolicy(enforcer.PolicyRow{
+		ID:         "allow-safe-tool",
+		Name:       "Allow safe_tool",
+		Expression: `tool == "safe_tool"`,
+		Action:     string(enforcer.ActionAllow),
+		Severity:   string(enforcer.SeverityLow),
+		Enabled:    true,
+		Priority:   1,
+	}); err != nil {
+		t.Fatalf("AddPolicy allow: %v", err)
+	}
+
+	// Add a disposition policy that does NOT match during CEL evaluation
+	// (tool mismatch) but its dispositions ARE loaded for resolveDisposition.
+	if err := enf.AddPolicy(enforcer.PolicyRow{
+		ID:         "dispo-risk-hitl",
+		Name:       "Risk limit → user HITL",
+		Expression: `tool == "unrelated_tool"`,
+		Action:     string(enforcer.ActionAllow),
+		Severity:   string(enforcer.SeverityLow),
+		Enabled:    true,
+		Priority:   10,
+		DispositionsJSON: `{"risk_limit":"PENDING_USER_APPROVAL"}`,
+	}); err != nil {
+		t.Fatalf("AddPolicy disposition: %v", err)
+	}
+
+	// Set capacity to 1 — any call will exceed it.
+	enf.SetBackendRateLimit("testbackend", 1, 0, 1000, 0)
+
+	ctx := context.Background()
+	decision, callErr := enf.HandleToolCall(ctx, "user1", "safe_tool",
+		map[string]interface{}{}, "testbackend",
+		"testing risk limit HITL routing", enforcer.CallOptions{})
+
+	if callErr != nil {
+		t.Fatalf("unexpected error: %v", callErr)
+	}
+	if decision.Action != enforcer.ActionPendingUserApproval {
+		t.Errorf("expected ActionPendingUserApproval for exhausted risk bucket with disposition, got %s (policy=%s)",
+			decision.Action, decision.PolicyID)
+	}
+	if decision.MatchContext != enforcer.MatchContextRiskLimit {
+		t.Errorf("expected MatchContext=risk_limit, got %s", decision.MatchContext)
+	}
+	if decision.PolicyID != "rate_limit_disposition" {
+		t.Errorf("expected PolicyID=rate_limit_disposition, got %s", decision.PolicyID)
+	}
+}
+
+// TestHandleToolCall_ResourceLimitHITL verifies that when the resource bucket
+// is exhausted and a disposition policy routes resource_limit to PENDING_USER_APPROVAL,
+// HandleToolCall returns that action instead of hard deny.
+func TestHandleToolCall_ResourceLimitHITL(t *testing.T) {
+	s, cleanup := newTestStore(t)
+	defer cleanup()
+
+	cfg := enforcer.DefaultEnforcerConfig()
+	cfg.MinJustificationLength = 0
+	es := store.NewEnforcerStore(s.DB())
+	enf, err := enforcer.NewEnforcer(cfg, es, nil)
+	if err != nil {
+		t.Fatalf("NewEnforcer: %v", err)
+	}
+
+	// Seed a self-reported tool profile.
+	seedToolProfileSQL(t, s, enforcer.ToolProfileRow{
+		ID:           "self-hitl-res-001",
+		BackendID:    "testbackend",
+		ToolName:     "heavy_tool",
+		RiskLevel:    "low",
+		ImpactScope:  "read",
+		ResourceCost: 100,
+		RawProfile:   `{"risk_level":"low","idempotent":true}`,
+		ScannedAt:    time.Now(),
+	})
+
+	// Add an ALLOW policy.
+	if err := enf.AddPolicy(enforcer.PolicyRow{
+		ID:         "allow-heavy-tool",
+		Name:       "Allow heavy_tool",
+		Expression: `tool == "heavy_tool"`,
+		Action:     string(enforcer.ActionAllow),
+		Severity:   string(enforcer.SeverityLow),
+		Enabled:    true,
+		Priority:   1,
+	}); err != nil {
+		t.Fatalf("AddPolicy allow: %v", err)
+	}
+
+	// Add a disposition policy that does NOT match during CEL evaluation
+	// (tool mismatch) but its dispositions ARE loaded for resolveDisposition.
+	if err := enf.AddPolicy(enforcer.PolicyRow{
+		ID:         "dispo-res-hitl",
+		Name:       "Resource limit → user HITL",
+		Expression: `tool == "unrelated_tool"`,
+		Action:     string(enforcer.ActionAllow),
+		Severity:   string(enforcer.SeverityLow),
+		Enabled:    true,
+		Priority:   10,
+		DispositionsJSON: `{"resource_limit":"PENDING_USER_APPROVAL"}`,
+	}); err != nil {
+		t.Fatalf("AddPolicy disposition: %v", err)
+	}
+
+	// Set very low resource capacity so the first call exhausts it.
+	// resourceCost = cost(10) — low/read not risk-scoped.
+	enf.SetBackendRateLimit("testbackend", 1000, 0, 1, 0)
+
+	ctx := context.Background()
+	decision, callErr := enf.HandleToolCall(ctx, "user1", "heavy_tool",
+		map[string]interface{}{}, "testbackend",
+		"testing resource limit HITL routing", enforcer.CallOptions{})
+
+	if callErr != nil {
+		t.Fatalf("unexpected error: %v", callErr)
+	}
+	if decision.Action != enforcer.ActionPendingUserApproval {
+		t.Errorf("expected ActionPendingUserApproval for exhausted resource bucket with disposition, got %s (policy=%s)",
+			decision.Action, decision.PolicyID)
+	}
+	if decision.MatchContext != enforcer.MatchContextResourceLimit {
+		t.Errorf("expected MatchContext=resource_limit, got %s", decision.MatchContext)
+	}
+	if decision.PolicyID != "rate_limit_disposition" {
+		t.Errorf("expected PolicyID=rate_limit_disposition, got %s", decision.PolicyID)
+	}
+}
+
+// TestSetUserRateLimitOverride_CeilingViolation verifies that setting a user
+// rate limit override whose capacity × multiplier exceeds the global ceiling
+// is rejected with ErrOverrideTooPermissive.
+func TestSetUserRateLimitOverride_CeilingViolation(t *testing.T) {
+	s, cleanup := newTestStore(t)
+	defer cleanup()
+
+	enf := newTestEnforcer(t, s)
+
+	// Set a global ceiling: risk capacity=100, cost multiplier=1 (implied).
+	// Effective ceiling = 100 * 1 = 100.
+	enf.SetBackendRateLimit("testbackend", 100, 0, 100, 0)
+
+	// Try setting override where RiskCapacity (150) exceeds global ceiling (100).
+	err := enf.SetUserRateLimitOverride(enforcer.UserRateLimitOverrideRow{
+		UserID:           "user1",
+		BackendID:        "testbackend",
+		SetBy:            "user",
+		RiskCapacity:     150,
+		ResourceCapacity: 50,
+		CostMultiplier:   1,
+	})
+	if err == nil {
+		t.Fatal("expected ErrOverrideTooPermissive for RiskCapacity=150 > global=100, got nil")
+	}
+	if err != enforcer.ErrOverrideTooPermissive {
+		t.Errorf("expected ErrOverrideTooPermissive, got %v", err)
+	}
+
+	// Verify the override was NOT persisted.
+	rc, _, _, _, _ := enf.GetEffectiveBucketConfig("user1", "testbackend")
+	if rc != 0 {
+		t.Errorf("expected no override stored; got RiskCapacity=%d", rc)
+	}
+}
+
 // ---------- ResolveDisposition Tests ----------
 
 // For resolveDisposition (unexported), test via internal package.
@@ -1016,8 +1213,8 @@ func TestInferredCostMultiplier_TripleCost(t *testing.T) {
 	// Second call: 120 > 30 remaining → rate limited.
 	d2, _ := enf.HandleToolCall(ctx, "user1", "delete_widget",
 		map[string]interface{}{}, "testbackend", justification, enforcer.CallOptions{})
-	if d2.Action != enforcer.ActionDeny || d2.PolicyID != "rate_limit" {
-		t.Errorf("call 2: want DENY(rate_limit), got %s (policy=%s)", d2.Action, d2.PolicyID)
+	if d2.Action != enforcer.ActionDeny || d2.PolicyID != "rate_limit_disposition" {
+		t.Errorf("call 2: want DENY(rate_limit_disposition), got %s (policy=%s)", d2.Action, d2.PolicyID)
 	}
 }
 
@@ -1072,8 +1269,8 @@ func TestInferredCostMultiplier_Disabled(t *testing.T) {
 
 	d2, _ := enf.HandleToolCall(ctx, "user1", "delete_widget",
 		map[string]interface{}{}, "testbackend", justification, enforcer.CallOptions{})
-	if d2.Action != enforcer.ActionDeny || d2.PolicyID != "rate_limit" {
-		t.Errorf("multiplier=1 call 2: want DENY(rate_limit), got %s (policy=%s)", d2.Action, d2.PolicyID)
+	if d2.Action != enforcer.ActionDeny || d2.PolicyID != "rate_limit_disposition" {
+		t.Errorf("multiplier=1 call 2: want DENY(rate_limit_disposition), got %s (policy=%s)", d2.Action, d2.PolicyID)
 	}
 }
 

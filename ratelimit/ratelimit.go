@@ -386,6 +386,23 @@ func (m *RateLimitManager) SetDefaultConfig(backendID string, riskCapacity, risk
 	m.manager.SetConfig(backendID, "resource", resourceCapacity, resourceRefill)
 }
 
+// GetDefaultConfig returns the default bucket configs for a backend.
+// Returns risk capacity, risk refill, resource capacity, resource refill.
+// Returns zeros (use built-in defaults) when no config is set.
+func (m *RateLimitManager) GetDefaultConfig(backendID string) (riskCapacity, riskRefill, resourceCapacity, resourceRefill int) {
+	riskCfg := m.manager.GetConfig(backendID, "risk")
+	resCfg := m.manager.GetConfig(backendID, "resource")
+	if riskCfg != nil {
+		riskCapacity = riskCfg.Capacity
+		riskRefill = riskCfg.RefillRate
+	}
+	if resCfg != nil {
+		resourceCapacity = resCfg.Capacity
+		resourceRefill = resCfg.RefillRate
+	}
+	return
+}
+
 // CheckAndConsume checks if the call is allowed and consumes from buckets
 // Returns: riskAllowed, resourceAllowed, riskCost, resourceCost
 func (m *RateLimitManager) CheckAndConsume(userID, backendID string, riskCost, resourceCost int) (bool, bool) {
@@ -440,6 +457,22 @@ func (m *BucketManager) SetConfig(backendID, bucketType string, capacity, refill
 	m.config[key] = &BucketConfig{
 		Capacity:   capacity,
 		RefillRate: refillRate,
+	}
+}
+
+// GetConfig returns the bucket config for a backend and bucket type.
+// Returns nil if no config has been set for this backend.
+func (m *BucketManager) GetConfig(backendID, bucketType string) *BucketConfig {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	key := backendID + ":" + bucketType
+	cfg, ok := m.config[key]
+	if !ok {
+		return nil
+	}
+	return &BucketConfig{
+		Capacity:   cfg.Capacity,
+		RefillRate: cfg.RefillRate,
 	}
 }
 

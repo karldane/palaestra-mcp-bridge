@@ -598,18 +598,19 @@ func (e *Enforcer) HandleToolCall(ctx context.Context, userID string, toolName s
 	if decision.Action == ActionAllow {
 		riskAllowed, resourceAllowed := e.rateLimit.CheckAndConsume(userID, backendID, riskCost, resourceCost)
 		if !riskAllowed || !resourceAllowed {
-			bucketType := "risk"
-			available := riskAvail
+			matchCtx := MatchContextRiskLimit
 			if !resourceAllowed {
-				bucketType = "resource"
-				available = resAvail
+				matchCtx = MatchContextResourceLimit
 			}
+			action, msg := e.resolveDisposition(matchCtx)
 			return EnforcerDecision{
-				Action:   ActionDeny,
-				Severity: SeverityMedium,
-				Message:  fmt.Sprintf("Rate limit exceeded: %s bucket exhausted (%d available)", bucketType, available),
-				PolicyID: "rate_limit",
-			}, ErrRateLimitExceeded
+				Action:       action,
+				Severity:     SeverityMedium,
+				Message:      msg,
+				PolicyID:     "rate_limit_disposition",
+				MatchContext: matchCtx,
+				Timestamp:    time.Now(),
+			}, nil
 		}
 	}
 
@@ -722,8 +723,29 @@ func (e *Enforcer) resolveDisposition(ctx MatchContext) (Action, string) {
 }
 
 // SetUserRateLimitOverride sets a personal rate limit override for a user.
-// Persists to the store and updates the in-memory rate limit manager.
+// Validates the ceiling constraint before persisting.
+// Returns ErrOverrideTooPermissive if the override exceeds the global ceiling.
 func (e *Enforcer) SetUserRateLimitOverride(override UserRateLimitOverrideRow) error {
+	globalRiskCap, _, globalResCap, _ := e.rateLimit.GetDefaultConfig(override.BackendID)
+
+	mult := override.CostMultiplier
+	if mult == 0 {
+		mult = 1
+	}
+
+	riskCap := override.RiskCapacity
+	if riskCap == 0 {
+		riskCap = globalRiskCap
+	}
+	resCap := override.ResourceCapacity
+	if resCap == 0 {
+		resCap = globalResCap
+	}
+
+	if riskCap*mult > globalRiskCap || resCap*mult > globalResCap {
+		return ErrOverrideTooPermissive
+	}
+
 	if err := e.store.UpsertUserRateLimitOverride(override); err != nil {
 		return err
 	}
