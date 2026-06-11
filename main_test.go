@@ -2941,6 +2941,30 @@ func TestSanitiseStringArgs_fullToolsCallBody(t *testing.T) {
 	}
 }
 
+// ---------- No-config fallback tests ----------
+
+func TestNoConfigFallback_AccessTokenTTL(t *testing.T) {
+	// This mirrors the fallback struct in main.go when no config file is loaded.
+	// It must not use the short 1-hour default from auth.DefaultTokenTTL.
+	fallback := config.InternalConfig{
+		Server: config.ServerConfig{
+			Port:                 "8020",
+			LogLevel:             "info",
+			AuthCodeTTL:          "10m",
+			AccessTokenTTL:       "90d",
+			AuthCodeTTLParsed:    10 * time.Minute,
+			AccessTokenTTLParsed: 90 * 24 * time.Hour,
+		},
+	}
+
+	if fallback.Server.AccessTokenTTLParsed < 24*time.Hour {
+		t.Errorf("AccessTokenTTLParsed = %v, want >= 24h (was 1h bug)", fallback.Server.AccessTokenTTLParsed)
+	}
+	if fallback.Server.AuthCodeTTLParsed != 10*time.Minute {
+		t.Errorf("AuthCodeTTLParsed = %v, want 10m", fallback.Server.AuthCodeTTLParsed)
+	}
+}
+
 // sliceToEnvMap converts a []string of "KEY=VALUE" pairs to a map for easier assertion.
 func sliceToEnvMap(env []string) map[string]string {
 	m := make(map[string]string)

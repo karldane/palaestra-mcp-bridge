@@ -1040,6 +1040,60 @@ func TestFullOAuthFlow(t *testing.T) {
 	}
 }
 
+// ---------- Auth middleware logging ----------
+
+func TestMiddleware_ExpiredTokenStillReturns401_WithLogging(t *testing.T) {
+	h, s, dir := testSetup(t)
+	defer cleanup(s, dir)
+	seedUser(t, s)
+
+	sess := &store.OAuthSession{
+		AccessToken:  "expired-log-mid",
+		RefreshToken: "r1",
+		UserID:       "test-user-1",
+		ClientID:     "c1",
+		Scope:        "mcp",
+		ExpiresAt:    time.Now().Add(-1 * time.Hour).UTC(),
+	}
+	s.CreateOAuthSession(sess)
+
+	handler := h.Middleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Fatal("inner handler should not be called")
+	}))
+
+	req := httptest.NewRequest("GET", "/", nil)
+	req.Header.Set("Authorization", "Bearer expired-log-mid")
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+
+	if w.Code != http.StatusUnauthorized {
+		t.Fatalf("status = %d, want 401", w.Code)
+	}
+
+	_, err := s.GetOAuthSession("expired-log-mid")
+	if err == nil {
+		t.Error("expired session was not cleaned up")
+	}
+}
+
+func TestMiddleware_InvalidTokenStillReturns401_WithLogging(t *testing.T) {
+	h, s, dir := testSetup(t)
+	defer cleanup(s, dir)
+
+	handler := h.Middleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Fatal("inner handler should not be called")
+	}))
+
+	req := httptest.NewRequest("GET", "/", nil)
+	req.Header.Set("Authorization", "Bearer nonexistent-token")
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+
+	if w.Code != http.StatusUnauthorized {
+		t.Fatalf("status = %d, want 401", w.Code)
+	}
+}
+
 // ---------- UserIDFromContext ----------
 
 func TestUserIDFromContext_NoValue(t *testing.T) {

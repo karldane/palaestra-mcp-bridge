@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 )
 
 func TestEncryptionConfig_Validate_EnvVar(t *testing.T) {
@@ -340,6 +341,60 @@ backends:
 	}
 	if cfg.Server.LogLevel != "info" {
 		t.Errorf("expected default logLevel info, got %s", cfg.Server.LogLevel)
+	}
+}
+
+func TestLoad_AccessTokenTTL_Parses90d(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+
+	data := []byte(`
+server:
+  accessTokenTTL: "90d"
+backends:
+  test:
+    command: "cat"
+    poolSize: 1
+`)
+
+	if err := os.WriteFile(path, data, 0644); err != nil {
+		t.Fatalf("failed to write config: %v", err)
+	}
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("failed to load config: %v", err)
+	}
+
+	expected := 90 * 24 * time.Hour
+	if cfg.Server.AccessTokenTTLParsed != expected {
+		t.Errorf("AccessTokenTTLParsed = %v, want %v", cfg.Server.AccessTokenTTLParsed, expected)
+	}
+}
+
+func TestLoad_AccessTokenTTL_DefaultsTo24h(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+
+	data := []byte(`
+backends:
+  test:
+    command: "cat"
+    poolSize: 1
+`)
+
+	if err := os.WriteFile(path, data, 0644); err != nil {
+		t.Fatalf("failed to write config: %v", err)
+	}
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("failed to load config: %v", err)
+	}
+
+	expected := 24 * time.Hour
+	if cfg.Server.AccessTokenTTLParsed != expected {
+		t.Errorf("AccessTokenTTLParsed = %v, want %v", cfg.Server.AccessTokenTTLParsed, expected)
 	}
 }
 

@@ -7,7 +7,7 @@ server:
   port: "8080"
   logLevel: info
   authCodeTTL: "10m"
-  accessTokenTTL: "24h"
+  accessTokenTTL: "90d"
 
 encryption:
   provider: envvar

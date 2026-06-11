@@ -80,10 +80,12 @@ func (h *Handler) Middleware(next http.Handler) http.Handler {
 		if strings.HasPrefix(token, "mcp_") {
 			apiKey, err := h.Store.ValidateAPIKey(token)
 			if err != nil || apiKey == nil {
+				log.Printf("[auth] invalid API key token rejected")
 				h.unauthorized(w)
 				return
 			}
 			if apiKey.ExpiresAt != nil && time.Now().UTC().After(*apiKey.ExpiresAt) {
+				log.Printf("[auth] expired API key token rejected (expired at %v)", apiKey.ExpiresAt)
 				h.unauthorized(w)
 				return
 			}
@@ -92,10 +94,12 @@ func (h *Handler) Middleware(next http.Handler) http.Handler {
 		} else {
 			sess, err := h.Store.GetOAuthSession(token)
 			if err != nil {
+				log.Printf("[auth] invalid OAuth token rejected (session not found)")
 				h.unauthorized(w)
 				return
 			}
 			if time.Now().UTC().After(sess.ExpiresAt) {
+				log.Printf("[auth] expired OAuth token rejected (expired at %v, user=%s)", sess.ExpiresAt, sess.UserID)
 				h.Store.DeleteOAuthSession(token)
 				h.unauthorized(w)
 				return

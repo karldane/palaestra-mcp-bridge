@@ -117,9 +117,9 @@ func main() {
 				Port:                 port,
 				LogLevel:             "info",
 				AuthCodeTTL:          "10m",
-				AccessTokenTTL:       "24h",
+				AccessTokenTTL:       "90d",
 				AuthCodeTTLParsed:    auth.DefaultCodeTTL,
-				AccessTokenTTLParsed: auth.DefaultTokenTTL,
+				AccessTokenTTLParsed: 90 * 24 * time.Hour,
 			},
 			Backends: map[string]config.BackendConfig{
 				"default": {
