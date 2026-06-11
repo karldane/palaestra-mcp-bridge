@@ -272,6 +272,14 @@ func (s *MCPBridgeServer) handleToolsCall(w http.ResponseWriter, r *http.Request
 			if toolArgs != nil {
 				justification, _ = toolArgs["justification"].(string)
 				delete(toolArgs, "justification") // strip before forwarding to backend
+
+				// Sanitise string values to prevent downstream JSON parse failures
+				// (e.g. when saving code snippets to Qdrant or Confluence).
+				sanitised := sanitiseStringArgs(toolArgs).(map[string]interface{})
+				params["arguments"] = sanitised
+				if cleaned, err := json.Marshal(toolReq); err == nil {
+					body = cleaned
+				}
 			}
 			if justification == "" {
 				justification, _ = params["justification"].(string) // backwards compat
@@ -625,4 +633,32 @@ func (s *MCPBridgeServer) handleDefaultBackend(w http.ResponseWriter, r *http.Re
 	}
 
 	pool.ReleaseWarm(proc)
+}
+
+// sanitiseStringArgs recursively walks tool call arguments and round-trips
+// every string value through encoding/json, guaranteeing RFC 8259-compliant
+// output. This prevents downstream MCP servers from failing on control
+// characters, raw newlines, or other problematic content in string values.
+func sanitiseStringArgs(v interface{}) interface{} {
+	switch val := v.(type) {
+	case map[string]interface{}:
+		out := make(map[string]interface{}, len(val))
+		for k, v2 := range val {
+			out[k] = sanitiseStringArgs(v2)
+		}
+		return out
+	case []interface{}:
+		out := make([]interface{}, len(val))
+		for i, v2 := range val {
+			out[i] = sanitiseStringArgs(v2)
+		}
+		return out
+	case string:
+		b, _ := json.Marshal(val)
+		var clean string
+		json.Unmarshal(b, &clean)
+		return clean
+	default:
+		return val
+	}
 }

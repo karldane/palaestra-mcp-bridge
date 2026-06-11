@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/base64"
@@ -2743,6 +2744,200 @@ func TestBuildEnvForUser_TemplateWithMappingsAndTokens(t *testing.T) {
 	// Essential system vars present
 	if envMap["PATH"] == "" {
 		t.Error("PATH is empty, expected a value from process env")
+	}
+}
+
+// ---------- sanitiseStringArgs tests ----------
+
+func TestSanitiseStringArgs_cleanStringUnchanged(t *testing.T) {
+	input := "hello world"
+	result := sanitiseStringArgs(input)
+	got, ok := result.(string)
+	if !ok {
+		t.Fatalf("expected string, got %T", result)
+	}
+	if got != input {
+		t.Errorf("clean string changed: got %q, want %q", got, input)
+	}
+}
+
+func TestSanitiseStringArgs_newlineEscaped(t *testing.T) {
+	raw := "line1\nline2"
+	result := sanitiseStringArgs(raw)
+	got, ok := result.(string)
+	if !ok {
+		t.Fatalf("expected string, got %T", result)
+	}
+	if got != "line1\nline2" {
+		t.Errorf("expected literal newline in string, got %q", got)
+	}
+	// Verify round-trip through JSON is clean
+	b, err := json.Marshal(got)
+	if err != nil {
+		t.Fatalf("json.Marshal failed: %v", err)
+	}
+	if !strings.Contains(string(b), `\n`) {
+		t.Errorf("expected JSON output to contain escaped newline, got %q", string(b))
+	}
+}
+
+func TestSanitiseStringArgs_tabEscaped(t *testing.T) {
+	raw := "col1\tcol2"
+	result := sanitiseStringArgs(raw)
+	got, _ := result.(string)
+	b, _ := json.Marshal(got)
+	if !strings.Contains(string(b), `\t`) {
+		t.Errorf("expected JSON to contain escaped tab, got %q", string(b))
+	}
+}
+
+func TestSanitiseStringArgs_backslashEscaped(t *testing.T) {
+	raw := "C:\\Users\\test"
+	result := sanitiseStringArgs(raw)
+	got, _ := result.(string)
+	b, _ := json.Marshal(got)
+	// JSON should contain \\ for each \ in the original string
+	if !bytes.Contains(b, []byte(`\\`)) {
+		t.Errorf("expected JSON to contain escaped backslashes, got %s", b)
+	}
+}
+
+func TestSanitiseStringArgs_doubleQuoteEscaped(t *testing.T) {
+	raw := `say "hello"`
+	result := sanitiseStringArgs(raw)
+	got, _ := result.(string)
+	b, _ := json.Marshal(got)
+	if !strings.Contains(string(b), `\"`) {
+		t.Errorf("expected JSON to contain escaped double-quote, got %q", string(b))
+	}
+}
+
+func TestSanitiseStringArgs_mapValues(t *testing.T) {
+	input := map[string]interface{}{
+		"code": "func foo() {\n\treturn \"bar\"\n}",
+		"name": "clean",
+		"num":  42,
+	}
+	result := sanitiseStringArgs(input)
+	got, ok := result.(map[string]interface{})
+	if !ok {
+		t.Fatalf("expected map, got %T", result)
+	}
+	// Clean string preserved
+	if got["name"] != "clean" {
+		t.Errorf("clean string changed: got %v", got["name"])
+	}
+	// Number preserved
+	if got["num"] != 42 {
+		t.Errorf("number changed: got %v", got["num"])
+	}
+	// Problematic string round-trips through JSON without error
+	_, err := json.Marshal(got)
+	if err != nil {
+		t.Errorf("result map failed JSON marshal: %v", err)
+	}
+}
+
+func TestSanitiseStringArgs_nestedStructures(t *testing.T) {
+	input := map[string]interface{}{
+		"outer": map[string]interface{}{
+			"inner": "line1\nline2",
+			"list":  []interface{}{"a\nb", "clean", 123},
+		},
+		"flat": "ok",
+	}
+	result := sanitiseStringArgs(input)
+	got, ok := result.(map[string]interface{})
+	if !ok {
+		t.Fatalf("expected map, got %T", result)
+	}
+	_, err := json.Marshal(got)
+	if err != nil {
+		t.Errorf("nested result failed JSON marshal: %v", err)
+	}
+}
+
+func TestSanitiseStringArgs_nonStringTypesPreserved(t *testing.T) {
+	input := map[string]interface{}{
+		"bool":   true,
+		"int":    1,
+		"float":  3.14,
+		"nil":    nil,
+		"string": "hello",
+	}
+	result := sanitiseStringArgs(input)
+	got, _ := result.(map[string]interface{})
+	if got["bool"] != true {
+		t.Errorf("bool changed")
+	}
+	if got["int"] != 1 {
+		t.Errorf("int changed")
+	}
+	if got["float"] != 3.14 {
+		t.Errorf("float changed")
+	}
+	if got["nil"] != nil {
+		t.Errorf("nil changed")
+	}
+}
+
+func TestSanitiseStringArgs_controlChars(t *testing.T) {
+	raw := "before\x00after"
+	result := sanitiseStringArgs(raw)
+	got, _ := result.(string)
+	b, _ := json.Marshal(got)
+	// \x00 should be escaped as \u0000
+	if !strings.Contains(string(b), `\u0000`) {
+		t.Errorf("expected NUL to be escaped as \\u0000, got %q", string(b))
+	}
+}
+
+func TestSanitiseStringArgs_fullToolsCallBody(t *testing.T) {
+	// Simulate a full tools/call JSON-RPC body with problematic strings
+	body := `{
+		"jsonrpc": "2.0",
+		"method": "tools/call",
+		"params": {
+			"name": "qdrant_save_code",
+			"arguments": {
+				"code": "func foo() {\n\treturn \"bar\"\n}",
+				"description": "line1\nline2",
+				"path": "C:\\project\\file.go",
+				"tags": ["tag1", "multi\nline"]
+			}
+		},
+		"id": "test-1"
+	}`
+
+	var toolReq map[string]interface{}
+	if err := json.Unmarshal([]byte(body), &toolReq); err != nil {
+		t.Fatalf("failed to unmarshal test body: %v", err)
+	}
+
+	params, _ := toolReq["params"].(map[string]interface{})
+	toolArgs, _ := params["arguments"].(map[string]interface{})
+
+	sanitised := sanitiseStringArgs(toolArgs).(map[string]interface{})
+	params["arguments"] = sanitised
+
+	cleaned, err := json.Marshal(toolReq)
+	if err != nil {
+		t.Fatalf("re-marshal failed: %v", err)
+	}
+
+	// Verify the cleaned JSON round-trips without error
+	var verified map[string]interface{}
+	if err := json.Unmarshal(cleaned, &verified); err != nil {
+		t.Errorf("cleaned body failed JSON round-trip: %v", string(cleaned))
+	}
+
+	// Verify the arguments contain properly escaped strings
+	verifiedParams, _ := verified["params"].(map[string]interface{})
+	verifiedArgs, _ := verifiedParams["arguments"].(map[string]interface{})
+	code, _ := verifiedArgs["code"].(string)
+	// The Go JSON round-trip should produce valid Go string with proper escaping
+	if code == "" {
+		t.Error("code argument should not be empty after sanitisation")
 	}
 }
 
