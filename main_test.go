@@ -2941,6 +2941,183 @@ func TestSanitiseStringArgs_fullToolsCallBody(t *testing.T) {
 	}
 }
 
+// ---------- Regression: sanitiseStringArgs preserves required params ----------
+
+// TestSanitiseStringArgs_requiredParamsPreserved verifies that running
+// sanitiseStringArgs on tool call arguments followed by json.Marshal does
+// NOT strip or corrupt required parameters. This is the exact flow in
+// mcpbridge_routing.go handleToolsCall().
+func TestSanitiseStringArgs_requiredParamsPreserved(t *testing.T) {
+	// Simulate the exact flow from mcpbridge_routing.go handleToolsCall:
+	//   1. Unmarshal JSON body into map[string]interface{}
+	//   2. Extract toolArgs from params["arguments"]
+	//   3. Delete justification
+	//   4. Call sanitiseStringArgs(toolArgs)
+	//   5. Replace params["arguments"]
+	//   6. Re-marshal toolReq
+	//   7. Verify required params survive
+
+	tests := []struct {
+		name         string
+		body         string
+		requiredKeys []string
+	}{
+		{
+			name: "qdrant_remember_simple",
+			body: `{
+				"jsonrpc": "2.0",
+				"method": "tools/call",
+				"params": {
+					"name": "qdrant_remember",
+					"arguments": {
+						"content": "test memory",
+						"justification": "testing the bug"
+					}
+				},
+				"id": "test-1"
+			}`,
+			requiredKeys: []string{"content"},
+		},
+		{
+			name: "qdrant_recall_with_query",
+			body: `{
+				"jsonrpc": "2.0",
+				"method": "tools/call",
+				"params": {
+					"name": "qdrant_recall",
+					"arguments": {
+						"query": "what do I know?",
+						"justification": "testing recall"
+					}
+				},
+				"id": "test-2"
+			}`,
+			requiredKeys: []string{"query"},
+		},
+		{
+			name: "qdrant_log_event",
+			body: `{
+				"jsonrpc": "2.0",
+				"method": "tools/call",
+				"params": {
+					"name": "qdrant_log_event",
+					"arguments": {
+						"event": "user_login",
+						"justification": "testing event"
+					}
+				},
+				"id": "test-3"
+			}`,
+			requiredKeys: []string{"event"},
+		},
+		{
+			name: "qdrant_upsert_point",
+			body: `{
+				"jsonrpc": "2.0",
+				"method": "tools/call",
+				"params": {
+					"name": "qdrant_upsert_point",
+					"arguments": {
+						"id": "point-123",
+						"justification": "testing upsert"
+					}
+				},
+				"id": "test-4"
+			}`,
+			requiredKeys: []string{"id"},
+		},
+		{
+			name: "code_snippet_with_special_chars",
+			body: `{
+				"jsonrpc": "2.0",
+				"method": "tools/call",
+				"params": {
+					"name": "qdrant_remember",
+					"arguments": {
+						"content": "func foo() {\n\treturn \"bar\"\n}",
+						"justification": "testing code snippets"
+					}
+				},
+				"id": "test-5"
+			}`,
+			requiredKeys: []string{"content"},
+		},
+		{
+			name: "v2_style_qdrant_call",
+			body: `{
+				"jsonrpc": "2.0",
+				"method": "tools/call",
+				"params": {
+					"name": "qdrant_call",
+					"arguments": {
+						"tool": "remember",
+						"params": {"content": "test"},
+						"justification": "testing v2 path"
+					}
+				},
+				"id": "test-6"
+			}`,
+			requiredKeys: []string{"params"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// Step 1 & 2: Unmarshal and extract args (mirrors handleToolsCall)
+			var toolReq map[string]interface{}
+			if err := json.Unmarshal([]byte(tt.body), &toolReq); err != nil {
+				t.Fatalf("failed to unmarshal body: %v", err)
+			}
+
+			params, ok := toolReq["params"].(map[string]interface{})
+			if !ok {
+				t.Fatal("params not found or not a map")
+			}
+
+			toolArgs, _ := params["arguments"].(map[string]interface{})
+			if toolArgs == nil {
+				t.Fatal("arguments not found or not a map")
+			}
+
+			// Step 3: Extract and delete justification
+			justification, _ := toolArgs["justification"].(string)
+			delete(toolArgs, "justification")
+
+			// Step 4 & 5: Sanitise and replace arguments
+			sanitised := sanitiseStringArgs(toolArgs).(map[string]interface{})
+			params["arguments"] = sanitised
+
+			// Step 6: Re-marshal
+			cleaned, err := json.Marshal(toolReq)
+			if err != nil {
+				t.Fatalf("re-marshal failed: %v", err)
+			}
+
+			// Step 7: Verify the cleaned JSON round-trips
+			var verified map[string]interface{}
+			if err := json.Unmarshal(cleaned, &verified); err != nil {
+				t.Fatalf("cleaned body is not valid JSON: %v\nbody: %s", err, string(cleaned))
+			}
+
+			verifiedParams, _ := verified["params"].(map[string]interface{})
+			verifiedArgs, _ := verifiedParams["arguments"].(map[string]interface{})
+
+			for _, key := range tt.requiredKeys {
+				if _, exists := verifiedArgs[key]; !exists {
+					t.Errorf("REGRESSION: required param %q is MISSING after sanitise+marshal cycle!\ninput: %s\noutput: %s", key, tt.body, string(cleaned))
+				}
+			}
+
+			// Verify justification was stripped
+			if _, exists := verifiedArgs["justification"]; exists {
+				t.Error("justification should have been stripped from arguments")
+			}
+
+			_ = justification // used in the original flow for enforcer check
+		})
+	}
+}
+
 // ---------- No-config fallback tests ----------
 
 func TestNoConfigFallback_AccessTokenTTL(t *testing.T) {

@@ -48,3 +48,4 @@ mcp-bridge-v*
 opencode.sh
 devdocs
 .env.local
+server.json

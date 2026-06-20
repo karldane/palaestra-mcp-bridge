@@ -312,6 +312,9 @@ func handleToolsCall(a *app, w http.ResponseWriter, r *http.Request, userID stri
 	if params, ok := toolReq["params"].(map[string]interface{}); ok {
 		toolName, _ = params["name"].(string)
 		toolArgs, _ = params["arguments"].(map[string]interface{})
+		if toolArgs == nil && params["arguments"] != nil {
+			shared.Warnf("[mcp_handlers] DIAG: params['arguments'] type assertion failed: type=%T value=%v", params["arguments"], params["arguments"])
+		}
 		// Extract justification from arguments (standard MCP field), with fallback
 		if toolArgs != nil {
 			justification, _ = toolArgs["justification"].(string)

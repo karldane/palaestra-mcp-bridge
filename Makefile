@@ -116,7 +116,7 @@ ensure-docker-config:
 # Build base image (runtimes + backends — rarely needed)
 .PHONY: docker-build-base
 docker-build-base: ensure-docker-config
-	docker build -f Dockerfile.base -t $(DOCKER_IMAGE):base-latest .
+	docker build --no-cache -f Dockerfile.base -t $(DOCKER_IMAGE):base-latest .
 
 # Build and push base image
 .PHONY: docker-push-base

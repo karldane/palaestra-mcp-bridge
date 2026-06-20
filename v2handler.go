@@ -167,6 +167,11 @@ func v2Handle(a *app, w http.ResponseWriter, r *http.Request, userID string) {
 		} else if strings.HasSuffix(toolName, "_call") {
 			// Handle dynamic tool_call calls like "atlassian_call", "appscan_asoc_call"
 			namespace := strings.TrimSuffix(toolName, "_call")
+			// Log raw types for diagnostic purposes — wrong types here silently
+			// produce empty toolParams downstream, manifesting as "missing property" errors.
+			if _, ok := params.Arguments["params"].(map[string]interface{}); !ok {
+				shared.Warnf("[v2] DIAG: %s_call params.Arguments['params'] is not an object: type=%T value=%v", namespace, params.Arguments["params"], params.Arguments["params"])
+			}
 			// Build params with namespace
 			callParams := map[string]interface{}{
 				"namespace":     namespace,
@@ -588,6 +593,8 @@ func v2toolCall(a *app, w http.ResponseWriter, r *http.Request, userID string, p
 	}
 	toolParams, ok := params["params"].(map[string]interface{})
 	if !ok {
+		shared.Warnf("[v2toolCall] DIAG: params['params'] type assertion failed: got type=%T value=%v raw=%#v namespace=%s tool=%s user=%s",
+			params["params"], params["params"], params["params"], namespace, toolName, userID)
 		toolParams = make(map[string]interface{})
 	}
 
