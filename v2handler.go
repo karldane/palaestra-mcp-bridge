@@ -167,19 +167,37 @@ func v2Handle(a *app, w http.ResponseWriter, r *http.Request, userID string) {
 		} else if strings.HasSuffix(toolName, "_call") {
 			// Handle dynamic tool_call calls like "atlassian_call", "appscan_asoc_call"
 			namespace := strings.TrimSuffix(toolName, "_call")
-			// Log raw types for diagnostic purposes — wrong types here silently
-			// produce empty toolParams downstream, manifesting as "missing property" errors.
-			if _, ok := params.Arguments["params"].(map[string]interface{}); !ok {
-				shared.Warnf("[v2] DIAG: %s_call params.Arguments['params'] is not an object: type=%T value=%v", namespace, params.Arguments["params"], params.Arguments["params"])
+			tool, _ := params.Arguments["tool"].(string)
+			justification, _ := params.Arguments["justification"].(string)
+			rawParams := params.Arguments["params"]
+
+			// Attempt to parse params — accept both inline objects and
+			// double-encoded JSON strings (some MCP clients do this).
+			parsedParams, err := shared.ParseArgsMap(rawParams)
+			if err != nil {
+				shared.Warnf("[v2] %s_call: params parse failed: %v (tool=%q, raw type=%T)", namespace, err, tool, rawParams)
+				writeJSONRPCError(w, msg.ID, -32602, fmt.Sprintf(
+					"Invalid 'params' argument for tool %q in namespace %q. "+
+						"The 'params' field must be a JSON object (e.g. {\"key\": \"value\"}), but got %T. "+
+						"Hint: Do not JSON-encode the params value — pass it as a raw object.",
+					tool, namespace, rawParams), map[string]interface{}{
+					"error":       "invalid_params_type",
+					"namespace":   namespace,
+					"tool":        tool,
+					"got_type":    fmt.Sprintf("%T", rawParams),
+					"raw_value":   fmt.Sprintf("%v", rawParams),
+					"hint":        "The 'params' field must be a JSON object, not a string or other type",
+				})
+				return
 			}
-			// Build params with namespace
+
 			callParams := map[string]interface{}{
 				"namespace":     namespace,
-				"tool":          params.Arguments["tool"],
-				"params":        params.Arguments["params"],
-				"justification": params.Arguments["justification"],
+				"tool":          tool,
+				"params":        parsedParams,
+				"justification": justification,
 			}
-			shared.Debugf("[v2] atlassian_call routing: namespace=%s tool=%v params=%v", namespace, callParams["tool"], callParams["params"])
+			shared.Debugf("[v2] %s_call routing: namespace=%s tool=%v params=%v", namespace, namespace, tool, parsedParams)
 			v2toolCall(a, w, r, userID, callParams, msg.ID)
 		} else {
 			// Handle unknown tools/call methods
@@ -591,11 +609,21 @@ func v2toolCall(a *app, w http.ResponseWriter, r *http.Request, userID string, p
 		http.Error(w, "Missing or invalid 'tool' parameter", http.StatusBadRequest)
 		return
 	}
-	toolParams, ok := params["params"].(map[string]interface{})
-	if !ok {
-		shared.Warnf("[v2toolCall] DIAG: params['params'] type assertion failed: got type=%T value=%v raw=%#v namespace=%s tool=%s user=%s",
-			params["params"], params["params"], params["params"], namespace, toolName, userID)
-		toolParams = make(map[string]interface{})
+	toolParams, err := shared.ParseArgsMap(params["params"])
+	if err != nil {
+		shared.Warnf("[v2toolCall] params['params'] parse failed: %v (namespace=%s tool=%s user=%s raw type=%T)",
+			err, namespace, toolName, userID, params["params"])
+		writeJSONRPCError(w, id, -32602, fmt.Sprintf(
+			"Invalid tool parameters for %q in namespace %q: the 'params' field must be "+
+				"a JSON object, but got %T. %v",
+			toolName, namespace, params["params"], err), map[string]interface{}{
+			"error":     "invalid_params_type",
+			"namespace": namespace,
+			"tool":      toolName,
+			"got_type":  fmt.Sprintf("%T", params["params"]),
+			"hint":      "Call <backend>_expand first to discover the correct parameter schema",
+		})
+		return
 	}
 
 	// Validate namespace is a valid backend (must check before justification validation)

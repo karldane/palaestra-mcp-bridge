@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/mcp-bridge/mcp-bridge/auth"
@@ -427,5 +428,166 @@ func TestV2ToolsListDescriptions_v2_2(t *testing.T) {
 				t.Errorf("github_call: got %q, want %q", description, expectedDesc)
 			}
 		}
+	}
+}
+
+// TestV2CallWithMissingParams verifies that when params is nil/missing,
+// the _call handler returns a clear JSON-RPC error instead of silently
+// forwarding empty arguments.
+func TestV2CallWithMissingParams(t *testing.T) {
+	mockStore, err := store.New(":memory:")
+	if err != nil {
+		t.Fatalf("Failed to create mock store: %v", err)
+	}
+	defer mockStore.Close()
+
+	mockStore.CreateBackend(&store.Backend{
+		ID:                "qdrant",
+		Enabled:           true,
+		Command:           "echo 'qdrant tools'",
+		ToolPrefix:        "qdrant",
+		SkipJustification: true,
+	})
+
+	mockPoolManager := poolmgr.NewPoolManager("dummyCommand", 1)
+	mockConfig := &config.InternalConfig{}
+	mockToolMuxer := muxer.NewToolMuxerWithStore(mockPoolManager, mockStore, mockConfig)
+
+	mockApp := &app{
+		store:       mockStore,
+		toolMuxer:   mockToolMuxer,
+		poolManager: mockPoolManager,
+		enforcer:    nil,
+	}
+
+	// Params is completely absent from arguments
+	reqBody := map[string]interface{}{
+		"jsonrpc": "2.0",
+		"method":  "tools/call",
+		"id":      1,
+		"params": map[string]interface{}{
+			"name": "qdrant_call",
+			"arguments": map[string]interface{}{
+				"tool": "remember",
+				// no "params" key at all
+			},
+		},
+	}
+	bodyBytes, _ := json.Marshal(reqBody)
+
+	req := httptest.NewRequest(http.MethodPost, "/mcp/v2", bytes.NewReader(bodyBytes))
+	req.Header.Set("Content-Type", "application/json")
+	ctx := context.WithValue(req.Context(), auth.UserIDKey, "testuser")
+	req = req.WithContext(ctx)
+
+	rr := httptest.NewRecorder()
+	handler := v2HandleWrapper(mockApp)
+	handler.ServeHTTP(rr, req)
+
+	var resp map[string]interface{}
+	err = json.Unmarshal(rr.Body.Bytes(), &resp)
+	if err != nil {
+		t.Fatalf("Failed to unmarshal response: %v", err)
+	}
+
+	errObj, ok := resp["error"].(map[string]interface{})
+	if !ok {
+		t.Fatal("Expected a JSON-RPC error for missing params, got none")
+	}
+
+	code, ok := errObj["code"].(float64)
+	if !ok || code != -32602 {
+		t.Errorf("Error code: got %v, want -32602", code)
+	}
+
+	msg, ok := errObj["message"].(string)
+	if !ok || msg == "" {
+		t.Errorf("Error message missing or empty")
+	}
+
+	// The message should mention the tool name so the agent knows what went wrong
+	if !strings.Contains(msg, "remember") {
+		t.Errorf("Error message should mention tool name 'remember': %q", msg)
+	}
+}
+
+// TestV2CallWithWrongTypeParams verifies that when params is an unexpected
+// type (e.g. int), the _call handler returns a clear error with the actual type.
+func TestV2CallWithWrongTypeParams(t *testing.T) {
+	mockStore, err := store.New(":memory:")
+	if err != nil {
+		t.Fatalf("Failed to create mock store: %v", err)
+	}
+	defer mockStore.Close()
+
+	mockStore.CreateBackend(&store.Backend{
+		ID:                "qdrant",
+		Enabled:           true,
+		Command:           "echo 'qdrant tools'",
+		ToolPrefix:        "qdrant",
+		SkipJustification: true,
+	})
+
+	mockPoolManager := poolmgr.NewPoolManager("dummyCommand", 1)
+	mockConfig := &config.InternalConfig{}
+	mockToolMuxer := muxer.NewToolMuxerWithStore(mockPoolManager, mockStore, mockConfig)
+
+	mockApp := &app{
+		store:       mockStore,
+		toolMuxer:   mockToolMuxer,
+		poolManager: mockPoolManager,
+		enforcer:    nil,
+	}
+
+	// params is an int — completely wrong type
+	reqBody := map[string]interface{}{
+		"jsonrpc": "2.0",
+		"method":  "tools/call",
+		"id":      1,
+		"params": map[string]interface{}{
+			"name": "qdrant_call",
+			"arguments": map[string]interface{}{
+				"tool":   "remember",
+				"params": 42,
+			},
+		},
+	}
+	bodyBytes, _ := json.Marshal(reqBody)
+
+	req := httptest.NewRequest(http.MethodPost, "/mcp/v2", bytes.NewReader(bodyBytes))
+	req.Header.Set("Content-Type", "application/json")
+	ctx := context.WithValue(req.Context(), auth.UserIDKey, "testuser")
+	req = req.WithContext(ctx)
+
+	rr := httptest.NewRecorder()
+	handler := v2HandleWrapper(mockApp)
+	handler.ServeHTTP(rr, req)
+
+	var resp map[string]interface{}
+	err = json.Unmarshal(rr.Body.Bytes(), &resp)
+	if err != nil {
+		t.Fatalf("Failed to unmarshal response: %v", err)
+	}
+
+	errObj, ok := resp["error"].(map[string]interface{})
+	if !ok {
+		t.Fatal("Expected a JSON-RPC error for wrong-type params, got none")
+	}
+
+	code, ok := errObj["code"].(float64)
+	if !ok || code != -32602 {
+		t.Errorf("Error code: got %v, want -32602", code)
+	}
+
+	// The data field should contain diagnostic info
+	if data, ok := errObj["data"].(map[string]interface{}); ok {
+		if data["error"] != "invalid_params_type" {
+			t.Errorf("data.error: got %v, want 'invalid_params_type'", data["error"])
+		}
+		if data["got_type"] != "int" && data["got_type"] != "float64" {
+			t.Logf("data.got_type: %v (int may become float64 in JSON)", data["got_type"])
+		}
+	} else {
+		t.Log("No data field in error response (non-critical)")
 	}
 }

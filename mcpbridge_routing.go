@@ -267,23 +267,39 @@ func (s *MCPBridgeServer) handleToolsCall(w http.ResponseWriter, r *http.Request
 	if err := json.Unmarshal(body, &toolReq); err == nil {
 		if params, ok := toolReq["params"].(map[string]interface{}); ok {
 			toolName, _ = params["name"].(string)
-			toolArgs, _ = params["arguments"].(map[string]interface{})
-			if toolArgs == nil && params["arguments"] != nil {
-				shared.Warnf("[mcpbridge] DIAG: params['arguments'] type assertion failed: type=%T value=%v", params["arguments"], params["arguments"])
-			}
-			// Extract justification from arguments (standard MCP field), with fallback
-			if toolArgs != nil {
-				justification, _ = toolArgs["justification"].(string)
-				delete(toolArgs, "justification") // strip before forwarding to backend
 
-				// Sanitise string values to prevent downstream JSON parse failures
-				// (e.g. when saving code snippets to Qdrant or Confluence).
-				sanitised := sanitiseStringArgs(toolArgs).(map[string]interface{})
-				params["arguments"] = sanitised
+			// Parse arguments robustly — accept both inline objects and
+			// JSON-encoded strings (some MCP clients double-encode).
+			parsedArgs, parseErr := shared.ParseArgsMap(params["arguments"])
+			if parseErr != nil {
+				shared.Warnf("[mcpbridge] params['arguments'] parse failed: %v (tool=%q, raw type=%T)", parseErr, toolName, params["arguments"])
+				writeJSONRPCError(w, id, -32602, fmt.Sprintf(
+					"Invalid tool arguments for %q: the 'arguments' field must be "+
+						"a JSON object, but got %T. %v",
+					toolName, params["arguments"], parseErr), map[string]interface{}{
+					"error":     "invalid_arguments_type",
+					"tool":      toolName,
+					"got_type":  fmt.Sprintf("%T", params["arguments"]),
+					"raw_value": fmt.Sprintf("%v", params["arguments"]),
+				})
+				return
+			}
+			toolArgs = parsedArgs
+
+			// Extract justification from arguments (standard MCP field), with fallback
+			justification, _ = toolArgs["justification"].(string)
+			delete(toolArgs, "justification") // strip before forwarding to backend
+
+			// Sanitise string values to prevent downstream JSON parse failures
+			// (e.g. when saving code snippets to Qdrant or Confluence).
+			sanitised := sanitiseStringArgs(toolArgs)
+			if sanitisedMap, ok := sanitised.(map[string]interface{}); ok {
+				params["arguments"] = sanitisedMap
 				if cleaned, err := json.Marshal(toolReq); err == nil {
 					body = cleaned
 				}
 			}
+
 			if justification == "" {
 				justification, _ = params["justification"].(string) // backwards compat
 			}
@@ -643,6 +659,9 @@ func (s *MCPBridgeServer) handleDefaultBackend(w http.ResponseWriter, r *http.Re
 // output. This prevents downstream MCP servers from failing on control
 // characters, raw newlines, or other problematic content in string values.
 func sanitiseStringArgs(v interface{}) interface{} {
+	if v == nil {
+		return nil
+	}
 	switch val := v.(type) {
 	case map[string]interface{}:
 		out := make(map[string]interface{}, len(val))
