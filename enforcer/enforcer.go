@@ -593,6 +593,22 @@ func (e *Enforcer) HandleToolCall(ctx context.Context, userID string, toolName s
 		}
 	}
 
+	// User/admin override tightening check:
+	// If the safety profile has RequiresHITL set (via user or admin override),
+	// route to user-level approval even when the decision would otherwise be
+	// ALLOW (or WARN). This allows users to voluntarily tighten their own
+	// safety profiles without needing a matching CEL policy.
+	// Only applies to override sources — inferred and self-reported profiles
+	// are handled by explicit CEL policies.
+	if !IsDenyAction(decision.Action) && !RequiresApproval(decision.Action) && profile.RequiresHITL && (profile.Source == "override" || profile.Source == "user_override") {
+		return EnforcerDecision{
+			Action:   ActionPendingUserApproval,
+			Severity: SeverityMedium,
+			Message:  "Tool requires your approval per override profile.",
+			PolicyID: "override_requires_hitl",
+		}, nil
+	}
+
 	// Only consume rate-limit budget for calls that will actually be executed
 	// (policy matched with ActionAllow or similar — not queued/denied above).
 	if decision.Action == ActionAllow {

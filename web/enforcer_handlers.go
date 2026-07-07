@@ -1169,31 +1169,15 @@ func (h *EnforcerHandler) UserOverridesPageHandler(w http.ResponseWriter, r *htt
 	}
 
 	enforcerStore := store.NewEnforcerStore(h.store.DB())
-	overrides, err := enforcerStore.ListOverrides()
+	overrides, err := enforcerStore.ListUserOverrides(user.ID)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
 
-	// Filter overrides to only show those that require user approval (not admin)
-	var userOverrides []enforcer.EnforcerOverrideRow
-	for _, override := range overrides {
-		// Only show overrides for tools that require user-level HITL
-		if h.enforcer != nil {
-			resolver := h.enforcer.GetResolver()
-			profile, err := resolver.Resolve(override.ToolName, override.BackendID)
-			if err == nil && profile.RequiresHITL {
-				userOverrides = append(userOverrides, override)
-			}
-		} else {
-			// If enforcer is not available, show all overrides
-			userOverrides = append(userOverrides, override)
-		}
-	}
-
 	data := map[string]interface{}{
 		"User":      user,
-		"Overrides": userOverrides,
+		"Overrides": overrides,
 		"Prefill": map[string]string{
 			"tool_name":  r.URL.Query().Get("tool_name"),
 			"backend_id": r.URL.Query().Get("backend_id"),
@@ -1230,6 +1214,7 @@ func (h *EnforcerHandler) UserOverrideCreateHandler(w http.ResponseWriter, r *ht
 		ID:           r.FormValue("id"),
 		ToolName:     r.FormValue("tool_name"),
 		BackendID:    r.FormValue("backend_id"),
+		UserID:       user.ID,
 		RiskLevel:    r.FormValue("risk_level"),
 		ImpactScope:  r.FormValue("impact_scope"),
 		ResourceCost: 5,
@@ -1247,20 +1232,6 @@ func (h *EnforcerHandler) UserOverrideCreateHandler(w http.ResponseWriter, r *ht
 	if err := enforcerStore.UpsertOverride(override); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
-	}
-
-	if h.enforcer != nil {
-		profile := enforcer.SafetyProfile{
-			ToolName:     override.ToolName,
-			BackendID:    override.BackendID,
-			Risk:         enforcer.RiskLevel(override.RiskLevel),
-			Impact:       enforcer.ImpactScope(override.ImpactScope),
-			Cost:         override.ResourceCost,
-			RequiresHITL: override.RequiresHITL,
-			PIIExposure:  override.PIIExposure,
-			Source:       "override",
-		}
-		h.enforcer.RegisterOverride(override.ToolName, override.BackendID, profile)
 	}
 
 	http.Redirect(w, r, "/web/user/enforcer/overrides", http.StatusSeeOther)
@@ -1283,6 +1254,13 @@ func (h *EnforcerHandler) UserOverrideDeleteHandler(w http.ResponseWriter, r *ht
 	backendID := r.URL.Query().Get("backend_id")
 	if toolName == "" || backendID == "" {
 		http.Error(w, "tool_name and backend_id are required", http.StatusBadRequest)
+		return
+	}
+
+	// Delete this user's override — user-scoped delete preserves admin overrides
+	// for the same tool+backend pair.
+	if _, err := h.store.DB().Exec(`DELETE FROM enforcer_overrides WHERE tool_name = ? AND backend_id = ? AND user_id = ?`, toolName, backendID, user.ID); err != nil {
+		http.Error(w, "Failed to delete override: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
 
