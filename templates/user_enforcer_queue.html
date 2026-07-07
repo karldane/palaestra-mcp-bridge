@@ -414,7 +414,7 @@ async function approveRequest(id) {
     const data = await resp.json();
     
     if (data.success) {
-      alert('Request approved and executed!\n\nStatus: ' + data.status + '\nHTTP Status: ' + data.response_status);
+      alert('Request approved and executed!\n\nStatus: ' + data.status + '\nHTTP Status: ' + data.response_status + (data.error_msg ? '\nError: ' + data.error_msg : ''));
       location.reload();
     } else {
       alert('Error: ' + data.message);

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"html/template"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/mcp-bridge/mcp-bridge/enforcer"
@@ -1209,11 +1210,21 @@ func (h *EnforcerHandler) UserOverrideCreateHandler(w http.ResponseWriter, r *ht
 
 	hitl := r.FormValue("requires_hitl") == "on"
 	pii := r.FormValue("pii_exposure") == "on"
+	backendID := r.FormValue("backend_id")
+
+	// Strip the backend's tool prefix from the form-supplied tool name so the
+	// stored name matches the unprefixed name the enforcer receives at call time.
+	toolName := r.FormValue("tool_name")
+	enforcerStore := store.NewEnforcerStore(h.store.DB())
+	if prefix, err := enforcerStore.GetToolPrefix(backendID); err == nil && prefix != "" {
+		toolName = strings.TrimPrefix(toolName, prefix+"_")
+		toolName = strings.TrimPrefix(toolName, prefix+"/")
+	}
 
 	override := enforcer.EnforcerOverrideRow{
 		ID:           r.FormValue("id"),
-		ToolName:     r.FormValue("tool_name"),
-		BackendID:    r.FormValue("backend_id"),
+		ToolName:     toolName,
+		BackendID:    backendID,
 		UserID:       user.ID,
 		RiskLevel:    r.FormValue("risk_level"),
 		ImpactScope:  r.FormValue("impact_scope"),
@@ -1228,7 +1239,6 @@ func (h *EnforcerHandler) UserOverrideCreateHandler(w http.ResponseWriter, r *ht
 		override.ID = fmt.Sprintf("override-%s-%s", override.BackendID, override.ToolName)
 	}
 
-	enforcerStore := store.NewEnforcerStore(h.store.DB())
 	if err := enforcerStore.UpsertOverride(override); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
