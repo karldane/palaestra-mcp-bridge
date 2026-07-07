@@ -752,6 +752,24 @@ func v2toolCall(a *app, w http.ResponseWriter, r *http.Request, userID string, p
 	}
 	// If justification wasn't provided at all, use empty string but let enforcer decide
 
+	// Build the JSON-RPC request body for the backend before the enforcer
+	// check so it can be captured for replay after approval.
+	var requestBody string
+	{
+		msg := map[string]interface{}{
+			"jsonrpc": "2.0",
+			"method":  "tools/call",
+			"params": map[string]interface{}{
+				"name":      toolName,
+				"arguments": toolParams,
+			},
+			"id": id,
+		}
+		if b, err := json.Marshal(msg); err == nil {
+			requestBody = string(b)
+		}
+	}
+
 	// Enforcer check
 	if a.enforcer != nil && !strings.HasPrefix(toolName, "mcpbridge_") {
 		ctx := r.Context()
@@ -782,6 +800,7 @@ func v2toolCall(a *app, w http.ResponseWriter, r *http.Request, userID string, p
 					Args:          toolParams,
 					BackendID:     namespace,
 					Justification: justification,
+					RequestBody:   requestBody,
 				}, decision.PolicyID, decision.Message, "admin", enforcer.MatchContextPolicyHit)
 				if err != nil {
 					http.Error(w, "Failed to create approval request", http.StatusInternalServerError)
@@ -808,6 +827,7 @@ func v2toolCall(a *app, w http.ResponseWriter, r *http.Request, userID string, p
 					Args:          toolParams,
 					BackendID:     namespace,
 					Justification: justification,
+					RequestBody:   requestBody,
 				}, decision.PolicyID, decision.Message, "user", enforcer.MatchContextPolicyHit)
 				if err != nil {
 					http.Error(w, "Failed to create approval request", http.StatusInternalServerError)
