@@ -8,6 +8,7 @@ server:
   accessTokenTTL: "24h"    # How long access tokens live (e.g., "24h", "28d", "672h")
   # publicURL: "https://mcp-bridge.example.com"   # externally reachable base URL for invitation emails
   # inviteExpiry: "7d"                            # how long invitation links stay valid
+  # allowInviteExisting: false                    # allow inviting addresses that already have accounts (testing only; auto-logs-in existing account on signup)
 
 # Auth mode: "internal" (username/password managed here) or "sso" (external IdP).
 # Invitations only apply to internal mode.

@@ -456,6 +456,7 @@ server:
   port: "8020"
   publicURL: "https://mcp.example.com"
   inviteExpiry: 14d
+  allowInviteExisting: true
 auth:
   mode: internal
 smtp:
@@ -481,6 +482,9 @@ smtp:
 	}
 	if cfg.Server.InviteExpiryParsed != 14*24*time.Hour {
 		t.Errorf("expected inviteExpiry 14d, got %v", cfg.Server.InviteExpiryParsed)
+	}
+	if !cfg.Server.InviteAllowExisting {
+		t.Error("expected allowInviteExisting true")
 	}
 	if cfg.Auth.Mode != "internal" {
 		t.Errorf("expected auth mode internal, got %s", cfg.Auth.Mode)
@@ -523,6 +527,9 @@ server:
 	if cfg.SMTP.Port != 587 {
 		t.Errorf("expected default smtp port 587, got %d", cfg.SMTP.Port)
 	}
+	if cfg.Server.InviteAllowExisting {
+		t.Error("expected allowInviteExisting to default false")
+	}
 }
 
 func TestLoad_EnvOverrides(t *testing.T) {
@@ -532,6 +539,7 @@ func TestLoad_EnvOverrides(t *testing.T) {
 	t.Setenv("SMTP_USER", "env-user")
 	t.Setenv("SMTP_PASSWORD", "env-pass")
 	t.Setenv("SMTP_FROM", "env@example.com")
+	t.Setenv("INVITE_ALLOW_EXISTING", "true")
 
 	dir := t.TempDir()
 	path := filepath.Join(dir, "config.yaml")
@@ -570,5 +578,8 @@ smtp:
 	}
 	if cfg.SMTP.From != "env@example.com" {
 		t.Errorf("expected env smtp from, got %s", cfg.SMTP.From)
+	}
+	if !cfg.Server.InviteAllowExisting {
+		t.Error("expected env allowInviteExisting true")
 	}
 }

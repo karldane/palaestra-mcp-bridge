@@ -23,6 +23,9 @@ type SmtpConfig struct {
 	From     string
 	FromName string
 	UseTLS   bool
+	// Timeout bounds each SMTP operation (dial, command round-trips, and the
+	// overall conversation). Zero falls back to a 10s default.
+	Timeout time.Duration
 }
 
 // Sender is the interface used by web handlers to deliver email.
@@ -34,6 +37,9 @@ type Sender interface {
 func (c SmtpConfig) BuildAddr() string {
 	return net.JoinHostPort(c.Host, fmt.Sprintf("%d", c.Port))
 }
+
+// defaultSmtpTimeout bounds SMTP operations when no explicit timeout is set.
+const defaultSmtpTimeout = 10 * time.Second
 
 type smtpSender struct {
 	cfg SmtpConfig
@@ -58,6 +64,12 @@ func (s *smtpSender) Send(to []string, subject, body string) error {
 		from = "mcp-bridge@localhost"
 	}
 
+	timeout := s.cfg.Timeout
+	if timeout <= 0 {
+		timeout = defaultSmtpTimeout
+	}
+	dialer := &net.Dialer{Timeout: timeout}
+
 	addr := s.cfg.BuildAddr()
 	msg := buildMessage(s.cfg, from, to, subject, body)
 
@@ -68,10 +80,11 @@ func (s *smtpSender) Send(to []string, subject, body string) error {
 
 	if s.cfg.Port == 465 || s.cfg.UseTLS {
 		// Explicit TLS: dial, wrap, then send via SMTP.
-		conn, err := tls.Dial("tcp", addr, &tls.Config{ServerName: s.cfg.Host, MinVersion: tls.VersionTLS12})
+		conn, err := tls.DialWithDialer(dialer, "tcp", addr, &tls.Config{ServerName: s.cfg.Host, MinVersion: tls.VersionTLS12})
 		if err != nil {
 			return err
 		}
+		conn.SetDeadline(time.Now().Add(timeout))
 		client, err := smtp.NewClient(conn, s.cfg.Host)
 		if err != nil {
 			conn.Close()
@@ -81,16 +94,28 @@ func (s *smtpSender) Send(to []string, subject, body string) error {
 	}
 
 	// Plain SMTP with STARTTLS when available.
-	client, err := smtp.Dial(addr)
+	conn, err := dialer.Dial("tcp", addr)
 	if err != nil {
+		return err
+	}
+	conn.SetDeadline(time.Now().Add(timeout))
+	client, err := smtp.NewClient(conn, s.cfg.Host)
+	if err != nil {
+		conn.Close()
 		return err
 	}
 	if ok, _ := client.Extension("STARTTLS"); ok {
 		if err := client.StartTLS(&tls.Config{ServerName: s.cfg.Host, MinVersion: tls.VersionTLS12}); err != nil {
 			client.Close()
 			// Anonymous relay doesn't require TLS; fall back to plain.
-			client, err = smtp.Dial(addr)
+			conn, err = dialer.Dial("tcp", addr)
 			if err != nil {
+				return err
+			}
+			conn.SetDeadline(time.Now().Add(timeout))
+			client, err = smtp.NewClient(conn, s.cfg.Host)
+			if err != nil {
+				conn.Close()
 				return err
 			}
 		}

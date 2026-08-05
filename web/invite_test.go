@@ -154,6 +154,44 @@ func TestAdminInvites_Create_SkipsExistingUser(t *testing.T) {
 	}
 }
 
+func TestAdminInvites_Create_AllowsExistingUser_WhenFlagSet(t *testing.T) {
+	h, st, mail := inviteTestHandler(t)
+	defer st.Close()
+	h.InviteAllowExisting = true
+
+	seedAdmin(t, st)
+	seedRegularUser(t, st)
+	mux := http.NewServeMux()
+	h.Register(mux)
+	cookie := loginCookie(t, h, mux, "admin@test.com", "secret")
+
+	form := url.Values{
+		"emails": {"user@test.com"},
+		"name":   {"Existing User"},
+		"role":   {"admin"},
+	}
+	req := authedRequest(http.MethodPost, "/web/admin/invites/create", form.Encode(), cookie)
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, req)
+
+	if w.Code != http.StatusSeeOther {
+		t.Fatalf("expected 303, got %d", w.Code)
+	}
+	if len(mail.messages) != 1 {
+		t.Fatalf("expected email sent for existing user when flag set, got %d", len(mail.messages))
+	}
+	if mail.messages[0].to[0] != "user@test.com" {
+		t.Errorf("unexpected recipient: %v", mail.messages[0].to)
+	}
+	invites, err := st.ListInvites()
+	if err != nil {
+		t.Fatalf("ListInvites: %v", err)
+	}
+	if len(invites) != 1 || invites[0].Email != "user@test.com" {
+		t.Errorf("expected invite for existing user, got %+v", invites)
+	}
+}
+
 func TestAdminInvites_Create_InvalidEmail(t *testing.T) {
 	h, st, mail := inviteTestHandler(t)
 	defer st.Close()
@@ -419,6 +457,128 @@ func TestInviteSignup_PasswordMismatch(t *testing.T) {
 	}
 	if !strings.Contains(w.Body.String(), "do not match") {
 		t.Error("expected password mismatch error")
+	}
+}
+
+func TestInviteSignup_ExistingUser_BlocksByDefault(t *testing.T) {
+	h, st, _ := inviteTestHandler(t)
+	defer st.Close()
+	h.InviteAllowExisting = false
+
+	existing := seedRegularUser(t, st)
+
+	raw, hash, err := store.GenerateInviteToken()
+	if err != nil {
+		t.Fatalf("GenerateInviteToken: %v", err)
+	}
+	inv := &store.Invite{
+		Email:          existing.Email,
+		Role:           "user",
+		TokenHash:      hash,
+		TokenExpiresAt: time.Now().UTC().Add(time.Hour),
+	}
+	if err := st.CreateInvite(inv); err != nil {
+		t.Fatalf("CreateInvite: %v", err)
+	}
+
+	mux := http.NewServeMux()
+	h.Register(mux)
+
+	form := url.Values{
+		"email":            {existing.Email},
+		"password":         {"whatever"},
+		"password_confirm": {"whatever"},
+	}
+	req := httptest.NewRequest(http.MethodPost, "/web/invite?token="+raw, strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200 with error, got %d", w.Code)
+	}
+	if !strings.Contains(w.Body.String(), "already exists") {
+		t.Error("expected already-exists error when flag off")
+	}
+	got, _ := st.GetInviteByID(inv.ID)
+	if got.Status != store.InvitePending {
+		t.Errorf("expected invite still pending, got %s", got.Status)
+	}
+}
+
+func TestInviteSignup_ExistingUser_AutoLogins_WhenFlagSet(t *testing.T) {
+	h, st, _ := inviteTestHandler(t)
+	defer st.Close()
+	h.InviteAllowExisting = true
+
+	existing := seedRegularUser(t, st)
+
+	raw, hash, err := store.GenerateInviteToken()
+	if err != nil {
+		t.Fatalf("GenerateInviteToken: %v", err)
+	}
+	inv := &store.Invite{
+		Email:          existing.Email,
+		Role:           "admin",
+		TokenHash:      hash,
+		TokenExpiresAt: time.Now().UTC().Add(time.Hour),
+	}
+	if err := st.CreateInvite(inv); err != nil {
+		t.Fatalf("CreateInvite: %v", err)
+	}
+
+	mux := http.NewServeMux()
+	h.Register(mux)
+
+	form := url.Values{
+		"email":            {existing.Email},
+		"name":             {"User"},
+		"password":         {"whatever"},
+		"password_confirm": {"whatever"},
+	}
+	req := httptest.NewRequest(http.MethodPost, "/web/invite?token="+raw, strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, req)
+
+	if w.Code != http.StatusSeeOther {
+		t.Fatalf("expected 303, got %d", w.Code)
+	}
+	if !strings.HasSuffix(w.Result().Header.Get("Location"), "/web/") {
+		t.Errorf("expected redirect to /web/, got %s", w.Result().Header.Get("Location"))
+	}
+
+	var gotCookie bool
+	for _, c := range w.Result().Cookies() {
+		if c.Name == sessionCookieName && c.Value != "" {
+			gotCookie = true
+		}
+	}
+	if !gotCookie {
+		t.Error("expected session cookie for auto-login")
+	}
+
+	got, err := st.GetInviteByID(inv.ID)
+	if err != nil {
+		t.Fatalf("GetInviteByID: %v", err)
+	}
+	if got.Status != store.InviteAccepted {
+		t.Errorf("expected invite accepted, got %s", got.Status)
+	}
+
+	// No duplicate user created.
+	users, err := st.ListUsers()
+	if err != nil {
+		t.Fatalf("ListUsers: %v", err)
+	}
+	matches := 0
+	for _, u := range users {
+		if u.Email == existing.Email {
+			matches++
+		}
+	}
+	if matches != 1 {
+		t.Errorf("expected single user for %s, found %d", existing.Email, matches)
 	}
 }
 

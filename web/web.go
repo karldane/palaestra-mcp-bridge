@@ -51,6 +51,11 @@ type Handler struct {
 	// MailerFrom is the envelope/From address used for outbound email.
 	MailerFrom string
 
+	// InviteAllowExisting, when true, allows creating invitations for email
+	// addresses that already have an account. On signup such an invite
+	// auto-logs the existing account in. Intended for testing only.
+	InviteAllowExisting bool
+
 	// OnBackendChange is called after a backend is created, edited, or
 	// deleted. The callback receives the backend ID and the ID of the user
 	// who triggered the change, so the caller can refresh routing tables,

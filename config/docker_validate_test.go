@@ -19,4 +19,7 @@ func TestLoad_DockerConfigFile(t *testing.T) {
 	if cfg.Server.InviteExpiryParsed.Hours() != 168 {
 		t.Errorf("unexpected inviteExpiry %v", cfg.Server.InviteExpiryParsed)
 	}
+	if !cfg.Server.InviteAllowExisting {
+		t.Error("expected allowInviteExisting true in config.yaml.docker")
+	}
 }

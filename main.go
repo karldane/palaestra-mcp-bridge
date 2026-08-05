@@ -338,11 +338,13 @@ func main() {
 		From:     cfg.SMTP.From,
 		FromName: cfg.SMTP.FromName,
 		UseTLS:   cfg.SMTP.UseTLS,
+		Timeout:  cfg.SMTP.TimeoutParsed,
 	})
 	webHandler.MailerFrom = cfg.SMTP.From
 	webHandler.PublicURL = cfg.Server.PublicURL
 	webHandler.InviteExpiry = cfg.Server.InviteExpiryParsed
 	webHandler.AuthMode = cfg.Auth.Mode
+	webHandler.InviteAllowExisting = cfg.Server.InviteAllowExisting
 	// Wire live reload: when an admin creates/edits/deletes a backend via the
 	// web UI, refresh the muxer prefix map and tear down stale pools so that
 	// subsequent requests pick up the new configuration immediately.

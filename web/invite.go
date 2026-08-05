@@ -77,10 +77,13 @@ func (h *Handler) AdminInvitesCreateHandler(w http.ResponseWriter, r *http.Reque
 	for _, email := range recipients {
 		email = strings.ToLower(email)
 
-		// Skip existing users and existing pending invitations.
-		if _, err := h.Store.GetUserByEmail(email); err == nil {
-			skipped = append(skipped, email)
-			continue
+		// Skip existing users (unless explicitly allowed) and existing pending
+		// invitations.
+		if !h.InviteAllowExisting {
+			if _, err := h.Store.GetUserByEmail(email); err == nil {
+				skipped = append(skipped, email)
+				continue
+			}
 		}
 		if !h.emailNotPending(email) {
 			skipped = append(skipped, email)
@@ -254,12 +257,22 @@ func (h *Handler) inviteSignupPost(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if _, err := h.Store.GetUserByEmail(email); err == nil {
-		h.render(w, "invite.html", pageData{
-			Title: "Set up your account",
-			Error: "An account with this email already exists.",
-			Extra: map[string]interface{}{"Token": token, "Email": email, "Name": name},
-		})
+	if existing, err := h.Store.GetUserByEmail(email); err == nil {
+		if !h.InviteAllowExisting {
+			h.render(w, "invite.html", pageData{
+				Title: "Set up your account",
+				Error: "An account with this email already exists.",
+				Extra: map[string]interface{}{"Token": token, "Email": email, "Name": name},
+			})
+			return
+		}
+		// An existing account is allowed. Treat the invite as a login grant:
+		// mark it accepted against the existing account and log that account in.
+		if err := h.Store.MarkInviteAccepted(inv.ID, existing.ID); err != nil {
+			log.Printf("web: mark invite accepted for existing user: %v", err)
+		}
+		h.autoLogin(w, r, existing, "")
+		http.Redirect(w, r, "/web/", http.StatusSeeOther)
 		return
 	}
 

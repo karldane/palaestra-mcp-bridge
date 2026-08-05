@@ -21,12 +21,13 @@ type InternalConfig struct {
 }
 
 type ServerConfig struct {
-	Port           string `yaml:"port"`
-	LogLevel       string `yaml:"logLevel"`
-	AuthCodeTTL    string `yaml:"authCodeTTL"`
-	AccessTokenTTL string `yaml:"accessTokenTTL"`
-	PublicURL      string `yaml:"publicURL"`
-	InviteExpiry   string `yaml:"inviteExpiry"`
+	Port                string `yaml:"port"`
+	LogLevel            string `yaml:"logLevel"`
+	AuthCodeTTL         string `yaml:"authCodeTTL"`
+	AccessTokenTTL      string `yaml:"accessTokenTTL"`
+	PublicURL           string `yaml:"publicURL"`
+	InviteExpiry        string `yaml:"inviteExpiry"`
+	InviteAllowExisting bool   `yaml:"allowInviteExisting"`
 
 	// Parsed durations (set after Load)
 	AuthCodeTTLParsed    time.Duration `yaml:"-"`
@@ -50,6 +51,12 @@ type SMTPConfig struct {
 	From     string `yaml:"from"`
 	FromName string `yaml:"fromName"`
 	UseTLS   bool   `yaml:"useTLS"`
+	// Timeout bounds each SMTP operation (dial and the whole conversation).
+	// Accepts Go duration strings like "10s". Zero means the mailer's default.
+	Timeout string `yaml:"timeout"`
+
+	// Parsed duration (set after Load).
+	TimeoutParsed time.Duration `yaml:"-"`
 }
 
 // IsInternalAuth reports whether invitations are applicable in the current
@@ -213,6 +220,13 @@ func Load(path string) (*InternalConfig, error) {
 	if v := os.Getenv("SMTP_FROM_NAME"); v != "" {
 		cfg.SMTP.FromName = v
 	}
+	if v := os.Getenv("INVITE_ALLOW_EXISTING"); v != "" {
+		cfg.Server.InviteAllowExisting = strings.EqualFold(v, "true") || v == "1"
+	}
+	if v := os.Getenv("SMTP_TIMEOUT"); v != "" {
+		cfg.SMTP.Timeout = v
+	}
+	cfg.SMTP.TimeoutParsed = parseDuration(cfg.SMTP.Timeout)
 
 	if err := cfg.ValidateEncryption(); err != nil {
 		return nil, fmt.Errorf("encryption config validation failed: %w", err)

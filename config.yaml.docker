@@ -11,6 +11,10 @@ server:
   # External base URL used in invitation emails. Override per-env with PUBLIC_URL.
   publicURL: "https://mcp-bridge.staging6.tuskeraws.com"
   inviteExpiry: "7d"
+  # Allow invitations to email addresses that already have an account. On
+  # signup the invite auto-logs the existing account in. Enable only for
+  # testing; keep false in production.
+  allowInviteExisting: true
 
 # Internal (username/password) auth enables the invitation flow. Switch to "sso"
 # when an external IdP takes over.

@@ -6,6 +6,7 @@ import (
 	"net"
 	"strings"
 	"testing"
+	"time"
 )
 
 // startTestSmtpServer starts a minimal in-process SMTP server on a random port
@@ -145,6 +146,67 @@ func TestSend_UnreachableServer(t *testing.T) {
 	s := NewSmtpSender(SmtpConfig{Host: "127.0.0.1", Port: 1, From: "a@test.com"})
 	if err := s.Send([]string{"b@test.com"}, "s", "b"); err == nil {
 		t.Error("expected error for unreachable server")
+	}
+}
+
+// startStalledSmtpServer accepts a connection but never responds, so the
+// client's dial succeeds but every SMTP command would hang without a timeout.
+func startStalledSmtpServer(t *testing.T) string {
+	t.Helper()
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	t.Cleanup(func() { ln.Close() })
+	go func() {
+		for {
+			conn, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			go func(c net.Conn) {
+				// Read forever, never reply. The client's deadline will fire.
+				buf := make([]byte, 1024)
+				for {
+					if _, err := c.Read(buf); err != nil {
+						return
+					}
+				}
+			}(conn)
+		}
+	}()
+	return ln.Addr().String()
+}
+
+func TestSend_StalledServerTimesOut(t *testing.T) {
+	addr := startStalledSmtpServer(t)
+	h, p := splitAddr(t, addr)
+	s := NewSmtpSender(SmtpConfig{Host: h, Port: p, From: "a@test.com", Timeout: 250 * time.Millisecond})
+
+	start := time.Now()
+	err := s.Send([]string{"b@test.com"}, "s", "b")
+	elapsed := time.Since(start)
+	if err == nil {
+		t.Fatal("expected timeout error from stalled server")
+	}
+	// Allow generous headroom for slow CI machines, but ensure it does not hang.
+	if elapsed > 3*time.Second {
+		t.Errorf("Send took %v, expected to respect timeout", elapsed)
+	}
+}
+
+func TestSend_DialTimeoutFailsFast(t *testing.T) {
+	// Port 1 on 127.0.0.1 refuses instantly; the point is the dialer honors a
+	// short timeout instead of blocking forever.
+	s := NewSmtpSender(SmtpConfig{Host: "127.0.0.1", Port: 1, From: "a@test.com", Timeout: 250 * time.Millisecond})
+	start := time.Now()
+	err := s.Send([]string{"b@test.com"}, "s", "b")
+	elapsed := time.Since(start)
+	if err == nil {
+		t.Error("expected error")
+	}
+	if elapsed > 3*time.Second {
+		t.Errorf("dial took %v, expected to respect timeout", elapsed)
 	}
 }
 
