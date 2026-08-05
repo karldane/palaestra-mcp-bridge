@@ -192,10 +192,12 @@ func v2Handle(a *app, w http.ResponseWriter, r *http.Request, userID string) {
 			}
 
 			callParams := map[string]interface{}{
-				"namespace":     namespace,
-				"tool":          tool,
-				"params":        parsedParams,
-				"justification": justification,
+				"namespace": namespace,
+				"tool":      tool,
+				"params":    parsedParams,
+			}
+			if justification != "" {
+				callParams["justification"] = justification
 			}
 			shared.Debugf("[v2] %s_call routing: namespace=%s tool=%v params=%v", namespace, namespace, tool, parsedParams)
 			v2toolCall(a, w, r, userID, callParams, msg.ID)
@@ -373,7 +375,7 @@ func v2toolsList(a *app, w http.ResponseWriter, r *http.Request, userID string, 
 			}
 			toolsList = append(toolsList, map[string]interface{}{
 				"name":        fmt.Sprintf("%s_call", backend.ID),
-				"description": fmt.Sprintf("Executes a named tool in the %s namespace. The value of `tool` must exactly match a tool name returned by MCP_Bridge_%s_expand. If you have not called MCP_Bridge_%s_expand in this session, do so before calling this tool. Do not guess tool names.%s", capitalizedID, backend.ID, backend.ID, descSuffix),
+				"description": fmt.Sprintf("Executes a named tool in the %s namespace. The value of `tool` must exactly match a tool name returned by MCP_Bridge_%s_expand. If you have not called MCP_Bridge_%s_expand in this session, do so before calling this tool. Do not guess tool names.%s Some tools may require your approval - check expand output before calling.", capitalizedID, backend.ID, backend.ID, descSuffix),
 				"inputSchema": map[string]interface{}{
 					"type": "object",
 					"properties": map[string]interface{}{
@@ -520,6 +522,7 @@ func v2namespaceExpand(a *app, w http.ResponseWriter, r *http.Request, userID st
 	// required parameters, and parameter types/enums so they can construct correct calls.
 	var sb strings.Builder
 	sb.WriteString(fmt.Sprintf("Available tools in namespace '%s' (%d tools):\n\n", namespace, len(allTools)))
+	sb.WriteString("⚠ Some tools may require your approval before execution. If a call is intercepted, use mcpbridge_approval_status with the returned approval_id to poll for the result.\n\n")
 	for _, t := range allTools {
 		name, _ := t["name"].(string)
 		desc, _ := t["description"].(string)
@@ -806,6 +809,7 @@ func v2toolCall(a *app, w http.ResponseWriter, r *http.Request, userID string, p
 					http.Error(w, "Failed to create approval request", http.StatusInternalServerError)
 					return
 				}
+				toolText := fmt.Sprintf("⏳ Tool '%s' requires admin approval.\nApproval ID: %s\nUse mcpbridge_approval_status with this approval_id to check status after approval", toolName, approvalID)
 				w.Header().Set("Content-Type", "application/json")
 				w.Header().Set("X-Enforcer-Status", "pending_approval")
 				w.Header().Set("Connection", "close")
@@ -813,10 +817,18 @@ func v2toolCall(a *app, w http.ResponseWriter, r *http.Request, userID string, p
 				json.NewEncoder(w).Encode(map[string]interface{}{
 					"jsonrpc": "2.0",
 					"id":      id,
-					"error": map[string]interface{}{
-						"code":        -32001,
-						"message":     fmt.Sprintf("%s (Approval ID: %s)", decision.Message, approvalID),
-						"approval_id": approvalID,
+					"result": map[string]interface{}{
+						"content": []interface{}{
+							map[string]interface{}{
+								"type": "text",
+								"text": toolText,
+							},
+						},
+						"approval_id":  approvalID,
+						"status":       "pending_approval",
+						"tool":         toolName,
+						"backend":      namespace,
+						"instructions": "Use mcpbridge_approval_status with this approval_id to check status after approval",
 					},
 				})
 				return
@@ -833,6 +845,7 @@ func v2toolCall(a *app, w http.ResponseWriter, r *http.Request, userID string, p
 					http.Error(w, "Failed to create approval request", http.StatusInternalServerError)
 					return
 				}
+				toolText := fmt.Sprintf("⏳ Tool '%s' requires your approval.\nApproval ID: %s\nUse mcpbridge_approval_status with this approval_id to check status after approval", toolName, approvalID)
 				w.Header().Set("Content-Type", "application/json")
 				w.Header().Set("X-Enforcer-Status", "pending_user_approval")
 				w.Header().Set("Connection", "close")
@@ -840,10 +853,18 @@ func v2toolCall(a *app, w http.ResponseWriter, r *http.Request, userID string, p
 				json.NewEncoder(w).Encode(map[string]interface{}{
 					"jsonrpc": "2.0",
 					"id":      id,
-					"error": map[string]interface{}{
-						"code":        -32001,
-						"message":     fmt.Sprintf("%s (Approval ID: %s)", decision.Message, approvalID),
-						"approval_id": approvalID,
+					"result": map[string]interface{}{
+						"content": []interface{}{
+							map[string]interface{}{
+								"type": "text",
+								"text": toolText,
+							},
+						},
+						"approval_id":  approvalID,
+						"status":       "pending_user_approval",
+						"tool":         toolName,
+						"backend":      namespace,
+						"instructions": "Use mcpbridge_approval_status with this approval_id to check status after approval",
 					},
 				})
 				return

@@ -382,24 +382,25 @@ func (s *MCPBridgeServer) handleToolsCall(w http.ResponseWriter, r *http.Request
 				if respID == nil {
 					respID = 1
 				}
+				toolText := fmt.Sprintf("⏳ Tool '%s' requires admin approval.\nApproval ID: %s\nUse mcpbridge_approval_status with this approval_id to check status after approval", toolName, approvalID)
 				w.Header().Set("Content-Type", "application/json")
 				w.Header().Set("X-Enforcer-Status", "pending_approval")
 				w.WriteHeader(http.StatusOK)
 				json.NewEncoder(w).Encode(map[string]interface{}{
 					"jsonrpc": "2.0",
 					"id":      respID,
-					"error": map[string]interface{}{
-						"code":           -32003,
-						"message":        fmt.Sprintf("%s (Approval ID: %s)", decision.Message, approvalID),
-						"data": map[string]interface{}{
-							"status":         "pending_approval",
-							"approval_id":    approvalID,
-							"policy_id":      decision.PolicyID,
-							"tool":           toolName,
-							"requires_human": true,
-							"status_url":     "/web/admin/enforcer/api/approval-status?id=" + approvalID,
-							"instructions":   "Use mcpbridge_check_approval_status tool with approval_id: " + approvalID + " to check if this request was approved.",
+					"result": map[string]interface{}{
+						"content": []interface{}{
+							map[string]interface{}{
+								"type": "text",
+								"text": toolText,
+							},
 						},
+						"approval_id":  approvalID,
+						"status":       "pending_approval",
+						"tool":         toolName,
+						"backend":      backendID,
+						"instructions": "Use mcpbridge_approval_status with this approval_id to check status after approval",
 					},
 				})
 				return
@@ -428,24 +429,29 @@ func (s *MCPBridgeServer) handleToolsCall(w http.ResponseWriter, r *http.Request
 					})
 					return
 				}
-				// Return 200 OK with user approval details in error body
 				respID := id
 				if respID == nil {
 					respID = 1
 				}
+				toolText := fmt.Sprintf("⏳ Tool '%s' requires your approval.\nApproval ID: %s\nUse mcpbridge_approval_status with this approval_id to check status after approval", toolName, approvalID)
 				w.Header().Set("Content-Type", "application/json")
 				w.Header().Set("X-Enforcer-Status", "pending_user_approval")
 				w.WriteHeader(http.StatusOK)
 				json.NewEncoder(w).Encode(map[string]interface{}{
 					"jsonrpc": "2.0",
 					"id":      respID,
-					"error": map[string]interface{}{
-						"code":    -32003,
-						"message": fmt.Sprintf("%s (Approval ID: %s)", decision.Message, approvalID),
-						"data": map[string]interface{}{
-							"status":      "pending_user_approval",
-							"approval_id": approvalID,
+					"result": map[string]interface{}{
+						"content": []interface{}{
+							map[string]interface{}{
+								"type": "text",
+								"text": toolText,
+							},
 						},
+						"approval_id":  approvalID,
+						"status":       "pending_user_approval",
+						"tool":         toolName,
+						"backend":      backendID,
+						"instructions": "Use mcpbridge_approval_status with this approval_id to check status after approval",
 					},
 				})
 				return
