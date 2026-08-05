@@ -1,0 +1,35 @@
+{{define "invite.html"}}
+{{template "head" .}}
+<div style="max-width:400px;margin:80px auto;padding:0 1rem;">
+  <div class="card">
+    <h2 style="text-align:center;">MCP Bridge</h2>
+    <p class="text-muted" style="text-align:center;">{{if .Error}}Invitation{{else}}Set up your account{{end}}</p>
+    {{template "alerts" .}}
+    {{if .Error}}
+      <p class="text-muted" style="text-align:center;">{{.Error}}</p>
+      <p style="text-align:center;"><a href="/web/login">Go to sign in</a></p>
+    {{else}}
+    <form method="post" action="/web/invite?token={{index .Extra "Token"}}">
+      <div class="form-row">
+        <label for="email">Email</label>
+        <input type="email" id="email" name="email" value="{{index .Extra "Email"}}" readonly required autofocus>
+      </div>
+      <div class="form-row">
+        <label for="name">Name <span class="text-muted">(optional)</span></label>
+        <input type="text" id="name" name="name" value="{{index .Extra "Name"}}">
+      </div>
+      <div class="form-row">
+        <label for="password">Password</label>
+        <input type="password" id="password" name="password" required>
+      </div>
+      <div class="form-row">
+        <label for="password_confirm">Confirm Password</label>
+        <input type="password" id="password_confirm" name="password_confirm" required>
+      </div>
+      <button type="submit" class="btn btn-primary" style="width:100%;margin-top:0.5rem;">Create Account</button>
+    </form>
+    {{end}}
+  </div>
+</div>
+{{template "foot" .}}
+{{end}}

@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/mcp-bridge/mcp-bridge/enforcer"
+	"github.com/mcp-bridge/mcp-bridge/internal/mailer"
 	"github.com/mcp-bridge/mcp-bridge/poolmgr"
 	"github.com/mcp-bridge/mcp-bridge/store"
 )
@@ -31,6 +32,24 @@ type Handler struct {
 	Templates   *template.Template
 	PoolManager *poolmgr.PoolManager
 	Enforcer    *enforcer.Enforcer
+
+	// Mailer delivers transactional email (user invitations). It may be nil,
+	// in which case sending invites is disabled.
+	Mailer mailer.Sender
+
+	// PublicURL is the externally reachable base URL used to build links in
+	// invitation emails.
+	PublicURL string
+
+	// InviteExpiry is how long an invitation link remains valid.
+	InviteExpiry time.Duration
+
+	// AuthMode controls whether internal auth (and therefore invitations) is
+	// enabled. When "sso", invite routes return 404.
+	AuthMode string
+
+	// MailerFrom is the envelope/From address used for outbound email.
+	MailerFrom string
 
 	// OnBackendChange is called after a backend is created, edited, or
 	// deleted. The callback receives the backend ID and the ID of the user
@@ -132,6 +151,7 @@ func (h *Handler) Register(mux *http.ServeMux) {
 	// Public (no session required)
 	mux.HandleFunc("/web/login", h.LoginHandler)
 	mux.HandleFunc("/web/logout", h.LogoutHandler)
+	mux.HandleFunc("/web/invite", h.InviteSignupHandler)
 
 	// Authenticated (any role)
 	mux.Handle("/web/", h.requireAuth(http.HandlerFunc(h.DashboardHandler)))
@@ -148,6 +168,9 @@ func (h *Handler) Register(mux *http.ServeMux) {
 	mux.Handle("/web/admin/users/create", h.requireAdmin(http.HandlerFunc(h.AdminUsersCreateHandler)))
 	mux.Handle("/web/admin/users/edit", h.requireAdmin(http.HandlerFunc(h.AdminUsersEditHandler)))
 	mux.Handle("/web/admin/users/delete", h.requireAdmin(http.HandlerFunc(h.AdminUsersDeleteHandler)))
+	mux.Handle("/web/admin/invites", h.requireAdmin(http.HandlerFunc(h.AdminInvitesHandler)))
+	mux.Handle("/web/admin/invites/create", h.requireAdmin(http.HandlerFunc(h.AdminInvitesCreateHandler)))
+	mux.Handle("/web/admin/invites/revoke", h.requireAdmin(http.HandlerFunc(h.AdminInvitesRevokeHandler)))
 	mux.Handle("/web/admin/backends", h.requireAdmin(http.HandlerFunc(h.AdminBackendsHandler)))
 	mux.Handle("/web/admin/backends/create", h.requireAdmin(http.HandlerFunc(h.AdminBackendsCreateHandler)))
 	mux.Handle("/web/admin/backends/edit", h.requireAdmin(http.HandlerFunc(h.AdminBackendsEditHandler)))

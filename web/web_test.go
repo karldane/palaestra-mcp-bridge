@@ -130,7 +130,7 @@ func TestNewHandler_ParsesTemplates(t *testing.T) {
 		t.Fatal("expected non-nil Templates")
 	}
 	// Verify known templates are parsed
-	for _, name := range []string{"login.html", "dashboard.html", "tokens.html", "password.html", "admin_users.html", "admin_backends.html"} {
+	for _, name := range []string{"login.html", "invite.html", "dashboard.html", "tokens.html", "password.html", "admin_users.html", "admin_invites.html", "admin_backends.html"} {
 		if h.Templates.Lookup(name) == nil {
 			t.Errorf("missing template: %s", name)
 		}

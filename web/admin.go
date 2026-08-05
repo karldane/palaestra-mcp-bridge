@@ -8,6 +8,7 @@ import (
 	"net/url"
 	"strings"
 
+	"github.com/mcp-bridge/mcp-bridge/internal/usertypes"
 	"github.com/mcp-bridge/mcp-bridge/shared"
 	"github.com/mcp-bridge/mcp-bridge/store"
 )
@@ -26,6 +27,9 @@ func (h *Handler) AdminUsersHandler(w http.ResponseWriter, r *http.Request) {
 		Data:    users,
 		Error:   r.URL.Query().Get("error"),
 		Success: r.URL.Query().Get("success"),
+		Extra: map[string]interface{}{
+			"Roles": usertypes.ValidRoles(),
+		},
 	})
 }
 
@@ -38,14 +42,11 @@ func (h *Handler) AdminUsersCreateHandler(w http.ResponseWriter, r *http.Request
 	name := strings.TrimSpace(r.FormValue("name"))
 	email := strings.TrimSpace(r.FormValue("email"))
 	password := r.FormValue("password")
-	role := r.FormValue("role")
+	role := usertypes.NormalizeRole(r.FormValue("role"))
 
 	if email == "" || password == "" {
 		http.Redirect(w, r, "/web/admin/users?error=Email+and+password+required", http.StatusSeeOther)
 		return
-	}
-	if role != "admin" && role != "user" {
-		role = "user"
 	}
 
 	u := &store.User{
@@ -93,14 +94,11 @@ func (h *Handler) AdminUsersEditHandler(w http.ResponseWriter, r *http.Request) 
 	name := strings.TrimSpace(r.FormValue("name"))
 	email := strings.TrimSpace(r.FormValue("email"))
 	password := r.FormValue("password")
-	role := r.FormValue("role")
+	role := usertypes.NormalizeRole(r.FormValue("role"))
 
 	if email == "" {
 		http.Redirect(w, r, "/web/admin/users?error=Email+required", http.StatusSeeOther)
 		return
-	}
-	if role != "admin" && role != "user" {
-		role = "user"
 	}
 
 	// Get existing user to preserve password if not changed

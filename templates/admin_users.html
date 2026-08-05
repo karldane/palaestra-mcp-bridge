@@ -4,6 +4,7 @@
 <div class="container">
   <h1>Manage Users</h1>
   {{template "alerts" .}}
+  <p><a href="/web/admin/invites" class="btn btn-primary btn-sm">Invite Users</a></p>
 
   <div class="card">
     <h2>Users</h2>
@@ -61,8 +62,9 @@
         <div class="form-row">
           <label for="role">Role</label>
           <select id="role" name="role">
-            <option value="user">User</option>
-            <option value="admin">Admin</option>
+            {{range .Extra.Roles}}
+            <option value="{{.ID}}">{{.Label}}</option>
+            {{end}}
           </select>
         </div>
       </div>
@@ -91,8 +93,9 @@
       <div class="form-row">
         <label for="edit_role">Role</label>
         <select id="edit_role" name="role">
-          <option value="user">User</option>
-          <option value="admin">Admin</option>
+          {{range .Extra.Roles}}
+          <option value="{{.ID}}">{{.Label}}</option>
+          {{end}}
         </select>
       </div>
       <div class="form-actions">

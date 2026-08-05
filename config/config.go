@@ -16,6 +16,8 @@ type InternalConfig struct {
 	Server     ServerConfig             `yaml:"server"`
 	Backends   map[string]BackendConfig `yaml:"backends"`
 	Encryption EncryptionConfig         `yaml:"encryption"`
+	Auth       AuthConfig               `yaml:"auth"`
+	SMTP       SMTPConfig               `yaml:"smtp"`
 }
 
 type ServerConfig struct {
@@ -23,10 +25,37 @@ type ServerConfig struct {
 	LogLevel       string `yaml:"logLevel"`
 	AuthCodeTTL    string `yaml:"authCodeTTL"`
 	AccessTokenTTL string `yaml:"accessTokenTTL"`
+	PublicURL      string `yaml:"publicURL"`
+	InviteExpiry   string `yaml:"inviteExpiry"`
 
 	// Parsed durations (set after Load)
 	AuthCodeTTLParsed    time.Duration `yaml:"-"`
 	AccessTokenTTLParsed time.Duration `yaml:"-"`
+	InviteExpiryParsed   time.Duration `yaml:"-"`
+}
+
+// AuthConfig controls how the web login works. Mode is one of "internal"
+// (username/password managed by this service) or "sso" (external identity
+// provider). Invitation flows only apply to internal mode.
+type AuthConfig struct {
+	Mode string `yaml:"mode"`
+}
+
+// SMTPConfig holds outbound email settings for invitations and notifications.
+type SMTPConfig struct {
+	Host     string `yaml:"host"`
+	Port     int    `yaml:"port"`
+	User     string `yaml:"user"`
+	Password string `yaml:"password"`
+	From     string `yaml:"from"`
+	FromName string `yaml:"fromName"`
+	UseTLS   bool   `yaml:"useTLS"`
+}
+
+// IsInternalAuth reports whether invitations are applicable in the current
+// auth mode.
+func (c *InternalConfig) IsInternalAuth() bool {
+	return c.Auth.Mode == "" || strings.EqualFold(c.Auth.Mode, "internal")
 }
 
 type BackendConfig struct {
@@ -133,6 +162,16 @@ func Load(path string) (*InternalConfig, error) {
 		cfg.Server.LogLevel = "info"
 	}
 
+	// Auth mode defaults to internal.
+	if cfg.Auth.Mode == "" {
+		cfg.Auth.Mode = "internal"
+	}
+
+	// SMTP defaults.
+	if cfg.SMTP.Port == 0 {
+		cfg.SMTP.Port = 587
+	}
+
 	// Parse duration strings
 	cfg.Server.AuthCodeTTLParsed = parseDuration(cfg.Server.AuthCodeTTL)
 	if cfg.Server.AuthCodeTTLParsed == 0 {
@@ -142,6 +181,37 @@ func Load(path string) (*InternalConfig, error) {
 	cfg.Server.AccessTokenTTLParsed = parseDuration(cfg.Server.AccessTokenTTL)
 	if cfg.Server.AccessTokenTTLParsed == 0 {
 		cfg.Server.AccessTokenTTLParsed = 24 * time.Hour
+	}
+
+	cfg.Server.InviteExpiryParsed = parseDuration(cfg.Server.InviteExpiry)
+	if cfg.Server.InviteExpiryParsed == 0 {
+		cfg.Server.InviteExpiryParsed = 7 * 24 * time.Hour
+	}
+
+	// Environment overrides. These take precedence over the config file so that
+	// the same config.yaml can ship to multiple environments.
+	if v := os.Getenv("PUBLIC_URL"); v != "" {
+		cfg.Server.PublicURL = v
+	}
+	if v := os.Getenv("SMTP_HOST"); v != "" {
+		cfg.SMTP.Host = v
+	}
+	if v := os.Getenv("SMTP_PORT"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			cfg.SMTP.Port = n
+		}
+	}
+	if v := os.Getenv("SMTP_USER"); v != "" {
+		cfg.SMTP.User = v
+	}
+	if v := os.Getenv("SMTP_PASSWORD"); v != "" {
+		cfg.SMTP.Password = v
+	}
+	if v := os.Getenv("SMTP_FROM"); v != "" {
+		cfg.SMTP.From = v
+	}
+	if v := os.Getenv("SMTP_FROM_NAME"); v != "" {
+		cfg.SMTP.FromName = v
 	}
 
 	if err := cfg.ValidateEncryption(); err != nil {

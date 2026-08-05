@@ -8,6 +8,22 @@ server:
   logLevel: info
   authCodeTTL: "10m"
   accessTokenTTL: "90d"
+  # External base URL used in invitation emails. Override per-env with PUBLIC_URL.
+  publicURL: "https://mcp-bridge.staging6.tuskeraws.com"
+  inviteExpiry: "7d"
+
+# Internal (username/password) auth enables the invitation flow. Switch to "sso"
+# when an external IdP takes over.
+auth:
+  mode: internal
+
+# Outbound email via anonymous internal relay (no credentials needed).
+# All values may be overridden per-env with SMTP_* env vars.
+smtp:
+  host: "mail.tuskerdirect.com"
+  port: 25
+  from: "noreply@tuskerdirect.com"
+  fromName: "mcp-bridge"
 
 encryption:
   provider: envvar

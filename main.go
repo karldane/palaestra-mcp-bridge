@@ -17,6 +17,7 @@ import (
 	"github.com/mcp-bridge/mcp-bridge/auth"
 	"github.com/mcp-bridge/mcp-bridge/config"
 	"github.com/mcp-bridge/mcp-bridge/enforcer"
+	"github.com/mcp-bridge/mcp-bridge/internal/mailer"
 	"github.com/mcp-bridge/mcp-bridge/muxer"
 	"github.com/mcp-bridge/mcp-bridge/poolmgr"
 	"github.com/mcp-bridge/mcp-bridge/shared"
@@ -329,6 +330,19 @@ func main() {
 	}
 	webHandler.PoolManager = pm // Wire pool manager for admin pool status
 	webHandler.Enforcer = enf   // Wire enforcer for admin UI
+	webHandler.Mailer = mailer.NewSmtpSender(mailer.SmtpConfig{
+		Host:     cfg.SMTP.Host,
+		Port:     cfg.SMTP.Port,
+		User:     cfg.SMTP.User,
+		Password: cfg.SMTP.Password,
+		From:     cfg.SMTP.From,
+		FromName: cfg.SMTP.FromName,
+		UseTLS:   cfg.SMTP.UseTLS,
+	})
+	webHandler.MailerFrom = cfg.SMTP.From
+	webHandler.PublicURL = cfg.Server.PublicURL
+	webHandler.InviteExpiry = cfg.Server.InviteExpiryParsed
+	webHandler.AuthMode = cfg.Auth.Mode
 	// Wire live reload: when an admin creates/edits/deletes a backend via the
 	// web UI, refresh the muxer prefix map and tear down stale pools so that
 	// subsequent requests pick up the new configuration immediately.

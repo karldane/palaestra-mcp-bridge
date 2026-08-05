@@ -287,6 +287,23 @@ func (s *Store) migrate() error {
 
 	s.db.Exec(`ALTER TABLE user_tokens ADD COLUMN encrypted_value TEXT`)
 
+	// User invitations (internal auth). Plaintext one-time codes are never
+	// stored; only a SHA-256 hash is persisted.
+	s.db.Exec(`CREATE TABLE IF NOT EXISTS invitations (
+		id                TEXT PRIMARY KEY,
+		email             TEXT NOT NULL,
+		name              TEXT NOT NULL DEFAULT '',
+		role              TEXT NOT NULL DEFAULT 'user',
+		token_hash        TEXT NOT NULL UNIQUE,
+		status            TEXT NOT NULL DEFAULT 'pending',
+		invited_by        TEXT,
+		token_expires_at  DATETIME NOT NULL,
+		accepted_at       DATETIME,
+		accepted_user_id  TEXT,
+		created_at        DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+	)`)
+	s.db.Exec(`CREATE INDEX IF NOT EXISTS idx_invitations_email ON invitations(email)`)
+
 	return nil
 }
 

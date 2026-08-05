@@ -1,0 +1,69 @@
+{{define "admin_invites.html"}}
+{{template "head" .}}
+{{template "nav" .}}
+<div class="container">
+  <h1>Invitations</h1>
+  {{template "alerts" .}}
+
+  <div class="card">
+    <h2>Send Invitation</h2>
+    <p class="text-muted">Invitations are sent by email with a one-time link. The invitee sets their own password. Links expire after {{if .Extra.InviteExpiryDays}}{{.Extra.InviteExpiryDays}} days{{else}}7 days{{end}}.</p>
+    <form method="post" action="/web/admin/invites/create">
+      <div class="form-row">
+        <label for="emails">Email addresses <span class="text-muted">(comma or newline separated)</span></label>
+        <textarea id="emails" name="emails" required placeholder="person@example.com"></textarea>
+      </div>
+      <div class="grid-2">
+        <div class="form-row">
+          <label for="name">Name <span class="text-muted">(optional)</span></label>
+          <input type="text" id="name" name="name" placeholder="Full name">
+        </div>
+        <div class="form-row">
+          <label for="role">Role</label>
+          <select id="role" name="role">
+            <option value="user">User</option>
+            <option value="admin">Admin</option>
+          </select>
+        </div>
+      </div>
+      <button type="submit" class="btn btn-primary">Send Invitations</button>
+    </form>
+  </div>
+
+  <div class="card">
+    <h2>Pending Invitations</h2>
+    {{if .Data}}
+    <div class="user-list">
+      {{range .Data}}
+      <div class="item-card">
+        <div class="item-info">
+          <strong>{{.Email}}</strong>
+          <div class="item-meta">
+            {{if .Name}}<span>{{.Name}}</span>{{end}}
+            <span class="badge {{if eq .Status "accepted"}}badge-enabled{{else if eq .Status "revoked"}}badge-disabled{{end}}">{{.Status}}</span>
+            <span class="badge {{if eq .Role "admin"}}badge-admin{{else}}badge-user{{end}}">{{.Role}}</span>
+            {{if eq .Status "pending"}}
+              <span class="text-muted">Expires {{.TokenExpiresAt.Format "2006-01-02"}}</span>
+            {{else if eq .Status "accepted"}}
+              <span class="text-muted">Accepted {{.AcceptedAt.Format "2006-01-02"}}</span>
+            {{end}}
+          </div>
+        </div>
+        <div class="item-actions">
+          {{if eq .Status "pending"}}
+          <form method="post" action="/web/admin/invites/revoke" style="display:inline;">
+            <input type="hidden" name="invite_id" value="{{.ID}}">
+            <button type="submit" class="btn btn-sm btn-danger" onclick="return confirm('Revoke invitation for {{.Email}}?')">Revoke</button>
+          </form>
+          {{end}}
+        </div>
+      </div>
+      {{end}}
+    </div>
+    {{else}}
+    <p class="text-muted">No invitations yet.</p>
+    {{end}}
+  </div>
+</div>
+{{template "foot" .}}
+{{end}}

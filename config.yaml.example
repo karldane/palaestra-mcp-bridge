@@ -6,6 +6,24 @@ server:
   logLevel: info    # debug | info | warn | error
   authCodeTTL: "10m"       # How long auth codes live (e.g., "10m", "10 minutes")
   accessTokenTTL: "24h"    # How long access tokens live (e.g., "24h", "28d", "672h")
+  # publicURL: "https://mcp-bridge.example.com"   # externally reachable base URL for invitation emails
+  # inviteExpiry: "7d"                            # how long invitation links stay valid
+
+# Auth mode: "internal" (username/password managed here) or "sso" (external IdP).
+# Invitations only apply to internal mode.
+# auth:
+#   mode: internal
+
+# Outbound email for user invitations. Can be overridden per-env via
+# SMTP_HOST, SMTP_PORT, SMTP_USER, SMTP_PASSWORD, SMTP_FROM, SMTP_FROM_NAME.
+# smtp:
+#   host: "mail.example.com"
+#   port: 25
+#   user: ""
+#   password: ""
+#   from: "noreply@example.com"
+#   fromName: "mcp-bridge"
+#   useTLS: false
 
 # Tool muxer configuration - maps user tokens to backend env vars
 toolMuxer:

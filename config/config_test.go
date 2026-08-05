@@ -446,3 +446,129 @@ func TestLoad_EmptyConfig(t *testing.T) {
 		t.Errorf("expected no backends, got %d", len(cfg.Backends))
 	}
 }
+
+func TestLoad_AuthAndInviteConfig(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+
+	data := []byte(`
+server:
+  port: "8020"
+  publicURL: "https://mcp.example.com"
+  inviteExpiry: 14d
+auth:
+  mode: internal
+smtp:
+  host: "smtp.example.com"
+  port: 587
+  user: "smtp-user"
+  password: "smtp-pass"
+  from: "noreply@example.com"
+  fromName: "mcp-bridge"
+`)
+
+	if err := os.WriteFile(path, data, 0644); err != nil {
+		t.Fatalf("failed to write config file: %v", err)
+	}
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("failed to load config: %v", err)
+	}
+
+	if cfg.Server.PublicURL != "https://mcp.example.com" {
+		t.Errorf("expected publicURL https://mcp.example.com, got %s", cfg.Server.PublicURL)
+	}
+	if cfg.Server.InviteExpiryParsed != 14*24*time.Hour {
+		t.Errorf("expected inviteExpiry 14d, got %v", cfg.Server.InviteExpiryParsed)
+	}
+	if cfg.Auth.Mode != "internal" {
+		t.Errorf("expected auth mode internal, got %s", cfg.Auth.Mode)
+	}
+	if cfg.SMTP.Host != "smtp.example.com" {
+		t.Errorf("expected smtp host, got %s", cfg.SMTP.Host)
+	}
+	if cfg.SMTP.Port != 587 {
+		t.Errorf("expected smtp port 587, got %d", cfg.SMTP.Port)
+	}
+	if cfg.SMTP.From != "noreply@example.com" {
+		t.Errorf("expected smtp from, got %s", cfg.SMTP.From)
+	}
+}
+
+func TestLoad_DefaultAuthAndInvite(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+
+	data := []byte(`
+server:
+  port: "8020"
+`)
+
+	if err := os.WriteFile(path, data, 0644); err != nil {
+		t.Fatalf("failed to write config file: %v", err)
+	}
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("failed to load config: %v", err)
+	}
+
+	if cfg.Auth.Mode != "internal" {
+		t.Errorf("expected default auth mode internal, got %s", cfg.Auth.Mode)
+	}
+	if cfg.Server.InviteExpiryParsed != 7*24*time.Hour {
+		t.Errorf("expected default inviteExpiry 7d, got %v", cfg.Server.InviteExpiryParsed)
+	}
+	if cfg.SMTP.Port != 587 {
+		t.Errorf("expected default smtp port 587, got %d", cfg.SMTP.Port)
+	}
+}
+
+func TestLoad_EnvOverrides(t *testing.T) {
+	t.Setenv("PUBLIC_URL", "https://env.example.com")
+	t.Setenv("SMTP_HOST", "env.smtp.example.com")
+	t.Setenv("SMTP_PORT", "2525")
+	t.Setenv("SMTP_USER", "env-user")
+	t.Setenv("SMTP_PASSWORD", "env-pass")
+	t.Setenv("SMTP_FROM", "env@example.com")
+
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+
+	data := []byte(`
+server:
+  port: "8020"
+smtp:
+  host: "file.smtp.example.com"
+  port: 587
+`)
+
+	if err := os.WriteFile(path, data, 0644); err != nil {
+		t.Fatalf("failed to write config file: %v", err)
+	}
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("failed to load config: %v", err)
+	}
+
+	if cfg.Server.PublicURL != "https://env.example.com" {
+		t.Errorf("expected env publicURL, got %s", cfg.Server.PublicURL)
+	}
+	if cfg.SMTP.Host != "env.smtp.example.com" {
+		t.Errorf("expected env smtp host, got %s", cfg.SMTP.Host)
+	}
+	if cfg.SMTP.Port != 2525 {
+		t.Errorf("expected env smtp port 2525, got %d", cfg.SMTP.Port)
+	}
+	if cfg.SMTP.User != "env-user" {
+		t.Errorf("expected env smtp user, got %s", cfg.SMTP.User)
+	}
+	if cfg.SMTP.Password != "env-pass" {
+		t.Errorf("expected env smtp password, got %s", cfg.SMTP.Password)
+	}
+	if cfg.SMTP.From != "env@example.com" {
+		t.Errorf("expected env smtp from, got %s", cfg.SMTP.From)
+	}
+}
