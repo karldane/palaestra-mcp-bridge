@@ -18,6 +18,7 @@ import (
 	"github.com/mcp-bridge/mcp-bridge/config"
 	"github.com/mcp-bridge/mcp-bridge/enforcer"
 	"github.com/mcp-bridge/mcp-bridge/internal/mailer"
+	"github.com/mcp-bridge/mcp-bridge/internal/twofa"
 	"github.com/mcp-bridge/mcp-bridge/muxer"
 	"github.com/mcp-bridge/mcp-bridge/poolmgr"
 	"github.com/mcp-bridge/mcp-bridge/shared"
@@ -344,6 +345,23 @@ func main() {
 	webHandler.InviteExpiry = cfg.Server.InviteExpiryParsed
 	webHandler.AuthMode = cfg.Auth.Mode
 	webHandler.InviteAllowExisting = cfg.Server.InviteAllowExisting
+
+	// Wire two-factor authentication. The manager is enabled only when at
+	// least one method is configured. ALLOW_TWOFA_BYPASS is a dev/testing
+	// safety valve and is deliberately not set in production.
+	twoFAMethods := cfg.Auth.TwoFactor.Methods
+	if len(twoFAMethods) > 0 && strings.EqualFold(os.Getenv("ALLOW_TWOFA_BYPASS"), "1") {
+		webHandler.TwoFABypass = true
+		log.Printf("WARNING: ALLOW_TWOFA_BYPASS is set — 2FA verification is bypassed. DO NOT USE IN PRODUCTION.")
+	}
+	if len(twoFAMethods) > 0 {
+		twoFAMgr, twoFAErr := twofa.NewManager(st, twoFAMethods, cfg.Auth.TwoFactor.TwoFactorRequired())
+		if twoFAErr != nil {
+			log.Fatalf("failed to init 2FA: %v", twoFAErr)
+		}
+		webHandler.TwoFA = twoFAMgr
+		webHandler.TwoFAMethods = twoFAMethods
+	}
 	// Wire live reload: when an admin creates/edits/deletes a backend via the
 	// web UI, refresh the muxer prefix map and tear down stale pools so that
 	// subsequent requests pick up the new configuration immediately.

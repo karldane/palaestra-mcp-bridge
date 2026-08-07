@@ -324,6 +324,34 @@ server:
   logLevel: info    # debug | info | warn | error
 ```
 
+### Two-Factor Authentication (web admin UI)
+
+The `/web` cookie-session login supports TOTP 2FA (RFC 6238). Configuration
+nests under `auth.twoFactor`:
+
+```yaml
+auth:
+  mode: internal
+  twoFactor:
+    required: true   # default true; false disables enforcement
+    methods: [totp]  # ordered list of allowed methods
+```
+
+- `required: true` forces every user to enroll before they can complete
+  login; a user without a method is sent through enrollment on next sign-in.
+- `required: false` makes 2FA optional per user (they can enable it from
+  `/web/2fa`).
+- **Dev-only safety valve:** setting `ALLOW_TWOFA_BYPASS=1` (read at startup,
+  logged loudly) renders a "Continue (bypass)" action on the challenge page so
+  any user with a valid password can skip the 2FA step. Never set this in
+  production.
+- There is **no email password reset**. Losing the password loses the
+  password-derived DEK and therefore the wrapped user secrets, including the
+  2FA secret. An admin can reset a user's 2FA from the admin Users page
+  (`/web/admin/users`), which forces re-enrollment on the next login.
+- Routes: `/web/login/2fa` (challenge), `/web/setup-2fa` (enrollment),
+  `/web/2fa` (settings), `/web/admin/users/2fa-reset` (admin reset).
+
 ### Environment Variables
 
 | Variable   | Default | Description           |

@@ -17,6 +17,7 @@ import (
 
 	"github.com/mcp-bridge/mcp-bridge/enforcer"
 	"github.com/mcp-bridge/mcp-bridge/internal/mailer"
+	"github.com/mcp-bridge/mcp-bridge/internal/twofa"
 	"github.com/mcp-bridge/mcp-bridge/poolmgr"
 	"github.com/mcp-bridge/mcp-bridge/store"
 )
@@ -47,6 +48,17 @@ type Handler struct {
 	// AuthMode controls whether internal auth (and therefore invitations) is
 	// enabled. When "sso", invite routes return 404.
 	AuthMode string
+
+	// TwoFA is the optional two-factor authentication manager. When nil,
+	// 2FA is disabled entirely.
+	TwoFA *twofa.Manager
+
+	// TwoFAMethods is the ordered list of allowed 2FA method IDs.
+	TwoFAMethods []string
+
+	// TwoFABypass, when true, lets any valid login skip the 2FA step. For
+	// testing/development only; never enabled in production.
+	TwoFABypass bool
 
 	// InviteAllowExisting, when true, allows creating invitations for email
 	// addresses that already have an account. On signup such an invite
@@ -154,6 +166,10 @@ func (h *Handler) Register(mux *http.ServeMux) {
 	mux.HandleFunc("/web/login", h.LoginHandler)
 	mux.HandleFunc("/web/logout", h.LogoutHandler)
 	mux.HandleFunc("/web/invite", h.InviteSignupHandler)
+	// Two-factor routes. The challenge and enrollment endpoints are public but
+	// are gated internally by the short-lived pending/setup state.
+	mux.HandleFunc("/web/login/2fa", h.Login2FAHandler)
+	mux.HandleFunc("/web/setup-2fa", h.Setup2FAHandler)
 
 	// Authenticated (any role)
 	mux.Handle("/web/", h.requireAuth(http.HandlerFunc(h.DashboardHandler)))
@@ -164,12 +180,14 @@ func (h *Handler) Register(mux *http.ServeMux) {
 	mux.Handle("/web/apikeys", h.requireAuth(http.HandlerFunc(h.APIKeysHandler)))
 	mux.Handle("/web/apikeys/create", h.requireAuth(http.HandlerFunc(h.APIKeysCreateHandler)))
 	mux.Handle("/web/apikeys/delete", h.requireAuth(http.HandlerFunc(h.APIKeysDeleteHandler)))
+	mux.Handle("/web/2fa", h.requireAuth(http.HandlerFunc(h.TwoFASettingsHandler)))
 
 	// Admin only
 	mux.Handle("/web/admin/users", h.requireAdmin(http.HandlerFunc(h.AdminUsersHandler)))
 	mux.Handle("/web/admin/users/create", h.requireAdmin(http.HandlerFunc(h.AdminUsersCreateHandler)))
 	mux.Handle("/web/admin/users/edit", h.requireAdmin(http.HandlerFunc(h.AdminUsersEditHandler)))
 	mux.Handle("/web/admin/users/delete", h.requireAdmin(http.HandlerFunc(h.AdminUsersDeleteHandler)))
+	mux.Handle("/web/admin/users/2fa-reset", h.requireAdmin(http.HandlerFunc(h.AdminUsers2FAResetHandler)))
 	mux.Handle("/web/admin/invites", h.requireAdmin(http.HandlerFunc(h.AdminInvitesHandler)))
 	mux.Handle("/web/admin/invites/create", h.requireAdmin(http.HandlerFunc(h.AdminInvitesCreateHandler)))
 	mux.Handle("/web/admin/invites/revoke", h.requireAdmin(http.HandlerFunc(h.AdminInvitesRevokeHandler)))

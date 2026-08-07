@@ -324,6 +324,19 @@ func (h *Handler) PasswordHandler(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 
+		// Re-encrypt the user's 2FA secret with the new DEK so a password
+		// change does not orphan it. Decrypt via the old (session) DEK and
+		// re-wrap with the new DEK.
+		if method, has2FA, err := h.Store.GetUser2FA(user.ID); err == nil && has2FA {
+			if secret, err := h.Store.GetUser2FASecret(user.ID, userDEK); err == nil {
+				if err := h.Store.SetUser2FA(user.ID, method, []byte(secret), newUserDEK); err != nil {
+					log.Printf("web: re-encrypt 2FA secret: %v", err)
+				}
+			} else {
+				log.Printf("web: decrypt 2FA secret during password change: %v", err)
+			}
+		}
+
 		// Clear old DEK from session
 		if cookie, err := r.Cookie(sessionCookieName); err == nil {
 			if oldDEK, ok := sessionDEKStore[cookie.Value]; ok {

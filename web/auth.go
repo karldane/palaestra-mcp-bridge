@@ -139,16 +139,31 @@ func (h *Handler) loginPost(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	http.SetCookie(w, &http.Cookie{
-		Name:     sessionCookieName,
-		Value:    sess.Token,
-		Path:     "/web",
-		HttpOnly: true,
-		SameSite: http.SameSiteLaxMode,
-		MaxAge:   int(sessionTTL.Seconds()),
-		Secure:   !isLocalhost(r),
-	})
+	// Derive user DEK from password to carry across the 2FA step.
+	var userDEK []byte
+	if user.PasswordSalt != "" {
+		if dek, dekErr := crypto.DeriveUserDEK(password, user.PasswordSalt); dekErr == nil {
+			userDEK = dek
+		}
+	}
 
+	// Two-phase 2FA: if 2FA is active and the user has (or must set up) a
+	// method, do not create a session yet. Route through a pending login.
+	if h.TwoFA != nil {
+		if has, method, _ := h.TwoFA.HasMethod(user.ID); has {
+			h.startPendingLogin(w, r, user, userDEK, method)
+			http.Redirect(w, r, "/web/login/2fa", http.StatusSeeOther)
+			return
+		}
+		if h.TwoFA.Required() {
+			h.startPendingLogin(w, r, user, userDEK, "")
+			http.Redirect(w, r, "/web/setup-2fa", http.StatusSeeOther)
+			return
+		}
+	}
+
+	// No 2FA in effect: complete the session immediately.
+	h.completeLogin(w, r, user, userDEK)
 	http.Redirect(w, r, "/web/", http.StatusSeeOther)
 }
 

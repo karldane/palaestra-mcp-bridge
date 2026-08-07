@@ -1,0 +1,39 @@
+{{define "2fa.html"}}
+{{template "head" .}}
+{{template "nav" .}}
+<div class="container">
+  <h1>Two-Factor Authentication</h1>
+  {{template "alerts" .}}
+
+  {{if .Data.Has2FA}}
+  <div class="card">
+    <h2>Enabled</h2>
+    <p>Two-factor authentication is active for your account.</p>
+    <div class="item-meta" style="margin-bottom:1rem;">
+      <span class="badge badge-enabled">Enabled</span>
+      <span class="badge badge-encrypted">{{.Data.Method}}</span>
+    </div>
+    <form method="post" action="/web/2fa" onsubmit="return confirm('Disable two-factor authentication? Your account will rely on password only.');">
+      <input type="hidden" name="action" value="disable">
+      <button type="submit" class="btn btn-danger">Disable</button>
+    </form>
+  </div>
+  {{else}}
+  <div class="card">
+    <h2>Not Enabled</h2>
+    <p>Two-factor authentication adds a second layer of security to your sign-in.</p>
+    <a href="/web/setup-2fa" class="btn btn-primary">Set Up</a>
+  </div>
+  {{end}}
+
+  {{if .Data.Required}}
+  <div class="alert alert-warning">Two-factor authentication is required by your administrator.</div>
+  {{end}}
+
+  <p class="text-muted" style="margin-top:1rem;">
+    This system does not support password recovery. If you lose your password, you will also
+    lose access to your stored tokens — including this authenticator key.
+  </p>
+</div>
+{{template "foot" .}}
+{{end}}

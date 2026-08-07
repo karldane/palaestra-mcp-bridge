@@ -24,6 +24,10 @@
           {{if ne .ID $.User.ID}}
           <div class="btn-group">
             <button type="button" class="btn btn-sm" onclick="editUser('{{.ID}}')">Edit</button>
+            <form method="post" action="/web/admin/users/2fa-reset" style="display:inline;">
+              <input type="hidden" name="user_id" value="{{.ID}}">
+              <button type="submit" class="btn btn-sm btn-secondary" onclick="return confirm('Reset two-factor auth for {{.Email}}?')">Reset 2FA</button>
+            </form>
             <form method="post" action="/web/admin/users/delete" style="display:inline;">
               <input type="hidden" name="user_id" value="{{.ID}}">
               <button type="submit" class="btn btn-sm btn-danger" onclick="return confirm('Delete user {{.Email}}?')">Delete</button>

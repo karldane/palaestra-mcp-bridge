@@ -1,0 +1,37 @@
+{{define "setup_2fa.html"}}
+{{template "head" .}}
+<div style="max-width:640px;margin:60px auto;padding:0 1rem;">
+  <div class="card">
+    <h2 style="text-align:center;">Two-Factor Authentication</h2>
+    {{if .Data.Forced}}
+    <div class="alert alert-warning">Two-factor authentication is required. Please set it up to continue.</div>
+    {{end}}
+    {{if eq .Data.Method "totp"}}
+    <p class="text-muted">Scan the QR code with your authenticator app (Google Authenticator, 1Password, etc.), then enter the 6-digit code to confirm.</p>
+
+    {{if .Data.QRDataURI}}
+    <div style="text-align:center;margin:1rem 0;">
+      <img src="{{.Data.QRDataURI}}" alt="TOTP QR code" style="border:1px solid var(--border-color);border-radius:8px;max-width:220px;">
+    </div>
+    {{end}}
+
+    <p class="text-muted">Or enter this key manually:</p>
+    <p class="mono" style="text-align:center;word-break:break-all;">{{.Data.Secret}}</p>
+    {{end}}
+
+    {{template "alerts" .}}
+
+    <form method="post" action="/web/setup-2fa">
+      <div class="form-row">
+        <label for="code">6-digit code</label>
+        <input type="text" id="code" name="code" inputmode="numeric" autocomplete="one-time-code" pattern="[0-9]*" maxlength="6" required autofocus>
+      </div>
+      <button type="submit" class="btn btn-primary" style="width:100%;margin-top:0.5rem;">Verify and Enable</button>
+    </form>
+    <p class="text-muted" style="text-align:center;margin-top:1rem;font-size:0.8rem;">
+      Important: This system does not support password recovery. Remember that losing your password also loses access to this authenticator key and your stored tokens.
+    </p>
+  </div>
+</div>
+{{template "foot" .}}
+{{end}}

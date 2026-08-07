@@ -295,30 +295,30 @@ func (h *Handler) inviteSignupPost(w http.ResponseWriter, r *http.Request) {
 
 // autoLogin creates a web session and sets the session cookie, mirroring the
 // login flow (derive user DEK from the password and cache it in memory).
+// If 2FA is required and the user has no method, it routes through enrollment
+// via a pending login instead of completing the session immediately.
 func (h *Handler) autoLogin(w http.ResponseWriter, r *http.Request, u *store.User, password string) {
-	sess := &store.WebSession{
-		UserID:    u.ID,
-		ExpiresAt: time.Now().UTC().Add(sessionTTL),
-	}
-	if err := h.Store.CreateWebSession(sess); err != nil {
-		log.Printf("web: create session for invited user: %v", err)
-		return
-	}
+	var userDEK []byte
 	if u.PasswordSalt != "" {
-		userDEK, dekErr := crypto.DeriveUserDEK(password, u.PasswordSalt)
-		if dekErr == nil {
-			sessionDEKStore[sess.Token] = userDEK
+		if dek, dekErr := crypto.DeriveUserDEK(password, u.PasswordSalt); dekErr == nil {
+			userDEK = dek
 		}
 	}
-	http.SetCookie(w, &http.Cookie{
-		Name:     sessionCookieName,
-		Value:    sess.Token,
-		Path:     "/web",
-		HttpOnly: true,
-		SameSite: http.SameSiteLaxMode,
-		MaxAge:   int(sessionTTL.Seconds()),
-		Secure:   !isLocalhost(r),
-	})
+
+	if h.TwoFA != nil {
+		if has, method, _ := h.TwoFA.HasMethod(u.ID); has {
+			h.startPendingLogin(w, r, u, userDEK, method)
+			http.Redirect(w, r, "/web/login/2fa", http.StatusSeeOther)
+			return
+		}
+		if h.TwoFA.Required() {
+			h.startPendingLogin(w, r, u, userDEK, "")
+			http.Redirect(w, r, "/web/setup-2fa", http.StatusSeeOther)
+			return
+		}
+	}
+
+	h.completeLogin(w, r, u, userDEK)
 }
 
 // lookupValidInvite resolves the invitation for the current request, verifying
