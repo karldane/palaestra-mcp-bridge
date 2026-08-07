@@ -5,7 +5,7 @@
 
 server:
   port: "8080"
-  logLevel: info
+  logLevel: debug
   authCodeTTL: "10m"
   accessTokenTTL: "90d"
   # External base URL used in invitation emails. Override per-env with PUBLIC_URL.
@@ -20,6 +20,12 @@ server:
 # when an external IdP takes over.
 auth:
   mode: internal
+  # Two-factor authentication for the /web admin login. Required defaults to
+  # true (users must enroll before completing login); methods lists the
+  # allowed TOTP provider. Required=false makes 2FA optional per user.
+  twoFactor:
+    required: true
+    methods: [totp]
 
 # Outbound email via anonymous relay (no credentials needed). We use the
 # public IP of the mail.tuskerdirect.com Exchange server (same value as the
