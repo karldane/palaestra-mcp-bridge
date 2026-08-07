@@ -163,13 +163,13 @@ func NewHandler(st *store.Store, templateDir string) (*Handler, error) {
 // Route pattern: /web/admin/{resource} for GET, /web/admin/{resource}/action for POST actions
 func (h *Handler) Register(mux *http.ServeMux) {
 	// Public (no session required)
-	mux.HandleFunc("/web/login", h.LoginHandler)
-	mux.HandleFunc("/web/logout", h.LogoutHandler)
-	mux.HandleFunc("/web/invite", h.InviteSignupHandler)
+	mux.Handle("/web/login", h.accessLog(http.HandlerFunc(h.LoginHandler)))
+	mux.Handle("/web/logout", h.accessLog(http.HandlerFunc(h.LogoutHandler)))
+	mux.Handle("/web/invite", h.accessLog(http.HandlerFunc(h.InviteSignupHandler)))
 	// Two-factor routes. The challenge and enrollment endpoints are public but
 	// are gated internally by the short-lived pending/setup state.
-	mux.HandleFunc("/web/login/2fa", h.Login2FAHandler)
-	mux.HandleFunc("/web/setup-2fa", h.Setup2FAHandler)
+	mux.Handle("/web/login/2fa", h.accessLog(http.HandlerFunc(h.Login2FAHandler)))
+	mux.Handle("/web/setup-2fa", h.accessLog(http.HandlerFunc(h.Setup2FAHandler)))
 
 	// Authenticated (any role)
 	mux.Handle("/web/", h.requireAuth(http.HandlerFunc(h.DashboardHandler)))

@@ -14,6 +14,7 @@ import (
 	qrcode "github.com/skip2/go-qrcode"
 
 	"github.com/mcp-bridge/mcp-bridge/internal/crypto"
+	"github.com/mcp-bridge/mcp-bridge/shared"
 	"github.com/mcp-bridge/mcp-bridge/store"
 )
 
@@ -319,28 +320,40 @@ func (h *Handler) setup2FAGet(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) setup2FAPost(w http.ResponseWriter, r *http.Request) {
+	if shared.IsDebugEnabled() {
+		// Freeform debug envelope: enough to diagnose a failed enrollment
+		// without ever logging the secret or the submitted code.
+		shared.Debugf("web setup-2fa POST: setupCookie=%t pending=%t userAgent=%q",
+			rToken(r) != "", h.getPending(r) != nil, r.UserAgent())
+	}
 	token := rToken(r)
 	if token == "" {
+		shared.Debugf("web setup-2fa POST: no setup cookie -> redirect login")
 		http.Redirect(w, r, "/web/login", http.StatusSeeOther)
 		return
 	}
 	ps, ok := pendingSetups[token]
 	if !ok {
+		shared.Debugf("web setup-2fa POST: no pendingSetup for token -> redirect login")
 		http.Redirect(w, r, "/web/login", http.StatusSeeOther)
 		return
 	}
 	if time.Now().Unix() > ps.ExpiresAt {
 		delete(pendingSetups, token)
+		shared.Debugf("web setup-2fa POST: pending setup expired (now=%d exp=%d) -> redirect login", time.Now().Unix(), ps.ExpiresAt)
 		http.Redirect(w, r, "/web/login", http.StatusSeeOther)
 		return
 	}
 
 	code := strings.TrimSpace(r.FormValue("code"))
+	shared.Debugf("web setup-2fa POST: user=%s method=%s forced=%t codeLen=%d secretLen=%d",
+		ps.UserID, ps.Method, ps.Forced, len(code), len(ps.Secret))
 
 	secretBytes := []byte(ps.Secret)
 	defer crypto.Zeroize(secretBytes)
 
 	if err := h.TwoFA.Enable(ps.UserID, ps.Method, secretBytes, code, ps.DEK); err != nil {
+		shared.Debugf("web setup-2fa POST: Enable failed: %v", err)
 		h.render(w, "setup_2fa.html", pageData{
 			Title: "Set up two-factor authentication",
 			Error: "Invalid code. The code you entered does not match your authenticator. Please try again.",
@@ -353,6 +366,7 @@ func (h *Handler) setup2FAPost(w http.ResponseWriter, r *http.Request) {
 		})
 		return
 	}
+	shared.Debugf("web setup-2fa POST: 2FA enabled for user=%s", ps.UserID)
 
 	user, err := h.Store.GetUser(ps.UserID)
 	if err != nil {

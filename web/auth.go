@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/mcp-bridge/mcp-bridge/internal/crypto"
+	"github.com/mcp-bridge/mcp-bridge/shared"
 	"github.com/mcp-bridge/mcp-bridge/store"
 )
 
@@ -54,7 +55,7 @@ func (h *Handler) getSessionUser(r *http.Request) *store.User {
 }
 
 func (h *Handler) requireAuth(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	return h.accessLog(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		user := h.getSessionUser(r)
 		if user == nil {
 			http.Redirect(w, r, "/web/login", http.StatusSeeOther)
@@ -64,7 +65,7 @@ func (h *Handler) requireAuth(next http.Handler) http.Handler {
 		ctx := r.Context()
 		ctx = contextWithUser(ctx, user)
 		next.ServeHTTP(w, r.WithContext(ctx))
-	})
+	}))
 }
 
 func (h *Handler) requireAdmin(next http.Handler) http.Handler {
@@ -77,6 +78,33 @@ func (h *Handler) requireAdmin(next http.Handler) http.Handler {
 		// Context with user is already set by requireAuth
 		next.ServeHTTP(w, r)
 	}))
+}
+
+// accessLog logs a structured line for each web request at debug level. It is
+// gated by the global log level (config server.logLevel=debug). Logging stays
+// freeform and never includes secrets.
+func (h *Handler) accessLog(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		start := time.Now()
+		sw := &statusWriter{ResponseWriter: w, status: http.StatusOK}
+		next.ServeHTTP(sw, r)
+		if shared.IsDebugEnabled() {
+			shared.Debugf("web %s %s -> %d (%s)",
+				r.Method, r.URL.RequestURI(), sw.status, time.Since(start).Round(time.Microsecond))
+		}
+	})
+}
+
+// statusWriter captures the response status code so the access log can report
+// it (the default net/http writer would lose it after the handler returns).
+type statusWriter struct {
+	http.ResponseWriter
+	status int
+}
+
+func (w *statusWriter) WriteHeader(code int) {
+	w.status = code
+	w.ResponseWriter.WriteHeader(code)
 }
 
 func (h *Handler) LoginHandler(w http.ResponseWriter, r *http.Request) {

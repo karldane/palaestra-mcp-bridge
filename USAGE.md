@@ -324,6 +324,18 @@ server:
   logLevel: info    # debug | info | warn | error
 ```
 
+Setting `logLevel: debug` turns on per-request access logging for the `/web`
+admin UI. Lines look like:
+
+```
+{"level":"debug","message":"web POST /web/login/2fa -> 303 ..."}
+```
+
+The 2FA enrollment/confirmation flow additionally emits freeform debug lines
+for the setup POST (whether the setup cookie/pending state were found, method,
+force flag, code length, secret length, and the `Enable` outcome). Secrets and
+submitted codes are never logged.
+
 ### Two-Factor Authentication (web admin UI)
 
 The `/web` cookie-session login supports TOTP 2FA (RFC 6238). Configuration
