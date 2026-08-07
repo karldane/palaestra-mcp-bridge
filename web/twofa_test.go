@@ -461,6 +461,14 @@ func TestSetup2FA_SelfService_FromSettings(t *testing.T) {
 	if !strings.Contains(getW.Body.String(), "Two-Factor Authentication") {
 		t.Fatalf("expected setup page, got: %s", getW.Body.String())
 	}
+	// The QR code must render as a data URI, not be sanitized to #ZgotmplZ
+	// by html/template (which does not trust data: URLs in img[src]).
+	if strings.Contains(getW.Body.String(), "#ZgotmplZ") {
+		t.Fatalf("QR data URI was sanitized by template: %s", getW.Body.String())
+	}
+	if !strings.Contains(getW.Body.String(), "data:image/png;base64,") {
+		t.Fatalf("expected data-URI QR image on setup page: %s", getW.Body.String())
+	}
 	var setupCookie string
 	for _, c := range getW.Result().Cookies() {
 		if c.Name == setupCookieName {

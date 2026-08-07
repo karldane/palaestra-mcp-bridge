@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"errors"
+	"html/template"
 	"log"
 	"net/http"
 	"strings"
@@ -310,7 +311,7 @@ func (h *Handler) setup2FAGet(w http.ResponseWriter, r *http.Request) {
 			Method:     methodID,
 			Secret:     res.Secret,
 			OtpauthURL: res.OtpauthURL,
-			QRDataURI:  qrDataURI,
+			QRDataURI:  template.URL(qrDataURI),
 			Forced:     forced,
 			Methods:    duplicateStrings(h.TwoFAMethods),
 		},
@@ -462,7 +463,10 @@ type setupData struct {
 	Method     string
 	Secret     string
 	OtpauthURL string
-	QRDataURI  string
-	Forced     bool
-	Methods    []string
+	// QRDataURI is a data:image/png;base64 URI generated internally and not
+	// derived from user input, so it may be exempted from html/template URL
+	// sanitization (which otherwise rewrites data: URLs to #ZgotmplZ).
+	QRDataURI template.URL
+	Forced    bool
+	Methods   []string
 }
