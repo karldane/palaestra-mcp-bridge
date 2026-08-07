@@ -316,6 +316,18 @@ System environment variables (PATH, HOME, etc.) are **not** passed.
 
 ## Configuration Reference
 
+There are two config files with the same schema:
+
+- **`config.yaml`** — used by the local systemd service (this repo). Not
+  tracked in git.
+- **`config.yaml.docker`** — baked into the Docker image at
+  `/etc/mcp-bridge/config.yaml` and read by K8s/ArgoCD deployments. This is
+  the file that `make deploy` uses. Tracked in git.
+
+`make deploy` builds and pushes the image from `config.yaml.docker`, then
+deletes the pod so it re-pulls. To change staged config, edit
+`config.yaml.docker`, commit, and run `make deploy`.
+
 ### config.yaml
 
 ```yaml
