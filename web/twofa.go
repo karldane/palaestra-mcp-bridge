@@ -353,7 +353,7 @@ func (h *Handler) setup2FAPost(w http.ResponseWriter, r *http.Request) {
 	defer crypto.Zeroize(secretBytes)
 
 	if err := h.TwoFA.Enable(ps.UserID, ps.Method, secretBytes, code, ps.DEK); err != nil {
-		shared.Debugf("web setup-2fa POST: Enable failed: %v", err)
+		shared.Debugf("web setup-2fa POST: Enable failed: %v (server unix now=%d)", err, time.Now().Unix())
 		h.render(w, "setup_2fa.html", pageData{
 			Title: "Set up two-factor authentication",
 			Error: "Invalid code. The code you entered does not match your authenticator. Please try again.",

@@ -30,8 +30,10 @@ const (
 	// TOTPPeriod is the TOTP time step in seconds.
 	TOTPPeriod = 30
 	// TOTPSkew is how many adjacent time steps are accepted either side of
-	// the current window, tolerating modest clock drift.
-	TOTPSkew = 1
+	// the current window, tolerating modest clock drift. 2 steps (~±60s)
+	// absorbs a device clock that is a minute out of sync while still
+	// bounding the replay window tightly enough for enrollment/login.
+	TOTPSkew = 2
 )
 
 // SetupResult carries the one-time setup payload shown to the user during

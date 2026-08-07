@@ -119,6 +119,38 @@ func TestTotpVerifyExpiredCode(t *testing.T) {
 	}
 }
 
+// TestTotpVerifyAcceptsCodeOneStepOld verifies that a code produced one full
+// time step in the past (within the skew window) is still accepted, so modest
+// device clock drift does not cause false "invalid code" rejections.
+func TestTotpVerifyAcceptsCodeOneStepOld(t *testing.T) {
+	m := NewTotpMethod()
+	res, _ := m.Setup("user@example.com")
+
+	old, err := totp.GenerateCode(res.Secret, time.Now().Add(-1*TOTPPeriod*time.Second))
+	if err != nil {
+		t.Fatalf("generate one-step-old code: %v", err)
+	}
+	if err := m.Verify(res.Secret, old); err != nil {
+		t.Errorf("expected verify to accept a code one step old, got %v", err)
+	}
+}
+
+// TestTotpVerifyAcceptsCodeTwoStepsOld verifies tolerance for a device clock
+// ~45-60s behind the server. This requires TOTPSkew >= 2 (previously skew 1
+// rejected it, which is a plausible cause of the live "invalid code" reports).
+func TestTotpVerifyAcceptsCodeTwoStepsOld(t *testing.T) {
+	m := NewTotpMethod()
+	res, _ := m.Setup("user@example.com")
+
+	old, err := totp.GenerateCode(res.Secret, time.Now().Add(-2*TOTPPeriod*time.Second).Add(-5*time.Second))
+	if err != nil {
+		t.Fatalf("generate two-steps-old code: %v", err)
+	}
+	if err := m.Verify(res.Secret, old); err != nil {
+		t.Errorf("expected verify to accept a code two steps old (needs TOTPSkew>=2), got %v", err)
+	}
+}
+
 func TestManagerDefaults(t *testing.T) {
 	mgr, err := NewManager(newFakeStore(), []string{"totp"}, true)
 	if err != nil {
