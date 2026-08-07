@@ -17,6 +17,9 @@ server:
 
 # Outbound email for user invitations. Can be overridden per-env via
 # SMTP_HOST, SMTP_PORT, SMTP_USER, SMTP_PASSWORD, SMTP_FROM, SMTP_FROM_NAME.
+# NOTE: when deploying on EKS use the public IP of the relay (see
+# config.yaml.docker) — the internal DNS name resolves to an RFC1918 address
+# that is unreachable from EKS pods.
 # smtp:
 #   host: "mail.example.com"
 #   port: 25

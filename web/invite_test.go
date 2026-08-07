@@ -20,10 +20,16 @@ type fakeMessage struct {
 	to      []string
 	subject string
 	body    string
+	html    bool
 }
 
 func (f *fakeMailer) Send(to []string, subject, body string) error {
 	f.messages = append(f.messages, fakeMessage{to: to, subject: subject, body: body})
+	return nil
+}
+
+func (f *fakeMailer) SendHTML(to []string, subject, body string) error {
+	f.messages = append(f.messages, fakeMessage{to: to, subject: subject, body: body, html: true})
 	return nil
 }
 
@@ -35,7 +41,6 @@ func inviteTestHandler(t *testing.T) (*Handler, *store.Store, *fakeMailer) {
 	h.PublicURL = "https://mcp.example.com"
 	h.InviteExpiry = 7 * 24 * time.Hour
 	h.AuthMode = "internal"
-	h.MailerFrom = "noreply@tuskerdirect.com"
 	return h, st, h.Mailer.(*fakeMailer)
 }
 
@@ -109,8 +114,11 @@ func TestAdminInvites_Create_SendsEmail(t *testing.T) {
 	if !strings.Contains(msg.body, "https://mcp.example.com/web/invite?token=inv_") {
 		t.Errorf("email missing invite link: %s", msg.body)
 	}
-	if !strings.Contains(msg.body, "From: noreply@tuskerdirect.com") {
-		t.Error("email missing From header")
+	if !msg.html {
+		t.Error("expected HTML email")
+	}
+	if strings.Contains(msg.body, "From:") || strings.Contains(msg.body, "Content-Type:") {
+		t.Error("email body must not contain embedded headers")
 	}
 
 	invites, err := st.ListInvites()

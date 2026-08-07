@@ -111,10 +111,37 @@ func TestSend_AnonymousRelay(t *testing.T) {
 		t.Errorf("unexpected recipients: %v", rcpts)
 	}
 	msg := getMsg()
-	for _, want := range []string{"From: noreply@tuskerdirect.com", "To: karl@tuskerdirect.com", "Subject: Subject line", "Hello body"} {
+	for _, want := range []string{"From: noreply@tuskerdirect.com", "To: karl@tuskerdirect.com", "Subject: Subject line", "Content-Type: text/plain; charset=UTF-8", "Hello body"} {
 		if !strings.Contains(msg, want) {
 			t.Errorf("message missing %q: %s", want, msg)
 		}
+	}
+	if strings.Count(msg, "Content-Type:") != 1 {
+		t.Errorf("expected exactly one Content-Type header, got: %s", msg)
+	}
+}
+
+func TestSend_HtmlContentType(t *testing.T) {
+	addr, getMsg, _ := startTestSmtpServer(t)
+	h, p := splitAddr(t, addr)
+	s := NewSmtpSender(SmtpConfig{Host: h, Port: p, From: "noreply@tuskerdirect.com"})
+	htmlBody := "<html><body><p>Hello</p></body></html>"
+	if err := s.SendHTML([]string{"karl@tuskerdirect.com"}, "Invitation to mcp-bridge", htmlBody); err != nil {
+		t.Fatalf("SendHTML: %v", err)
+	}
+	msg := getMsg()
+	if !strings.Contains(msg, "Content-Type: text/html; charset=UTF-8") {
+		t.Errorf("expected html content type: %s", msg)
+	}
+	if !strings.Contains(msg, htmlBody) {
+		t.Errorf("expected html body: %s", msg)
+	}
+	if strings.Count(msg, "Content-Type:") != 1 {
+		t.Errorf("expected exactly one Content-Type header, got: %s", msg)
+	}
+	parts := strings.SplitN(msg, "\n\n", 2)
+	if len(parts) != 2 || strings.Contains(parts[1], "From:") {
+		t.Errorf("body must not contain a nested header block: %s", msg)
 	}
 }
 
@@ -123,12 +150,18 @@ func TestSend_NoHostIsNoop(t *testing.T) {
 	if err := s.Send([]string{"a@test.com"}, "s", "b"); err != nil {
 		t.Fatalf("expected no-op, got %v", err)
 	}
+	if err := s.SendHTML([]string{"a@test.com"}, "s", "<p>b</p>"); err != nil {
+		t.Fatalf("expected no-op SendHTML, got %v", err)
+	}
 }
 
 func TestSend_EmptyRecipientsIsNoop(t *testing.T) {
 	s := NewSmtpSender(SmtpConfig{Host: "smtp.example.com", Port: 25})
 	if err := s.Send(nil, "s", "b"); err != nil {
 		t.Fatalf("expected no-op, got %v", err)
+	}
+	if err := s.SendHTML(nil, "s", "<p>b</p>"); err != nil {
+		t.Fatalf("expected no-op SendHTML, got %v", err)
 	}
 }
 

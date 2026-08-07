@@ -110,12 +110,12 @@ func (h *Handler) AdminInvitesCreateHandler(w http.ResponseWriter, r *http.Reque
 		}
 
 		inviteURL := strings.TrimRight(h.PublicURL, "/") + "/web/invite?token=" + rawToken
-		msg, err := mailer.BuildInviteEmail(h.mailerFrom(), email, name, inviteURL, h.inviteExpiry())
+		body, err := mailer.BuildInviteEmail(email, name, inviteURL, h.inviteExpiry())
 		if err != nil {
 			log.Printf("web: build invite email for %s: %v", email, err)
 			continue
 		}
-		if err := h.Mailer.Send([]string{email}, "Invitation to mcp-bridge", msg); err != nil {
+		if err := h.Mailer.SendHTML([]string{email}, "Invitation to mcp-bridge", body); err != nil {
 			log.Printf("web: send invite email to %s: %v", email, err)
 			continue
 		}
@@ -151,13 +151,6 @@ func (h *Handler) inviteExpiry() time.Duration {
 		return 7 * 24 * time.Hour
 	}
 	return h.InviteExpiry
-}
-
-func (h *Handler) mailerFrom() string {
-	if h.MailerFrom != "" {
-		return h.MailerFrom
-	}
-	return "noreply@localhost"
 }
 
 func (h *Handler) AdminInvitesRevokeHandler(w http.ResponseWriter, r *http.Request) {

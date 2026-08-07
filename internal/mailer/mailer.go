@@ -28,9 +28,13 @@ type SmtpConfig struct {
 	Timeout time.Duration
 }
 
-// Sender is the interface used by web handlers to deliver email.
+// Sender is the interface used by web handlers to deliver email. Send sends a
+// plain-text message; SendHTML sends a text/html message. Implementations must
+// build the full RFC 5322 message (headers + body) themselves from the subject
+// and body arguments.
 type Sender interface {
 	Send(to []string, subject, body string) error
+	SendHTML(to []string, subject, body string) error
 }
 
 // BuildAddr returns the host:port dial address for the SMTP server.
@@ -52,6 +56,14 @@ func NewSmtpSender(cfg SmtpConfig) Sender {
 }
 
 func (s *smtpSender) Send(to []string, subject, body string) error {
+	return s.send(to, subject, body, "text/plain; charset=UTF-8")
+}
+
+func (s *smtpSender) SendHTML(to []string, subject, body string) error {
+	return s.send(to, subject, body, "text/html; charset=UTF-8")
+}
+
+func (s *smtpSender) send(to []string, subject, body, contentType string) error {
 	if s.cfg.Host == "" {
 		return nil
 	}
@@ -71,7 +83,7 @@ func (s *smtpSender) Send(to []string, subject, body string) error {
 	dialer := &net.Dialer{Timeout: timeout}
 
 	addr := s.cfg.BuildAddr()
-	msg := buildMessage(s.cfg, from, to, subject, body)
+	msg := buildMessage(s.cfg, from, to, subject, body, contentType)
 
 	var auth smtp.Auth
 	if s.cfg.User != "" {
@@ -152,16 +164,13 @@ func deliver(client *smtp.Client, auth smtp.Auth, from string, to []string, msg 
 	return client.Quit()
 }
 
-// BuildInviteEmail renders the full RFC 5322 message for an invitation. The
-// invite URL must already contain the one-time token. expiryDays of 0 falls
-// back to the default 7-day message wording. from is the address used in both
-// the envelope and the From header.
-func BuildInviteEmail(from, toEmail, name, inviteURL string, expiry time.Duration) (string, error) {
-	recipient := toEmail
-	if name != "" {
-		recipient = fmt.Sprintf("%s <%s>", name, toEmail)
-	}
-	if _, err := mail.ParseAddress(recipient); err != nil {
+// BuildInviteEmail renders the HTML body for an invitation email. It returns
+// the body only — the Sender builds the full RFC 5322 message (headers +
+// Content-Type) so the body is not wrapped inside a second header block. The
+// invite URL must already contain the one-time token. expiry of 0 falls back
+// to the default 7-day message wording.
+func BuildInviteEmail(toEmail, name, inviteURL string, expiry time.Duration) (string, error) {
+	if _, err := mail.ParseAddress(toEmail); err != nil {
 		return "", err
 	}
 
@@ -171,13 +180,6 @@ func BuildInviteEmail(from, toEmail, name, inviteURL string, expiry time.Duratio
 	}
 
 	var b strings.Builder
-	b.WriteString(fmt.Sprintf("From: %s\r\n", from))
-	b.WriteString(fmt.Sprintf("To: %s\r\n", recipient))
-	b.WriteString(fmt.Sprintf("Subject: Invitation to mcp-bridge\r\n"))
-	b.WriteString(fmt.Sprintf("Date: %s\r\n", time.Now().Format(time.RFC1123Z)))
-	b.WriteString("MIME-Version: 1.0\r\n")
-	b.WriteString("Content-Type: text/html; charset=UTF-8\r\n")
-	b.WriteString("\r\n")
 	fmt.Fprintf(&b, `<p>Hello%s,</p>`, greetingName(name))
 	b.WriteString(`<p>You have been invited to join mcp-bridge. To set up your account, click the link below:</p>`)
 	fmt.Fprintf(&b, `<p><a href="%s">Accept invitation</a></p>`, inviteURL)
@@ -193,14 +195,14 @@ func greetingName(name string) string {
 	return " " + name
 }
 
-func buildMessage(cfg SmtpConfig, from string, to []string, subject, body string) string {
+func buildMessage(cfg SmtpConfig, from string, to []string, subject, body, contentType string) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "From: %s\r\n", from)
 	fmt.Fprintf(&b, "To: %s\r\n", strings.Join(to, ", "))
 	fmt.Fprintf(&b, "Subject: %s\r\n", subject)
 	fmt.Fprintf(&b, "Date: %s\r\n", time.Now().Format(time.RFC1123Z))
 	b.WriteString("MIME-Version: 1.0\r\n")
-	b.WriteString("Content-Type: text/plain; charset=UTF-8\r\n")
+	fmt.Fprintf(&b, "Content-Type: %s\r\n", contentType)
 	b.WriteString("\r\n")
 	b.WriteString(body)
 	return b.String()

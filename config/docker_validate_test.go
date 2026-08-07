@@ -13,7 +13,7 @@ func TestLoad_DockerConfigFile(t *testing.T) {
 	if cfg.Server.PublicURL != "https://mcp-bridge.staging6.tuskeraws.com" {
 		t.Errorf("unexpected publicURL %s", cfg.Server.PublicURL)
 	}
-	if cfg.SMTP.Host != "mail.tuskerdirect.com" || cfg.SMTP.Port != 25 {
+	if cfg.SMTP.Host != "81.145.187.132" || cfg.SMTP.Port != 25 {
 		t.Errorf("unexpected smtp %s:%d", cfg.SMTP.Host, cfg.SMTP.Port)
 	}
 	if cfg.Server.InviteExpiryParsed.Hours() != 168 {

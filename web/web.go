@@ -48,9 +48,6 @@ type Handler struct {
 	// enabled. When "sso", invite routes return 404.
 	AuthMode string
 
-	// MailerFrom is the envelope/From address used for outbound email.
-	MailerFrom string
-
 	// InviteAllowExisting, when true, allows creating invitations for email
 	// addresses that already have an account. On signup such an invite
 	// auto-logs the existing account in. Intended for testing only.

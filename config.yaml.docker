@@ -21,10 +21,13 @@ server:
 auth:
   mode: internal
 
-# Outbound email via anonymous internal relay (no credentials needed).
-# All values may be overridden per-env with SMTP_* env vars.
+# Outbound email via anonymous relay (no credentials needed). We use the
+# public IP of the mail.tuskerdirect.com Exchange server (same value as the
+# backoffice EMAIL_SERVERS config) because the internal name resolves to
+# 10.70.0.1 which is unreachable from EKS. All values may be overridden
+# per-env with SMTP_* env vars.
 smtp:
-  host: "mail.tuskerdirect.com"
+  host: "81.145.187.132"
   port: 25
   from: "noreply@tuskerdirect.com"
   fromName: "mcp-bridge"

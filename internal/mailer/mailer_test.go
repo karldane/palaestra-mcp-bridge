@@ -7,7 +7,7 @@ import (
 )
 
 func TestBuildInviteEmail(t *testing.T) {
-	msg, err := BuildInviteEmail("noreply@tuskerdirect.com", "karl.dane@tuskerdirect.com", "Karl Dane", "https://mcp.example.com/web/invite?token=abc123", time.Duration(7*24)*time.Hour)
+	msg, err := BuildInviteEmail("karl.dane@tuskerdirect.com", "Karl Dane", "https://mcp.example.com/web/invite?token=abc123", time.Duration(7*24)*time.Hour)
 	if err != nil {
 		t.Fatalf("BuildInviteEmail: %v", err)
 	}
@@ -15,7 +15,7 @@ func TestBuildInviteEmail(t *testing.T) {
 		t.Fatal("expected non-empty message")
 	}
 	for _, want := range []string{
-		"From: noreply@tuskerdirect.com", "To:", "Subject:", "Karl Dane",
+		"Karl Dane",
 		"https://mcp.example.com/web/invite?token=abc123",
 		"7 days",
 	} {
@@ -23,15 +23,28 @@ func TestBuildInviteEmail(t *testing.T) {
 			t.Errorf("message missing %q", want)
 		}
 	}
+	// The body must NOT carry RFC 5322 headers — the sender adds those and a
+	// second header block would nest inside the email.
+	for _, hdr := range []string{"From:", "To:", "Subject:", "MIME-Version:", "Content-Type:"} {
+		if strings.Contains(msg, hdr) {
+			t.Errorf("body must not contain header %q: %s", hdr, msg)
+		}
+	}
 }
 
 func TestBuildInviteEmail_DefaultExpiry(t *testing.T) {
-	msg, err := BuildInviteEmail("noreply@tuskerdirect.com", "a@test.com", "", "https://x.example/web/invite?token=t", 0)
+	msg, err := BuildInviteEmail("a@test.com", "", "https://x.example/web/invite?token=t", 0)
 	if err != nil {
 		t.Fatalf("BuildInviteEmail: %v", err)
 	}
 	if !strings.Contains(msg, "7 days") {
 		t.Error("expected default 7 day expiry in message")
+	}
+}
+
+func TestBuildInviteEmail_InvalidRecipient(t *testing.T) {
+	if _, err := BuildInviteEmail("not-an-email", "Name", "https://x.example/t", time.Hour); err == nil {
+		t.Error("expected error for invalid recipient address")
 	}
 }
 

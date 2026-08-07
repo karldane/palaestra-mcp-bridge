@@ -340,7 +340,6 @@ func main() {
 		UseTLS:   cfg.SMTP.UseTLS,
 		Timeout:  cfg.SMTP.TimeoutParsed,
 	})
-	webHandler.MailerFrom = cfg.SMTP.From
 	webHandler.PublicURL = cfg.Server.PublicURL
 	webHandler.InviteExpiry = cfg.Server.InviteExpiryParsed
 	webHandler.AuthMode = cfg.Auth.Mode
