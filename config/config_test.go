@@ -532,6 +532,85 @@ server:
 	}
 }
 
+func TestLoad_DefaultTwoFactor(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+
+	data := []byte(`
+server:
+  port: "8020"
+`)
+	if err := os.WriteFile(path, data, 0644); err != nil {
+		t.Fatalf("failed to write config file: %v", err)
+	}
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("failed to load config: %v", err)
+	}
+
+	if !cfg.Auth.TwoFactor.TwoFactorRequired() {
+		t.Error("expected twoFactor.required to default true")
+	}
+	if len(cfg.Auth.TwoFactor.Methods) != 1 || cfg.Auth.TwoFactor.Methods[0] != "totp" {
+		t.Errorf("expected methods to default to [totp], got %v", cfg.Auth.TwoFactor.Methods)
+	}
+}
+
+func TestLoad_TwoFactorDisable(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+
+	data := []byte(`
+server:
+  port: "8020"
+auth:
+  twoFactor:
+    required: false
+`)
+	if err := os.WriteFile(path, data, 0644); err != nil {
+		t.Fatalf("failed to write config file: %v", err)
+	}
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("failed to load config: %v", err)
+	}
+
+	if cfg.Auth.TwoFactor.TwoFactorRequired() {
+		t.Error("expected twoFactor.required to be false when explicitly unset to false")
+	}
+}
+
+func TestLoad_TwoFactorExplicitRequiredAndMethods(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+
+	data := []byte(`
+server:
+  port: "8020"
+auth:
+  twoFactor:
+    required: true
+    methods: [totp]
+`)
+	if err := os.WriteFile(path, data, 0644); err != nil {
+		t.Fatalf("failed to write config file: %v", err)
+	}
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("failed to load config: %v", err)
+	}
+
+	if !cfg.Auth.TwoFactor.TwoFactorRequired() {
+		t.Error("expected twoFactor.required to be true")
+	}
+	if len(cfg.Auth.TwoFactor.Methods) != 1 || cfg.Auth.TwoFactor.Methods[0] != "totp" {
+		t.Errorf("expected methods [totp], got %v", cfg.Auth.TwoFactor.Methods)
+	}
+}
+
 func TestLoad_EnvOverrides(t *testing.T) {
 	t.Setenv("PUBLIC_URL", "https://env.example.com")
 	t.Setenv("SMTP_HOST", "env.smtp.example.com")

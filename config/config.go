@@ -40,6 +40,27 @@ type ServerConfig struct {
 // provider). Invitation flows only apply to internal mode.
 type AuthConfig struct {
 	Mode string `yaml:"mode"`
+	// TwoFactor controls web-login 2FA. Required defaults to true; when set,
+	// users must configure at least one 2FA method. Methods is the ordered
+	// list of allowed 2FA methods with "totp" as the first supported method.
+	TwoFactor TwoFactorConfig `yaml:"twoFactor"`
+}
+
+// TwoFactorConfig configures two-factor authentication on the "/web" login.
+// Required is a *bool so that "unset" (nil, defaults to true) can be
+// distinguished from an explicit false (which disables enforcement).
+type TwoFactorConfig struct {
+	Required *bool    `yaml:"required"`
+	Methods  []string `yaml:"methods"`
+}
+
+// TwoFactorRequired reports whether 2FA enforcement is on. Defaults to true
+// when unset.
+func (c *TwoFactorConfig) TwoFactorRequired() bool {
+	if c == nil || c.Required == nil {
+		return true
+	}
+	return *c.Required
 }
 
 // SMTPConfig holds outbound email settings for invitations and notifications.
@@ -172,6 +193,11 @@ func Load(path string) (*InternalConfig, error) {
 	// Auth mode defaults to internal.
 	if cfg.Auth.Mode == "" {
 		cfg.Auth.Mode = "internal"
+	}
+
+	// Two-factor auth defaults: required by default, TOTP as the first method.
+	if len(cfg.Auth.TwoFactor.Methods) == 0 {
+		cfg.Auth.TwoFactor.Methods = []string{"totp"}
 	}
 
 	// SMTP defaults.

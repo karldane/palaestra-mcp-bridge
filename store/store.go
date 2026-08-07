@@ -304,6 +304,17 @@ func (s *Store) migrate() error {
 	)`)
 	s.db.Exec(`CREATE INDEX IF NOT EXISTS idx_invitations_email ON invitations(email)`)
 
+	// Two-factor authentication: one row per user. The secret column holds the
+	// user-DEK wrapped ciphertext (see store/twofa.go).
+	s.db.Exec(`CREATE TABLE IF NOT EXISTS user_2fa (
+		user_id     TEXT PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+		method      TEXT NOT NULL,
+		secret      TEXT NOT NULL,
+		enabled     INTEGER NOT NULL DEFAULT 1,
+		created_at  DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+		updated_at  DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+	)`)
+
 	return nil
 }
 
