@@ -32,6 +32,11 @@ const (
 
 var errNotAuthFor2FA = errors.New("not authenticated for 2FA")
 
+// errMissingSessionDEK is shown when an authenticated web session has no
+// in-memory user DEK (e.g. it predates a service restart). 2FA enrollment
+// cannot wrap the new secret without it, so the user must re-authenticate.
+const errMissingSessionDEK = "Your session cannot enable two-factor authentication because it predates a service restart. Please log out and log back in, then try setting up 2FA again."
+
 // pendingLogin holds a login whose password/email have been verified but whose
 // 2FA step has not yet completed.
 type pendingLogin struct {
@@ -276,6 +281,19 @@ func (h *Handler) setup2FAGet(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// A self-service session that predates a service restart has a valid DB
+	// session but no in-memory DEK (the DEK cache is memory-only and cleared
+	// on restart). Enrollment cannot wrap the new secret without it, so fail
+	// clearly rather than letting the POST surface a misleading code error.
+	if h.getPending(r) == nil && len(dek) == 0 {
+		h.render(w, "setup_2fa.html", pageData{
+			Title: "Two-Factor Authentication",
+			Error: errMissingSessionDEK,
+			Data:  setupData{Method: methodID, Methods: duplicateStrings(h.TwoFAMethods)},
+		})
+		return
+	}
+
 	res, err := h.TwoFA.Setup(user.Email, methodID)
 	if err != nil {
 		log.Printf("web: 2fa setup: %v", err)
@@ -351,6 +369,23 @@ func (h *Handler) setup2FAPost(w http.ResponseWriter, r *http.Request) {
 
 	secretBytes := []byte(ps.Secret)
 	defer crypto.Zeroize(secretBytes)
+
+	// The DEK may be nil if the setup page was reached via a stale session
+	// (in-memory DEK cleared on restart). Without it the secret cannot be
+	// wrapped, so surface the re-auth message instead of a false code error.
+	if ps.DEK == nil {
+		shared.Debugf("web setup-2fa POST: session DEK missing for user=%s", ps.UserID)
+		h.render(w, "setup_2fa.html", pageData{
+			Title: "Two-Factor Authentication",
+			Error: errMissingSessionDEK,
+			Data: setupData{
+				Method:  ps.Method,
+				Forced:  ps.Forced,
+				Methods: duplicateStrings(h.TwoFAMethods),
+			},
+		})
+		return
+	}
 
 	if err := h.TwoFA.Enable(ps.UserID, ps.Method, secretBytes, code, ps.DEK); err != nil {
 		shared.Debugf("web setup-2fa POST: Enable failed: %v (server unix now=%d)", err, time.Now().Unix())

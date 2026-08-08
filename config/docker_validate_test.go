@@ -22,8 +22,8 @@ func TestLoad_DockerConfigFile(t *testing.T) {
 	if !cfg.Server.InviteAllowExisting {
 		t.Error("expected allowInviteExisting true in config.yaml.docker")
 	}
-	if cfg.Server.LogLevel != "debug" {
-		t.Errorf("expected logLevel debug (needed for 2FA confirm diagnostics), got %s", cfg.Server.LogLevel)
+	if cfg.Server.LogLevel != "info" {
+		t.Errorf("expected logLevel info in config.yaml.docker, got %s", cfg.Server.LogLevel)
 	}
 	if !cfg.Auth.TwoFactor.TwoFactorRequired() {
 		t.Error("expected 2FA required=true in config.yaml.docker")

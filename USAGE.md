@@ -375,6 +375,12 @@ auth:
   (`/web/admin/users`), which forces re-enrollment on the next login.
 - Routes: `/web/login/2fa` (challenge), `/web/setup-2fa` (enrollment),
   `/web/2fa` (settings), `/web/admin/users/2fa-reset` (admin reset).
+- **Stale session pitfall:** the password-derived DEK needed to wrap the 2FA
+  secret lives only in process memory. After a service restart (e.g. a redeploy)
+  an existing `mcp_bridge` session is still valid in the DB but has no DEK, so
+  self-service enrollment fails. The setup page shows a clear "log out and log
+  back in" message in that case — a fresh sign-in re-derives the DEK. This is
+  by design: the DEK must never be persisted.
 
 ### Environment Variables
 

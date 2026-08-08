@@ -506,6 +506,96 @@ func TestSetup2FA_SelfService_FromSettings(t *testing.T) {
 	}
 }
 
+func TestSetup2FA_SelfService_MissingSessionDEK_GET(t *testing.T) {
+	h, st := newTwoFAHandler(t, false)
+	defer st.Close()
+	seedRegularUser(t, st)
+
+	mux := http.NewServeMux()
+	h.Register(mux)
+	cookie := loginCookie(t, h, mux, "user@test.com", "pass")
+	// Simulate a session that predates a service restart: the in-memory DEK
+	// cache is gone but the database session row is still valid.
+	ClearSessionDEKForTest(cookie.Value)
+
+	getReq := authedRequest(http.MethodGet, "/web/setup-2fa", "", cookie)
+	getW := httptest.NewRecorder()
+	mux.ServeHTTP(getW, getReq)
+
+	if getW.Code != http.StatusOK {
+		t.Fatalf("expected 200 for setup GET, got %d", getW.Code)
+	}
+	body := getW.Body.String()
+	if strings.Contains(body, "data:image/png;base64,") {
+		t.Fatal("expected no QR code when session DEK is missing")
+	}
+	if !strings.Contains(body, errMissingSessionDEK) {
+		t.Fatalf("expected %q in body, got: %s", errMissingSessionDEK, getW.Body.String())
+	}
+	// No setup cookie should be issued since enrollment cannot complete.
+	for _, c := range getW.Result().Cookies() {
+		if c.Name == setupCookieName {
+			t.Fatal("expected no setup cookie when session DEK is missing")
+		}
+	}
+}
+
+func TestSetup2FA_SelfService_MissingSessionDEK_POST(t *testing.T) {
+	h, st := newTwoFAHandler(t, false)
+	defer st.Close()
+	u := seedRegularUser(t, st)
+
+	mux := http.NewServeMux()
+	h.Register(mux)
+	cookie := loginCookie(t, h, mux, "user@test.com", "pass")
+	ClearSessionDEKForTest(cookie.Value)
+
+	res, err := h.TwoFA.Setup(u.Email, "totp")
+	if err != nil {
+		t.Fatalf("TwoFA.Setup: %v", err)
+	}
+	code, err := totp.GenerateCode(res.Secret, time.Now())
+	if err != nil {
+		t.Fatalf("GenerateCode: %v", err)
+	}
+
+	token, err := randomToken()
+	if err != nil {
+		t.Fatalf("randomToken: %v", err)
+	}
+	pendingSetups[token] = &pendingSetup{
+		UserID:     u.ID,
+		Method:     "totp",
+		Secret:     res.Secret,
+		OtpauthURL: res.OtpauthURL,
+		DEK:        nil, // stale session: no in-memory DEK
+		Forced:     false,
+		ExpiresAt:  time.Now().Unix() + 300,
+	}
+	defer delete(pendingSetups, token)
+
+	postReq := authedRequest(http.MethodPost, "/web/setup-2fa",
+		url.Values{"code": {code}}.Encode(),
+		&http.Cookie{Name: setupCookieName, Value: token})
+	postW := httptest.NewRecorder()
+	mux.ServeHTTP(postW, postReq)
+
+	if postW.Code != http.StatusOK {
+		t.Fatalf("expected 200 re-render, got %d", postW.Code)
+	}
+	body := postW.Body.String()
+	if strings.Contains(body, "Invalid code") {
+		t.Fatal("must not present the misleading 'Invalid code' error when session DEK is missing")
+	}
+	if !strings.Contains(body, errMissingSessionDEK) {
+		t.Fatalf("expected %q in body, got: %s", errMissingSessionDEK, body)
+	}
+	_, enabled, _ := h.Store.GetUser2FA(u.ID)
+	if enabled {
+		t.Fatal("expected 2FA NOT enabled when session DEK is missing")
+	}
+}
+
 func TestPasswordChange_ReEncrypts2FA(t *testing.T) {
 	h, st := newTwoFAHandler(t, false)
 	defer st.Close()
